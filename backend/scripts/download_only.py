@@ -48,7 +48,7 @@ def evaluate_downloaded(code, name, day, minute, daily, market):
 def _number(value):
     try:
         value=float(value)
-        return value if math.isfinite(value) else None
+        return value if math.isfinite(value) and value >= 0 and value.is_integer() else None
     except (TypeError,ValueError):return None
 
 

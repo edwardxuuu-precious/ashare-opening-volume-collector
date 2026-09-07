@@ -224,6 +224,7 @@ def run(args):
             and (single_source or not baostock_supported(code) or state.get('attempts', {}).get(code, {}).get(day, {}).get('baoDone') == cycle)
             for code, days in state.get('pending', {}).items() for day in days)
         report = dict(metrics, collectionSourcePolicy=['sina'] if single_source else ['sina','eastmoney','baostock'],
+            calculationPolicy='download_only' if single_source else None,
             reviewCompleted=review_complete, stage=stage, startedAt=started.isoformat(timespec='seconds'),
             updatedAt=local_now().isoformat(timespec='seconds'), dates=state.get('dates', []),
             targetCount=metrics['totalStocks'], attemptedCount=metrics['completedStocks'],

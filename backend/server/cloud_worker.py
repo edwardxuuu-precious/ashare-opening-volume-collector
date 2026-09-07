@@ -358,7 +358,7 @@ def run(args, publisher=None):
     status = dict(id='full-market-' + now().replace(':', '').replace('+', '-') + '-' + uuid.uuid4().hex[:8], status='running', phase='review' if review_id else ('history' if history else 'daily'), startedAt=now(), updatedAt=now(),
                   completedStocks=0, totalStocks=0, dates=resumed_dates, historyTraversalCompleted=not history,
                   serviceInvocationId=os.environ.get('INVOCATION_ID', ''), shutdownReady=False, collectionSourcePolicy=['sina'],
-                  calculationPolicy=POLICY,message='正在下载股票数据')
+                  calculationPolicy=None,message='正在准备下载股票数据')
     if review_id:status.update(reviewId=review_id,reviewAsOf=args.review_as_of,reviewCompleted=False,
         message='正在整理已有数据并补齐历史下载，暂停新增当日数据')
     status.update(initial_progress(previous, seed))
@@ -426,7 +426,7 @@ def run(args, publisher=None):
             try:
                 msg = messages.get(timeout=1)
                 for key in ('completedStocks', 'totalStocks', 'dates', 'code', 'httpRequests', 'cacheHits', 'elapsedSeconds',
-                            'completedStockDates', 'totalStockDates', 'pendingStockDates', 'pendingCount', 'reviewCompleted', 'attemptedThisRun', 'collectionSourcePolicy'):
+                            'completedStockDates', 'totalStockDates', 'pendingStockDates', 'pendingCount', 'reviewCompleted', 'attemptedThisRun', 'collectionSourcePolicy', 'calculationPolicy'):
                     if key in msg: status[key] = msg[key]
                 if 'pendingStockDates' in msg: status['pendingCount'] = msg['pendingStockDates']
                 if msg.get('stage') == 'collecting' or msg.get('publishCount', 0) > 0:
