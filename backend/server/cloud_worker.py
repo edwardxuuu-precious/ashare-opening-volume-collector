@@ -11,6 +11,7 @@ sys.path.insert(0, str(ROOT / 'scripts'))
 sys.path.insert(0, str(ROOT / 'server'))
 from publisher_state import PublisherState, canonical, digest_bytes, file_digest, semantic_digest, checkpoint_digest
 from retention import six_month_start, accumulated_manifest
+from download_only import POLICY
 
 DATE_FILE = re.compile(r'^\d{4}-\d{2}-\d{2}\.json$')
 
@@ -35,11 +36,12 @@ def validate_day(data, date):
         ratio = row.get('ratio')
         if ratio is not None:
             first, daily = row.get('first15Volume'), row.get('dailyVolume')
-            if row.get('status') != 'ok' or row.get('quality') != 'matched' or row.get('dayVolumeDifference') != 0:
+            if row.get('status') != 'ok' or (row.get('calculationPolicy') != POLICY and
+                    (row.get('quality') != 'matched' or row.get('dayVolumeDifference') != 0)):
                 raise ValueError('Unverified ratio cannot be published')
-            if not all(isinstance(x, (int, float)) and math.isfinite(x) for x in (ratio, first, daily)):
+            if not all(type(x) in (int, float) and math.isfinite(x) for x in (ratio, first, daily)):
                 raise ValueError('Invalid numeric value')
-            if daily <= 0 or not 0 <= ratio <= 100 or abs(ratio - first / daily * 100) > 1e-5:
+            if daily <= 0 or not 0 <= first <= daily or not 0 <= ratio <= 100 or abs(ratio - first / daily * 100) > 1e-5:
                 raise ValueError('Invalid ratio arithmetic')
     return data
 
@@ -356,9 +358,9 @@ def run(args, publisher=None):
     status = dict(id='full-market-' + now().replace(':', '').replace('+', '-') + '-' + uuid.uuid4().hex[:8], status='running', phase='review' if review_id else ('history' if history else 'daily'), startedAt=now(), updatedAt=now(),
                   completedStocks=0, totalStocks=0, dates=resumed_dates, historyTraversalCompleted=not history,
                   serviceInvocationId=os.environ.get('INVOCATION_ID', ''), shutdownReady=False, collectionSourcePolicy=['sina'],
-                  message='云端正在采集，已核验与待核验数据分别保存')
+                  calculationPolicy=POLICY,message='正在下载股票数据')
     if review_id:status.update(reviewId=review_id,reviewAsOf=args.review_as_of,reviewCompleted=False,
-        message='仅复核既有历史问题记录，暂停新增当日数据')
+        message='正在整理已有数据并补齐历史下载，暂停新增当日数据')
     status.update(initial_progress(previous, seed))
     status['lastSuccessfulUpdate'] = previous.get('lastSuccessfulUpdate')
     atomic_json(state_path, status)
@@ -459,7 +461,7 @@ def run(args, publisher=None):
         if not history and report.get('exitReason') in ('cutoff', 'interrupted', 'failed'):
             complete = False
         if status['status'] != 'paused':
-            status.update(status='completed' if complete else 'paused', message=('当前没有新交易日或到期补采任务，已有结果保持不变' if no_op else '本轮全市场遍历完成；待核验数据仍不纳入排名') if complete else '本轮采集已暂停，未完成任务保留待补采')
+            status.update(status='completed' if complete else 'paused', message=('当前没有新交易日或到期补采任务，已有结果保持不变' if no_op else '本轮下载完成') if complete else '本轮下载已暂停，缺失数据留待补采')
         if review_id:
             status['message']='历史问题记录已复核一遍，仍有差异或缺失的记录保持标记' if complete else '历史复核已暂停，未完成记录保留断点；未录入当日数据'
         status['historyTraversalCompleted'] = bool(previous.get('historyTraversalCompleted') or (complete and history))

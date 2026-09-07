@@ -66,7 +66,7 @@ def record_disposition(record, code, universe, requested):
         if row['status'] == 'ok':
             if type(row.get('ratio')) not in (int, float) or not finite_nonnegative(first) or not finite_nonnegative(daily) or daily <= 0:
                 raise ValueError('Verified row has no valid volumes/ratio')
-            if row.get('minuteDayVolume') != daily:
+            if row.get('calculationPolicy') != 'download_only' and row.get('minuteDayVolume') != daily:
                 raise ValueError('Verified row minute total does not match daily')
         elif row.get('ratio') is not None:
             raise ValueError('Unverified row exposes ratio')
@@ -77,7 +77,7 @@ def record_disposition(record, code, universe, requested):
             if type(reference) not in (int, float) or not math.isfinite(reference) or not 0 <= reference <= 100 or abs(reference - first / daily * 100) > 1e-5:
                 raise ValueError('Invalid reference ratio')
         minute_total = row.get('minuteDayVolume')
-        if day in requested and row['status'] in ('ok', 'unverified') and finite_nonnegative(first) and finite_nonnegative(daily) and daily > 0 and first <= daily and finite_nonnegative(minute_total) and first <= minute_total:
+        if day in requested and row['status'] in ('ok', 'unverified') and finite_nonnegative(first) and finite_nonnegative(daily) and daily > 0 and first <= daily and (row.get('calculationPolicy') == 'download_only' or (finite_nonnegative(minute_total) and first <= minute_total)):
             has_observation = True
     return 'eligible' if has_observation else 'missing_only'
 

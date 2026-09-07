@@ -23,6 +23,7 @@ from scripts.reconciliation import (FallbackBudget, eastmoney_pair, reconcile_st
                                     reconcile_baostock, baostock_supported, sina_observations)
 from scripts.universe_cache import load_universe, validate_universe
 from scripts.retention import accumulated_manifest
+from scripts.download_only import evaluate_downloaded, prepare_saved_downloads
 
 ZONE = ZoneInfo('Asia/Shanghai')
 STOP = False
@@ -113,9 +114,9 @@ def fetch_primary(task):
         return minute, daily
     try:
         minute, daily = pair()
-        initial = {day: collect.evaluate(code, name, day, minute, daily) for day in dates}
         if single_source:
-            return code, sina_observations(initial)
+            return code, {day:evaluate_downloaded(code,name,day,minute,daily,collect.market) for day in dates}
+        initial = {day: collect.evaluate(code, name, day, minute, daily) for day in dates}
         rows = reconcile_stock(code, name, dates, initial, pair,
             lambda selected: eastmoney_pair(ak, code, selected), lambda: None,
             collect.evaluate, fallback)
@@ -328,6 +329,10 @@ def run(args):
             previous_review = previous.get('review', {})
             if previous_review.get('id') == args.review_id and (previous_review.get('dates') != dates or previous_review.get('asOf') != args.review_as_of):
                 raise ValueError('An existing review ID cannot change its frozen date scope')
+        if single_source and (out/'manifest.json').exists():
+            preparation=prepare_saved_downloads(out,dates)
+            recovered_rows += preparation['promotedRows']
+            changed = changed or preparation['changed']
         state = build_state(out, items, dates, previous, recovery=recover, review_cycle=review_cycle)
         if review_cycle:
             state['review'] = dict(id=args.review_id, asOf=args.review_as_of, dates=dates, cycle=review_cycle)

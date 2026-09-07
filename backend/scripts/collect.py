@@ -11,11 +11,13 @@ try:
     from .universe_cache import load_universe
     from .retention import six_month_start,validate_dates,retain_six_months
     from .reconciliation import VERIFICATION_VERSION,FallbackBudget,eastmoney_pair,reconcile_stock,reconcile_baostock,needs_baostock_checkpoint,sina_observations
+    from .download_only import POLICY, METHOD as DOWNLOAD_METHOD, evaluate_downloaded
 except ImportError:
     from sina_unadjusted import minute_unadjusted
     from universe_cache import load_universe
     from retention import six_month_start,validate_dates,retain_six_months
     from reconciliation import VERIFICATION_VERSION,FallbackBudget,eastmoney_pair,reconcile_stock,reconcile_baostock,needs_baostock_checkpoint,sina_observations
+    from download_only import POLICY, METHOD as DOWNLOAD_METHOD, evaluate_downloaded
 
 TIMES = [f'{h:02}:{m:02}:00' for h,m in [(9,45),(10,0),(10,15),(10,30),(10,45),(11,0),(11,15),(11,30),(13,15),(13,30),(13,45),(14,0),(14,15),(14,30),(14,45),(15,0)]]
 STOP_REQUESTED=threading.Event()
@@ -75,6 +77,7 @@ def evaluate(code,name,day,minute,daily,daily_lot=False):
 def safe_saved_row(row):
     """Quarantine old conflicts before merging or publishing checkpoint snapshots."""
     row=dict(row)
+    if row.get('calculationPolicy')==POLICY:return row
     difference=finite_number(row.get('dayVolumeDifference'))
     if row.get('quality')=='source_difference' or (difference is not None and difference!=0):
         if row.get('ratio') is not None:row['referenceRatio']=row['ratio']
@@ -99,8 +102,8 @@ def publish(results,dates,out,scope,universe_total,attempted_count=None,reconcil
     if single_source:
         source='AKShare · 新浪（新采集）；历史记录保留原来源'
         source_policy=['sina']
-        policy='single_source'
-        methodology='新采集固定使用AKShare新浪不复权15分钟线和日线，各取一次，不自动切换来源或因量差重取。比例=09:45首根15分钟成交量÷同日日线成交量×100%，单位为股。全天16根齐全、收盘一致且分钟合计与日线量完全一致才纳入排名。缺失和量差仍标注；既有历史记录保留原始来源，以逐行sourceProvider为准。'
+        policy='none'
+        methodology=DOWNLOAD_METHOD
     now=datetime.now(ZoneInfo('Asia/Shanghai')).isoformat(timespec='seconds');manifest={'generatedAt':now,'source':source,'sourcePolicy':source_policy,'scope':scope,'universeTotal':universe_total,'attemptedCount':attempted_count,'pendingCount':len(results)-attempted_count,'methodology':methodology,'reconciliationPolicy':policy,'dates':[]}
     observed_sources=set()
     for day in sorted(dates,reverse=True):
@@ -136,6 +139,7 @@ def publish(results,dates,out,scope,universe_total,attempted_count=None,reconcil
         payload.update(rows=rows,total=len(rows),retainedCount=retained)
         if single_source:
             payload['collectionSourcePolicy']=['sina']
+            payload['calculationPolicy']=POLICY
             payload['sourcePolicy']=sorted({'sina'} | {r.get('sourceProvider','unknown') for r in rows})
             observed_sources.update(payload['sourcePolicy'])
         valid=sum(r['status']=='ok' for r in rows);missing=sum(r['status']=='missing' for r in rows);suspended=sum(r['status']=='suspended' for r in rows);unverified=sum(r['status']=='unverified' for r in rows)
@@ -149,6 +153,7 @@ def publish(results,dates,out,scope,universe_total,attempted_count=None,reconcil
     if calendar_file.exists():manifest.update(json.loads(calendar_file.read_text()))
     if single_source:
         manifest['collectionSourcePolicy']=['sina']
+        manifest['calculationPolicy']=POLICY
         previous_sources=json.loads(previous_manifest.read_text()).get('sourcePolicy',[]) if previous_manifest.exists() else []
         manifest['sourcePolicy']=sorted(set(previous_sources) | observed_sources | {'sina'})
     write_json(out/'manifest.json',manifest)
@@ -185,7 +190,7 @@ def reusable_checkpoint(record,dates,today):
         return False
     if record.get('fetchStatus')=='error':return False
     if any(record['days'][d].get('verificationVersion')!=VERIFICATION_VERSION for d in dates):return False
-    if any(record['days'][d].get('quality')=='source_difference' or record['days'][d].get('dayVolumeDifference',0)!=0 for d in dates):return False
+    if any(record['days'][d].get('calculationPolicy')!=POLICY and (record['days'][d].get('quality')=='source_difference' or record['days'][d].get('dayVolumeDifference',0)!=0) for d in dates):return False
     if any(record['days'][d].get('status') not in ('ok','suspended') for d in dates):return False
     return not any(str(record['days'][d].get('reason','')).startswith('采集失败') for d in dates)
 
@@ -293,12 +298,13 @@ def run_collection(args):
                     try:
                         minute=reference if code=='000001' and reference is not None else get_minute(symbol)
                         daily=ak.stock_zh_a_daily(symbol=symbol,start_date=min(dates).replace('-',''),end_date=max(dates).replace('-',''),adjust='')
-                        by_day={d:evaluate(code,item['name'],d,minute,daily) for d in dates}
+                        by_day={d:(evaluate_downloaded(code,item['name'],d,minute,daily,market) if single_source
+                                   else evaluate(code,item['name'],d,minute,daily)) for d in dates}
                         def fresh_primary():
                             fresh_minute=get_minute(symbol)
                             fresh_daily=ak.stock_zh_a_daily(symbol=symbol,start_date=min(dates).replace('-',''),end_date=max(dates).replace('-',''),adjust='')
                             return fresh_minute,fresh_daily
-                        by_day=sina_observations(by_day) if single_source else reconcile_stock(code,item['name'],dates,by_day,fresh_primary,
+                        by_day=by_day if single_source else reconcile_stock(code,item['name'],dates,by_day,fresh_primary,
                             lambda selected_dates:eastmoney_pair(ak,code,selected_dates),budget.clear_cache,evaluate,fallback_budget,
                             latest_first=getattr(args,'reconcile_latest_first',False))
                         failure=None;break

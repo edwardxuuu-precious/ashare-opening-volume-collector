@@ -9,6 +9,7 @@ from datetime import datetime
 from pathlib import Path
 from .retention import six_month_start
 from .collect import VERIFICATION_VERSION, safe_saved_row, write_json
+from .download_only import POLICY, volumes_present
 
 
 def successful(row):
@@ -16,6 +17,10 @@ def successful(row):
         return False
     if row.get('status') == 'suspended':
         return row.get('ratio') is None
+    if row.get('calculationPolicy') == POLICY:
+        ratio=row.get('ratio')
+        return (row.get('status')=='ok' and volumes_present(row) and type(ratio) in (int,float)
+                and math.isfinite(ratio) and abs(ratio-row['first15Volume']/row['dailyVolume']*100)<=1e-5)
     if row.get('status') != 'ok' or row.get('quality') != 'matched' or row.get('dayVolumeDifference') != 0:
         return False
     values = [row.get(k) for k in ('first15Volume', 'dailyVolume', 'minuteDayVolume', 'ratio')]
