@@ -260,7 +260,7 @@ def collector_command(python, out, history=True, resume_attempted=False, dates=N
                       review_as_of=None, retry_current_day=False):
     if not history:
         command = [python, str(ROOT / 'scripts/daily_collector.py'), '--out', str(out),
-                '--workers', '4', '--interval', '0.75', '--cutoff', '21:55', '--source-policy', 'sina']
+                '--workers', '4', '--interval', '0.75', '--cutoff', '23:55', '--source-policy', 'sina']
         if review_id:
             if not dates or not review_as_of or any(day >= review_as_of for day in dates):
                 raise ValueError('Review requires frozen prior dates')
