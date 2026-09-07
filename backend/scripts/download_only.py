@@ -33,15 +33,28 @@ def downloaded_row(original):
 def evaluate_downloaded(code, name, day, minute, daily, market):
     row=dict(code=code,name=name,market=market(code),sourceProvider='sina',verificationVersion=2,
              calculationPolicy=POLICY,status='missing',first15Volume=None,dailyVolume=None,ratio=None)
+    opening_rows = 0
+    daily_rows = 0
     if 'day' in minute and 'volume' in minute:
         opening=minute[minute['day'].astype(str)==day+' 09:45:00']
+        minute_on_day=minute[minute['day'].astype(str).str[:10]==day]
+        opening_rows=len(minute_on_day)
         if len(opening)==1:
             row['first15Volume']=_number(opening.iloc[0]['volume'])
     date_col='date' if 'date' in daily else '日期'
     volume_col='volume' if 'volume' in daily else '成交量'
     if date_col in daily and volume_col in daily:
         selected=daily[daily[date_col].astype(str).str[:10]==day]
+        daily_rows=len(selected)
         if len(selected)==1:row['dailyVolume']=_number(selected.iloc[0][volume_col])
+    # A completed historical request with no minute or daily row means there was
+    # no trading session for this listed security (for example, a suspension).
+    # Treat it as terminal so the backlog does not retry it forever. Keep the
+    # current date retryable in case the provider has not published it yet.
+    today=datetime.now(ZoneInfo('Asia/Shanghai')).date().isoformat()
+    if day < today and opening_rows == 0 and daily_rows == 0:
+        row['status']='suspended'
+        return row
     return downloaded_row(row)
 
 
