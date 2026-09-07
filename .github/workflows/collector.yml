@@ -1,0 +1,76 @@
+name: Collect opening volume into private storage
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: Restore probe first; collect only after the old writer is stopped
+        required: true
+        default: restore_probe
+        type: choice
+        options:
+          - restore_probe
+          - collect
+      max_minutes:
+        description: Total runtime budget; 12 for handoff smoke, 285 for normal updates
+        required: true
+        default: '285'
+        type: choice
+        options:
+          - '12'
+          - '285'
+  schedule:
+    - cron: '10 9 * * 1-5'
+permissions:
+  contents: read
+concurrency:
+  group: stock-private-writer
+  cancel-in-progress: false
+jobs:
+  collector:
+    if: >-
+      github.event.repository.private == false &&
+      github.ref == 'refs/heads/main' &&
+      (github.event_name == 'workflow_dispatch' || vars.ENABLE_DAILY_UPDATE == 'true')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 350
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      AWS_EC2_METADATA_DISABLED: 'true'
+      AWS_DEFAULT_REGION: us-east-1
+      STOCK_BUCKET: ${{ vars.STOCK_BUCKET }}
+      STOCK_MODE: ${{ inputs.mode || 'collect' }}
+      STOCK_WRITER_ENABLED: ${{ vars.ENABLE_DAILY_UPDATE }}
+      STOCK_MAX_MINUTES: ${{ inputs.max_minutes || '285' }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.11'
+      - run: pip install -r requirements.txt
+      - uses: aws-actions/configure-aws-credentials@ff717079ee2060e4bcee96c4779b553acc87447c
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          role-duration-seconds: 21600
+          role-session-name: stock-${{ github.run_id }}
+          aws-region: us-east-1
+      - name: Restore, collect incrementally, and save privately
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$STOCK_BUCKET"
+          if [ "$STOCK_MODE" = collect ] && [ "$STOCK_WRITER_ENABLED" != true ]; then
+            echo 'Production writer is not enabled; complete the handoff first.'
+            exit 1
+          fi
+          case "$STOCK_MODE" in
+            restore_probe) mode=probe ;;
+            collect) mode=auto ;;
+            *) exit 2 ;;
+          esac
+          python backend/server/actions_runner.py --bucket "$STOCK_BUCKET" \
+            --root "$RUNNER_TEMP/stock" --region us-east-1 \
+            --mode "$mode" --max-minutes "$STOCK_MAX_MINUTES"
