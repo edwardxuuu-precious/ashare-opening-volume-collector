@@ -44,7 +44,7 @@ jobs:
     if: >-
       github.event.repository.private == false &&
       github.ref == 'refs/heads/main' &&
-      (github.event_name == 'workflow_dispatch' || vars.ENABLE_DAILY_UPDATE == 'true')
+      (github.event_name == 'workflow_dispatch' || vars.DISABLE_DAILY_UPDATE != 'true')
     runs-on: ubuntu-24.04
     timeout-minutes: 350
     permissions:
@@ -55,7 +55,7 @@ jobs:
       AWS_DEFAULT_REGION: us-east-1
       STOCK_BUCKET: ${{ vars.STOCK_BUCKET }}
       STOCK_MODE: ${{ inputs.mode || 'collect' }}
-      STOCK_WRITER_ENABLED: ${{ vars.ENABLE_DAILY_UPDATE }}
+      STOCK_WRITER_DISABLED: ${{ vars.DISABLE_DAILY_UPDATE }}
       STOCK_MAX_MINUTES: ${{ inputs.max_minutes || '285' }}
       STOCK_REVIEW_ID: ${{ inputs.review_id }}
       STOCK_REVIEW_AS_OF: ${{ inputs.review_as_of }}
@@ -91,8 +91,8 @@ jobs:
         run: |
           set -euo pipefail
           test -n "$STOCK_BUCKET"
-          if [ "$STOCK_MODE" = collect ] && [ "$STOCK_WRITER_ENABLED" != true ]; then
-            echo 'Production writer is not enabled; complete the handoff first.'
+          if [ "$STOCK_MODE" = collect ] && [ "$STOCK_WRITER_DISABLED" = true ]; then
+            echo 'Production writer is explicitly disabled.'
             exit 1
           fi
           review_args=()
@@ -101,7 +101,7 @@ jobs:
             collect) mode=auto ;;
             review)
               mode=review
-              test "$STOCK_WRITER_ENABLED" != true
+              test "$STOCK_WRITER_DISABLED" = true
               review_args=(--review-id "$STOCK_REVIEW_ID" --review-as-of "$STOCK_REVIEW_AS_OF" --review-dates "$STOCK_REVIEW_DATES")
               ;;
             *) exit 2 ;;
