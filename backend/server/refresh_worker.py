@@ -26,6 +26,9 @@ def validate_cache(value):
     for day, target in value['targets'].items():
         datetime.strptime(day, '%Y-%m-%d')
         if not isinstance(target, dict): raise ValueError('Invalid target cache')
+        if target.get('universe'):
+            validate_universe(dict(asOf=day, total=len(target['universe']), rows=target['universe'],
+                                   historicalMembership=False), minimum_count=1)
         for code, amount in target.get('openings', {}).items():
             if len(code) != 6 or not code.isdigit() or not refresh.volume(amount):
                 raise ValueError('Invalid opening cache identity/volume')
@@ -41,7 +44,7 @@ def metrics(items, rows, target, phase):
     codes = {item['code'] for item in items}
     ok = {code for code in codes if refresh.complete(rows.get(code, {}))}
     observed = {code for code in codes if code in ok or target.get('attempts', {}).get(code, {}).get('committed')
-                or (rows.get(code, {}).get('reason') not in (None, '尚未采集'))}
+                or (code in rows and rows[code].get('reason') != '尚未采集')}
     # Valid downloaded rows from the old collector count as observed, not just new attempts.
     observed |= {code for code in codes if rows.get(code, {}).get('status') in ('ok','suspended')}
     unprocessed = len(codes - observed)
@@ -64,6 +67,19 @@ def run(args, publisher):
     began = now(); started = time.monotonic()
     previous = read_json(root/'worker-state.json')
     cache = validate_cache(read_json(out/'refresh-state.json', dict(version=1, targets={})))
+    def no_work(reason):
+        value = dict(previous, status='completed', state='completed', phase=phase, noOp=True,
+                     exitCode=0, exitReason='no_work', updatedAt=began.isoformat(),
+                     message=reason)
+        collect.write_json(root/'worker-state.json', value)
+        publisher.publish_status(value)
+        return 0
+    clock = began.strftime('%H:%M')
+    if clock < '07:00' or clock >= '23:55' or (phase == 'catchup' and
+            ('09:40' <= clock < '09:50' or '15:20' <= clock < '15:30')):
+        return no_work('当前处于暂停或让位窗口；断点保留')
+    if phase == 'opening' and not '09:50' <= clock < '15:20':
+        return no_work('当前不在上午预采窗口；未发布未收盘指标')
     ctx = mp.get_context('spawn')
     cutoff = refresh.yield_at(phase, began)
     deadline = min(deadline_for(began, cutoff), started+max(.1, args.max_minutes-10)*60)
@@ -78,9 +94,10 @@ def run(args, publisher):
     import akshare as ak
     calendar = load_calendar(out, began, ak.tool_trade_date_hist_sina)
     days = calendar.get('calendarDates', calendar.get('tradingDates', []))
-    day = refresh.target_date(phase, getattr(args, 'target_date', None), days, began)
+    day = refresh.select_target(phase, getattr(args, 'target_date', None), days, cache,
+                               read_json(out/'daily-state.json'), began)
     if not day:
-        return 0
+        return no_work('今天休市或当前没有到期缺口，已有数据保持不变')
     catalog = read_json(out/'universe.json')
     if day == began.date().isoformat() or not catalog:
         catalog = load_universe(out/'universe.json', began.date().isoformat(), ak.stock_info_a_code_name)
@@ -111,7 +128,15 @@ def run(args, publisher):
                 rows[code] = dict(rows[code], status='missing', ratio=None, reason='旧空响应缺少无交易依据，重新补采')
             dirty[code] = rows[code]
     old_state = read_json(out/'daily-state.json')
-    historical_pending = sum(d != day for pending in old_state.get('pending', {}).values() for d in pending)
+    backlog = {}
+    for pending in old_state.get('pending', {}).values():
+        for historical_day in pending:
+            if historical_day != day: backlog[historical_day] = backlog.get(historical_day, 0)+1
+    for historical_day, count in backlog.items():
+        cache['targets'].setdefault(historical_day, {}).setdefault('summary',
+            dict(pendingCount=count, retryableCount=count, unprocessedCount=0, dataComplete=False))
+    historical_pending = sum(count for d,count in backlog.items()
+        if not cache['targets'][d].get('summary', {}).get('dataComplete'))
     status = dict(previous, id='refresh-'+day+'-'+began.strftime('%H%M%S'), phase=phase,
         targetDate=day, dates=[day], startedAt=began.isoformat(), status='running', state='running',
         historicalPendingCount=historical_pending, collectionSourcePolicy=['sina'], calculationPolicy='download_only',
@@ -148,6 +173,7 @@ def run(args, publisher):
             httpResponseBytes=budget.byte_count.value, firstPassCompletedAt=target.get('firstPassCompletedAt'),
             fullyPublishedAt=target.get('fullyPublishedAt'), publicationCommitted=published,
             elapsedSeconds=round(time.monotonic()-started, 2))
+        status['firstDataRequestAt'] = target.get(phase+'FirstDataRequestAt')
         if target.get('fullyPublishedAt'): status['lastSuccessfulUpdate'] = target['fullyPublishedAt']
         target['summary'] = dict(summary, firstPassCompletedAt=target.get('firstPassCompletedAt'), fullyPublishedAt=target.get('fullyPublishedAt'))
         persist()
@@ -167,6 +193,9 @@ def run(args, publisher):
             for code, future in list(active.items()):
                 if not future.ready(): continue
                 result = future.get(); del active[code]
+                if result.get('firstDataRequestAt'):
+                    key = phase+'FirstDataRequestAt'
+                    target[key] = min(target.get(key, result['firstDataRequestAt']), result['firstDataRequestAt'])
                 success = refresh.volume(result.get('opening')) if phase == 'opening' else refresh.complete(result['row'])
                 if refresh.volume(result.get('opening')): openings[code] = result['opening']
                 if phase != 'opening':

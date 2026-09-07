@@ -1,5 +1,5 @@
 """Target-date collection primitives. Empty source responses are always retryable."""
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import math
 
 from . import collect
@@ -73,30 +73,47 @@ def yield_at(phase, now):
     return '23:55'
 
 
+def select_target(phase, explicit, calendar, cache, legacy, now):
+    selected = target_date(phase, explicit, calendar, now)
+    if explicit or phase != 'catchup' or not selected:
+        return selected
+    targets = cache.get('targets', {})
+    if targets.get(selected, {}).get('summary', {}).get('dataComplete') is not True:
+        return selected
+    pending = {day for values in legacy.get('pending', {}).values() for day in values}
+    pending |= {day for day, value in targets.items() if value.get('summary', {}).get('pendingCount', 0)}
+    eligible = [day for day in pending if day <= selected and day in calendar
+                and targets.get(day, {}).get('summary', {}).get('dataComplete') is not True]
+    return max(eligible) if eligible else None
+
+
 def fetch(task):
     """Keep each successful half even if the other request fails; reuse exact-day cache."""
     import pandas as pd
     from .sina_daily import daily_unadjusted
     item, day, opening, previous, phase = task
     code = item['code']; symbol = collect.market(code).lower() + code
-    errors = []; degraded = False
+    errors = []; degraded = False; request_started = None
     first = opening if volume(opening) else previous.get('first15Volume')
     minute = pd.DataFrame()
     if volume(first):
         minute = pd.DataFrame([dict(day=day+' 09:45:00', volume=first)])
     else:
         try:
+            request_started = datetime.now(timezone.utc).isoformat()
             minute = collect.minute_unadjusted(AK, symbol)
         except Exception as exc:
             errors.append('opening:'+type(exc).__name__)
     if phase == 'opening':
         row = evaluate_downloaded(code, item['name'], day, minute, pd.DataFrame(), collect.market)
-        return dict(code=code, opening=row.get('first15Volume'), errors=errors, speedDegraded=False)
+        return dict(code=code, opening=row.get('first15Volume'), errors=errors, speedDegraded=False,
+                    firstDataRequestAt=request_started)
     daily = pd.DataFrame()
     if volume(previous.get('dailyVolume')) and previous['dailyVolume'] > 0:
         daily = pd.DataFrame([dict(date=day, volume=previous['dailyVolume'])])
     else:
         try:
+            request_started = request_started or datetime.now(timezone.utc).isoformat()
             daily = daily_unadjusted(AK, symbol, day.replace('-', ''), day.replace('-', ''))
             degraded = bool(daily.attrs.get('speedDegraded'))
         except Exception as exc:
@@ -107,4 +124,5 @@ def fetch(task):
             provider='sina', date=day, symbol=symbol, volume=0))
     elif not complete(row):
         row.update(status='missing', ratio=None, reason='；'.join(errors) or '新浪未提供目标日期的开盘量或日成交量；等待补采')
-    return dict(code=code, row=row, opening=row.get('first15Volume'), errors=errors, speedDegraded=degraded)
+    return dict(code=code, row=row, opening=row.get('first15Volume'), errors=errors, speedDegraded=degraded,
+                firstDataRequestAt=request_started)

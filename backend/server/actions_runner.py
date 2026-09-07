@@ -287,17 +287,19 @@ def restore(client, bucket, root, expected_sha=None, *, minimum_universe=1000, r
         target_set = None
         if phase:
             from refresh_worker import validate_cache
-            from scripts.refresh import target_date as select_target
+            from scripts.refresh import select_target
             from zoneinfo import ZoneInfo
-            selected = select_target(phase, target_date, calendar.get('calendarDates', calendar['tradingDates']),
-                                     datetime.now(ZoneInfo('Asia/Shanghai')))
-            target_set = {selected} if selected else set()
             remote_cache, _ = get_bytes(client, bucket, 'collector/refresh-state.json', 32*1024*1024, optional=True)
             if remote_cache:
                 value = validate_cache(strict_json(remote_cache))
                 local = strict_json((data/'refresh-state.json').read_bytes()) if (data/'refresh-state.json').exists() else {}
                 if value.get('updatedAt', '') >= local.get('updatedAt', ''):
                     private_json(data/'refresh-state.json', value)
+            current_cache = strict_json((data/'refresh-state.json').read_bytes()) if (data/'refresh-state.json').exists() else {}
+            legacy = strict_json((data/'daily-state.json').read_bytes()) if (data/'daily-state.json').exists() else {}
+            selected = select_target(phase, target_date, calendar.get('calendarDates', calendar['tradingDates']),
+                                     current_cache, legacy, datetime.now(ZoneInfo('Asia/Shanghai')))
+            target_set = {selected} if selected else set()
         raw, _ = get_bytes(client, bucket, 'data/manifest.json', 4*1024*1024)
         manifest = strict_json(raw)
         if not isinstance(manifest, dict) or not isinstance(manifest.get('dates'), list) or len(manifest['dates']) > 10000:
