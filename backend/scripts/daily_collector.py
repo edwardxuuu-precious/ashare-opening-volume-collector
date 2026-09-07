@@ -18,7 +18,7 @@ if __package__ in (None, ''):
 
 from scripts import collect
 from scripts.daily_state import (accept_rows, bao_tasks, build_state, counters, load_calendar,
-                                journal_attempt, mark_attempt, merge_checkpoint, primary_tasks, read_json, replay_attempts, persist_state, resume_current_day_attempts, resume_review_attempts)
+                                journal_attempt, mark_attempt, merge_checkpoint, primary_tasks, read_json, replay_attempts, persist_state, resume_target_attempts, resume_review_attempts)
 from scripts.reconciliation import (FallbackBudget, eastmoney_pair, reconcile_stock,
                                     reconcile_baostock, baostock_supported, sina_observations)
 from scripts.universe_cache import load_universe, validate_universe
@@ -145,7 +145,7 @@ def fetch_bao(task):
         lambda dates: session.pair(code, dates), collect.evaluate, budget)
 
 
-def publish_changes(out, items, dirty, sample=False, universe_total=None, single_source=False):
+def publish_changes(out, items, dirty, sample=False, universe_total=None, single_source=False, require_no_trade_evidence=False):
     """Only changed dates; each date is constructed separately to bound memory."""
     for day, updates in sorted(dirty.items(), reverse=True):
         previous = read_json(out / (day+'.json'))
@@ -160,7 +160,7 @@ def publish_changes(out, items, dirty, sample=False, universe_total=None, single
         scope = 'sample' if sample else ('full' if attempted == len(items) else 'partial')
         collect.publish(results, [day], out, scope,
                         universe_total or len(items), attempted_count=attempted, baostock_fallback=not single_source,
-                        apply_retention=False, single_source=single_source)
+                        apply_retention=False, single_source=single_source, require_no_trade_evidence=require_no_trade_evidence)
 
 
 def review_dates(out, args, today):
@@ -341,7 +341,7 @@ def run(args):
         if review_cycle:
             resume_review_attempts(state, review_cycle)
         elif getattr(args, 'retry_current_day', False):
-            resume_current_day_attempts(state, started.date().isoformat())
+            resume_target_attempts(state, cycle, started)
         save()
         flush()
         status('preparing')

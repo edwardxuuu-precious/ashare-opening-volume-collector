@@ -217,6 +217,23 @@ def resume_current_day_attempts(state, day):
             state['attempts'].pop(code, None)
 
 
+def resume_target_attempts(state, target_day, now):
+    """Recover ownership without confusing wall-clock date with the trading date."""
+    for code, days in state.get('attempts', {}).items():
+        if target_day not in state.get('pending', {}).get(code, []):
+            continue
+        markers = days.get(target_day, {})
+        for provider in ('primary', 'bao'):
+            dispatched = markers.get(provider)
+            if not dispatched:
+                continue
+            uncommitted = markers.get(provider+'Done') != dispatched
+            due = markers.get('nextRetryAt')
+            if uncommitted or due is None or datetime.fromisoformat(due) <= now:
+                markers.pop(provider, None)
+                markers.pop(provider+'Done', None)
+
+
 def persist_state(out, state, compact=False):
     out = Path(out)
     path = out/'daily-state.json'

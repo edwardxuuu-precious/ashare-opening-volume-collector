@@ -46,6 +46,7 @@ MAX_SNAPSHOTS = 4 * 1024 * 1024 * 1024
 MAX_DATE_BYTES = 64 * 1024 * 1024
 MAX_CHECKPOINT = 8 * 1024 * 1024
 STATE_LIMITS = {'universe.json': 4*1024*1024, 'calendar.json': 2*1024*1024,
+                'refresh-state.json': 32*1024*1024,
                 'run-status.json': 2*1024*1024, 'daily-state.json': 192*1024*1024,
                 'daily-attempts.jsonl': 128*1024*1024}
 CP_NAME = re.compile(r'checkpoint/([0-9]{6})\.json')
@@ -271,7 +272,7 @@ def validate_worker_state(value):
     return value
 
 
-def restore(client, bucket, root, expected_sha=None, *, minimum_universe=1000, review_dates=None):
+def restore(client, bucket, root, expected_sha=None, *, minimum_universe=1000, review_dates=None, phase=None, target_date=None):
     """Validate the entire private staging tree before installing into an empty temporary root."""
     root = Path(root)
     if root.is_symlink() or any((root/name).exists() or (root/name).is_symlink() for name in ('data','worker-state.json','publisher-state.json')):
@@ -283,6 +284,20 @@ def restore(client, bucket, root, expected_sha=None, *, minimum_universe=1000, r
         source = download_archive(client, bucket, archive, expected_sha)
         report = unpack_archive(archive, data)
         catalog, calendar = validate_tree(data, minimum_universe)
+        target_set = None
+        if phase:
+            from refresh_worker import validate_cache
+            from scripts.refresh import target_date as select_target
+            from zoneinfo import ZoneInfo
+            selected = select_target(phase, target_date, calendar.get('calendarDates', calendar['tradingDates']),
+                                     datetime.now(ZoneInfo('Asia/Shanghai')))
+            target_set = {selected} if selected else set()
+            remote_cache, _ = get_bytes(client, bucket, 'collector/refresh-state.json', 32*1024*1024, optional=True)
+            if remote_cache:
+                value = validate_cache(strict_json(remote_cache))
+                local = strict_json((data/'refresh-state.json').read_bytes()) if (data/'refresh-state.json').exists() else {}
+                if value.get('updatedAt', '') >= local.get('updatedAt', ''):
+                    private_json(data/'refresh-state.json', value)
         raw, _ = get_bytes(client, bucket, 'data/manifest.json', 4*1024*1024)
         manifest = strict_json(raw)
         if not isinstance(manifest, dict) or not isinstance(manifest.get('dates'), list) or len(manifest['dates']) > 10000:
@@ -295,6 +310,8 @@ def restore(client, bucket, root, expected_sha=None, *, minimum_universe=1000, r
             if day in seen or entry.get('file') != day+'.json':
                 raise RestoreError('Duplicate or unsafe manifest date')
             seen.add(day)
+            if target_set is not None and day not in target_set:
+                continue
             if (day not in review_set) if review_set is not None else (day < start):
                 continue
             payload_raw, response = get_bytes(client, bucket, 'data/'+entry['file'], MAX_DATE_BYTES)
@@ -453,6 +470,9 @@ def execute_worker(args, client):
     lease = Lease(client, args.bucket, args.lease_owner)
     lease.check()
     publisher = worker.Publisher(LeasedClient(client, lease), args.bucket, Path(args.root)/'data')
+    if getattr(args, 'phase', None):
+        from refresh_worker import run as refresh_run
+        return refresh_run(args, publisher)
     previous = validate_worker_state(strict_json((Path(args.root)/'worker-state.json').read_bytes()))
     if args.mode == 'daily' and not previous.get('historyTraversalCompleted'):
         raise RuntimeError('Historical traversal must finish before daily mode')
@@ -504,6 +524,9 @@ def spawn_worker(args, log, *, popen=subprocess.Popen):
     command = [sys.executable,str(Path(__file__).resolve()),'--internal-worker','--mode',args.mode,
         '--bucket',args.bucket,'--root',str(args.root),'--region',args.region,
         '--max-minutes',str(args.max_minutes),'--lease-owner',args.lease_owner]
+    if getattr(args, 'phase', None):
+        command += ['--phase', args.phase]
+        if getattr(args, 'target_date', None): command += ['--target-date', args.target_date]
     if args.mode == 'review':
         command += ['--review-id',args.review_id,'--review-as-of',args.review_as_of,
                     '--review-dates',','.join(args.review_dates)]
@@ -539,7 +562,8 @@ def run(args, client, *, executor=spawn_worker, minimum_universe=1000):
             if args.mode != 'probe':
                 lease = Lease(client,args.bucket).acquire(args.max_minutes*60+15*60)
             report = restore(client,args.bucket,root,getattr(args,'expected_checkpoint_sha256',None),minimum_universe=minimum_universe,
-                review_dates=getattr(args,'review_dates',None) if args.mode == 'review' else None)
+                review_dates=getattr(args,'review_dates',None) if args.mode == 'review' else None,
+                phase=getattr(args,'phase',None),target_date=getattr(args,'target_date',None))
             result = dict(mode=args.mode,restoredCheckpoints=report['checkpointCount'],restoredDates=report['restoredDates'])
             if args.mode == 'probe':
                 return dict(result,status='validated',upstreamRequests=0,productionWrites=0)
@@ -601,12 +625,19 @@ def main():
     parser.add_argument('--region',default='us-east-1');parser.add_argument('--max-minutes',type=float,default=250)
     parser.add_argument('--max-hours',type=float,help='Alternative total budget in hours; includes restore and finalization')
     parser.add_argument('--expected-checkpoint-sha256')
+    parser.add_argument('--phase', choices=('opening','close','catchup'))
+    parser.add_argument('--target-date')
     parser.add_argument('--review-id')
     parser.add_argument('--review-as-of')
     parser.add_argument('--review-dates')
     parser.add_argument('--internal-worker',action='store_true',help=argparse.SUPPRESS)
     parser.add_argument('--lease-owner',help=argparse.SUPPRESS)
     args=parser.parse_args()
+    if args.target_date:
+        valid_date(args.target_date)
+        if not args.phase: parser.error('Target date requires a refresh phase')
+    if args.phase and args.mode not in ('auto','probe'):
+        parser.error('Refresh phases require auto or probe mode')
     if args.mode == 'review':
         if not args.review_id or not re.fullmatch(r'[A-Za-z0-9_-]{1,64}',args.review_id):
             parser.error('A bounded review ID is required')

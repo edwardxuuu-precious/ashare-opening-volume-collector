@@ -90,7 +90,7 @@ def write_json(path,payload):
     path.parent.mkdir(parents=True,exist_ok=True)
     tmp=path.with_suffix(path.suffix+'.tmp');tmp.write_text(json.dumps(payload,ensure_ascii=False,separators=(',',':'),allow_nan=False));tmp.replace(path)
 
-def publish(results,dates,out,scope,universe_total,attempted_count=None,reconcile_latest_first=False,baostock_fallback=False,apply_retention=True,single_source=False):
+def publish(results,dates,out,scope,universe_total,attempted_count=None,reconcile_latest_first=False,baostock_fallback=False,apply_retention=True,single_source=False,require_no_trade_evidence=False):
     attempted_count=len(results) if attempted_count is None else attempted_count
     policy='latest_first' if reconcile_latest_first else 'all_dates'
     methodology=METHOD+(' 本轮首次回填采用最新日优先：仅最新请求交易日的差异自动重取与尝试备用；历史差异仅完成初次核对，保留初次来源证据并标记等待后续核验，尚未自动排队重核验。' if reconcile_latest_first else '')
@@ -119,7 +119,9 @@ def publish(results,dates,out,scope,universe_total,attempted_count=None,reconcil
             old_rows={r['code']:safe_saved_row(r) for r in previous.get('rows',[])};merged=[]
             for row in rows:
                 old=old_rows.pop(row['code'],None)
-                if row['status']=='missing' and old and old['status'] in ('ok','suspended','unverified'):
+                unproven_no_trade = bool(require_no_trade_evidence and old and old.get('status') == 'suspended'
+                    and old.get('noTradeEvidence', {}).get('kind') != 'explicit_zero_daily_volume')
+                if row['status']=='missing' and old and old['status'] in ('ok','suspended','unverified') and not unproven_no_trade:
                     preserved=dict(old,retainedFromPrevious=True,dataObservedAt=old.get('dataObservedAt',previous['generatedAt']))
                     if row.get('reason')=='尚未采集':
                         # A placeholder is not a new observation or a completed attempt.

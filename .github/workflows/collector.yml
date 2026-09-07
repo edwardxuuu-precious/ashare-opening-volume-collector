@@ -15,10 +15,7 @@ on:
         description: Total runtime budget; 12 for handoff smoke, 285 for normal updates
         required: true
         default: '285'
-        type: choice
-        options:
-          - '12'
-          - '285'
+        type: string
       review_id:
         description: Stable identifier for one historical review; reuse to resume
         type: string
@@ -28,12 +25,23 @@ on:
       review_dates:
         description: Frozen comma-separated saved dates to review
         type: string
+      phase:
+        description: Morning opening cache, post-close daily download, or due catch-up
+        type: choice
+        default: catchup
+        options:
+          - opening
+          - close
+          - catchup
+      target_date:
+        description: Explicit trading date YYYY-MM-DD; empty selects the eligible trading date
+        type: string
   schedule:
-    # GitHub cron is UTC. These are 15:10, 16:10 and 17:10 in Asia/Shanghai.
-    # Multiple idempotent starts reduce missed/delayed scheduled-event risk.
-    - cron: '10 7 * * 1-5'
-    - cron: '10 8 * * 1-5'
-    - cron: '10 9 * * 1-5'
+    # Backup only. The independent dispatcher uses Asia/Shanghai schedules.
+    - cron: '50 1 * * 1-5'
+    - cron: '30 7 * * 1-5'
+    - cron: '0 23 * * 0-4'
+    - cron: '5 9,11,13,15 * * 1-5'
 permissions:
   contents: read
 concurrency:
@@ -60,6 +68,9 @@ jobs:
       STOCK_REVIEW_ID: ${{ inputs.review_id }}
       STOCK_REVIEW_AS_OF: ${{ inputs.review_as_of }}
       STOCK_REVIEW_DATES: ${{ inputs.review_dates }}
+      STOCK_PHASE: ${{ inputs.phase }}
+      STOCK_TARGET_DATE: ${{ inputs.target_date }}
+      STOCK_SCHEDULE: ${{ github.event.schedule }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
@@ -68,18 +79,6 @@ jobs:
         with:
           python-version: '3.11'
       - run: pip install -r requirements.txt
-      - name: Verify current trading day is available from the production source
-        if: env.STOCK_MODE == 'collect'
-        shell: bash
-        run: |
-          set -euo pipefail
-          report="$RUNNER_TEMP/source-readiness.json"
-          if ! python backend/scripts/actions_source_probe.py --report "$report"; then
-            cat "$report" >> "$GITHUB_STEP_SUMMARY"
-            echo 'Primary source is not ready; a later scheduled run will retry.'
-            exit 1
-          fi
-          cat "$report" >> "$GITHUB_STEP_SUMMARY"
       - uses: aws-actions/configure-aws-credentials@ff717079ee2060e4bcee96c4779b553acc87447c
         with:
           role-to-assume: ${{ vars.AWS_ROLE_ARN }}
@@ -98,7 +97,14 @@ jobs:
           review_args=()
           case "$STOCK_MODE" in
             restore_probe) mode=probe ;;
-            collect) mode=auto ;;
+            collect)
+              mode=auto
+              phase="${STOCK_PHASE:-catchup}"
+              if [ "$STOCK_SCHEDULE" = '50 1 * * 1-5' ]; then phase=opening; fi
+              if [ "$STOCK_SCHEDULE" = '30 7 * * 1-5' ]; then phase=close; fi
+              review_args=(--phase "$phase")
+              if [ -n "$STOCK_TARGET_DATE" ]; then review_args+=(--target-date "$STOCK_TARGET_DATE"); fi
+              ;;
             review)
               mode=review
               test "$STOCK_WRITER_DISABLED" = true
