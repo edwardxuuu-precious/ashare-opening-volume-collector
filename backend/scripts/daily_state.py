@@ -73,12 +73,15 @@ def row_digest(row):
     return hashlib.sha256(json.dumps(row, ensure_ascii=False, sort_keys=True, separators=(',', ':'), allow_nan=False).encode()).digest()
 
 
-def build_state(out, items, dates, previous=None, recovery=None):
+def build_state(out, items, dates, previous=None, recovery=None, review_cycle=None):
     """Published verified history remains usable even if legacy daily CP discarded old days."""
     out = Path(out)
     codes = {item['code'] for item in items}
     allowed = set(dates)
     successes = {code: set() for code in codes}
+    published_verified = {code: set() for code in codes}
+    def relevant_cycle(value):
+        return value == review_cycle if review_cycle else not str(value).startswith('review:')
     observed = {code: set() for code in codes}
     digests = {code:{} for code in codes} if recovery else None
     finished = {}
@@ -92,6 +95,7 @@ def build_state(out, items, dates, previous=None, recovery=None):
                 digests[code][day] = (row_digest(row), row.get('status'))
             if successful(row):
                 successes[code].add(day)
+                published_verified[code].add(day)
             if row.get('verificationVersion') == VERIFICATION_VERSION and row.get('reason') != '尚未采集':
                 observed[code].add(day)
     for code in codes:
@@ -104,6 +108,9 @@ def build_state(out, items, dates, previous=None, recovery=None):
             row = next(checked_rows({'date':day, 'rows':[row]}, day))
             if row['code'] != code:
                 raise ValueError('Checkpoint row code mismatch')
+            # A targeted review must never downgrade an already published verified row.
+            if review_cycle and day in published_verified[code]:
+                continue
             if recovery and row.get('verificationVersion') == VERIFICATION_VERSION:
                 published_digest, published_status = digests[code].get(day, (None, None))
                 actual_missing = (row.get('status') == 'missing' and row.get('reason') != '尚未采集'
@@ -112,7 +119,7 @@ def build_state(out, items, dates, previous=None, recovery=None):
                 if eligible and row_digest(row) != published_digest:
                     recovery(code, day, row)
             for provider, cycle in row.get('dailyAttempts', {}).items():
-                if provider in ('primary', 'bao'):
+                if provider in ('primary', 'bao') and relevant_cycle(cycle):
                     finished.setdefault(code, {}).setdefault(day, {}).update({provider:cycle, provider+'Done':cycle})
             if successful(row):
                 successes[code].add(day)
@@ -125,7 +132,8 @@ def build_state(out, items, dates, previous=None, recovery=None):
     pending = {code: days for code, days in pending.items() if days}
     attempts = {}
     for code, days in previous.get('attempts', {}).items():
-        selected = {day: value for day, value in days.items() if day in pending.get(code, [])}
+        selected = {day: {provider: cycle for provider, cycle in value.items() if relevant_cycle(cycle)}
+                    for day, value in days.items() if day in pending.get(code, [])}
         if selected:
             attempts[code] = selected
     for code, days in finished.items():
@@ -144,7 +152,8 @@ def build_state(out, items, dates, previous=None, recovery=None):
 def mark_attempt(state, code, dates, provider, cycle):
     for day in dates:
         markers = state['attempts'].setdefault(code, {}).setdefault(day, {})
-        markers[provider] = max(cycle, markers.get(provider, ''))
+        old = markers.get(provider, '')
+        markers[provider] = cycle if str(cycle).startswith('review:') or str(old).startswith('review:') else max(cycle, old)
 
 
 def journal_attempt(out, state, code, dates, provider, cycle):
@@ -157,7 +166,7 @@ def journal_attempt(out, state, code, dates, provider, cycle):
     mark_attempt(state, code, dates, provider, cycle)
 
 
-def replay_attempts(out, state):
+def replay_attempts(out, state, review_cycle=None):
     path = Path(out)/'daily-attempts.jsonl'
     if not path.exists():
         return
@@ -168,9 +177,25 @@ def replay_attempts(out, state):
             except ValueError:
                 # An incomplete final append never claims that a request was completed.
                 continue
+            if review_cycle:
+                if event['cycle'] != review_cycle:
+                    continue
+            elif str(event['cycle']).startswith('review:'):
+                continue
             code = event['code']
             dates = [day for day in event['dates'] if day in state['pending'].get(code, [])]
             mark_attempt(state, code, dates, event['provider'], event['cycle'])
+
+
+def resume_review_attempts(state, cycle):
+    """A dispatch journal proves ownership, not a committed source result."""
+    if not str(cycle).startswith('review:'):
+        raise ValueError('Interrupted-attempt recovery is limited to explicit reviews')
+    for days in state.get('attempts', {}).values():
+        for markers in days.values():
+            for provider in ('primary', 'bao'):
+                if markers.get(provider) == cycle and markers.get(provider+'Done') != cycle:
+                    markers.pop(provider)
 
 
 def persist_state(out, state, compact=False):
@@ -215,11 +240,11 @@ def bao_tasks(state, cycle, now, after):
     return sorted(result, key=lambda task: (cycle not in task[1], task[0]))
 
 
-def merge_checkpoint(previous, code, rows, today):
+def merge_checkpoint(previous, code, rows, today, preserve_history=False):
     if previous and previous.get('code') != code:
         raise ValueError('Previous checkpoint code mismatch')
     start = six_month_start(today)
-    days = {day: safe_saved_row(row) for day, row in previous.get('days', {}).items() if day >= start}
+    days = {day: safe_saved_row(row) for day, row in previous.get('days', {}).items() if preserve_history or day >= start}
     for day, row in rows.items():
         row = safe_saved_row(row)
         if row.get('code') != code:
@@ -251,7 +276,7 @@ def accept_rows(state, code, rows):
         state['pending'].pop(code, None)
 
 
-def counters(state, total_stocks, cycle):
+def counters(state, total_stocks, cycle, attempt_cycle=None):
     pending = sum(len(days) for days in state['pending'].values())
     total = total_stocks * len(state['dates'])
     observed = sum(len(days) for days in state['observed'].values())
@@ -261,5 +286,5 @@ def counters(state, total_stocks, cycle):
     return dict(completedStocks=latest_observed, totalStocks=total_stocks,
                 completedStockDates=total-pending, totalStockDates=total, pendingStockDates=pending,
                 attemptedStockDates=observed, latestTraversalCompleted=latest_observed == total_stocks,
-                traversalCompleted=not any(not attempted(state, code, day, 'primaryDone', cycle)
+                traversalCompleted=not any(not attempted(state, code, day, 'primaryDone', attempt_cycle or cycle)
                     for code, days in state['pending'].items() for day in days))

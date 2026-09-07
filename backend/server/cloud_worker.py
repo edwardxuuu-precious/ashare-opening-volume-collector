@@ -137,7 +137,10 @@ class Publisher:
         source_bytes = path.read_bytes()
         source = json.loads(source_bytes)
         start = six_month_start(now()[:10])
-        entries = sorted([d for d in source.get('dates', []) if d['date'] >= start], key=lambda d: d['date'], reverse=True)
+        allowed = getattr(self,'allowed_review_dates',None)
+        if allowed is not None and any(d['date'] not in allowed for d in source.get('dates',[])):
+            raise ValueError('Review attempted publication outside frozen dates')
+        entries = sorted([d for d in source.get('dates', []) if allowed is not None or d['date'] >= start], key=lambda d: d['date'], reverse=True)
         if not entries:
             return 0
         if not all_dates:
@@ -152,6 +155,13 @@ class Publisher:
                 if not DATE_FILE.fullmatch(entry['file']) or entry['file'] != entry['date'] + '.json':
                     raise ValueError('Unsafe date filename')
                 payload = validate_day(json.loads((self.out / entry['file']).read_text()), entry['date'])
+                protected=getattr(self,'protected_review_out',None)
+                if protected is not None:
+                    original=validate_day(json.loads((Path(protected)/entry['file']).read_text()),entry['date'])
+                    incoming={row['code']:row for row in payload['rows']}
+                    for row in original['rows']:
+                        if row.get('status') in ('ok','suspended') and incoming.get(row['code']) != row:
+                            raise ValueError('Historical review changed an already verified row')
                 if payload.get('generatedAt') != entry.get('generatedAt'):
                     return 0
                 key = 'data/' + entry['file']
@@ -244,10 +254,15 @@ def history_resume_dates(previous, today=None):
                    if isinstance(d, str) and DATE_FILE.fullmatch(d + '.json') and start <= d <= today})
 
 
-def collector_command(python, out, history=True, resume_attempted=False, dates=None):
+def collector_command(python, out, history=True, resume_attempted=False, dates=None, review_id=None, review_as_of=None):
     if not history:
-        return [python, str(ROOT / 'scripts/daily_collector.py'), '--out', str(out),
+        command = [python, str(ROOT / 'scripts/daily_collector.py'), '--out', str(out),
                 '--workers', '4', '--interval', '0.75', '--cutoff', '21:55', '--bao-after', '20:05']
+        if review_id:
+            if not dates or not review_as_of or any(day >= review_as_of for day in dates):
+                raise ValueError('Review requires frozen prior dates')
+            command += ['--review-id',review_id,'--review-as-of',review_as_of,'--dates',','.join(dates)]
+        return command
     cmd = [python, str(ROOT / 'scripts/collect.py'), '--full', '--out', str(out), '--resume', '--publish-every', '50', '--interval', '0.75', '--efficient-sina', '--baostock-fallback']
     cmd += ['--dates', ','.join(dates)] if history and dates else (['--months', '6'] if history else ['--days', '1'])
     if history:
@@ -335,12 +350,15 @@ def run(args, publisher=None):
     previous = json.loads(state_path.read_text()) if state_path.exists() else {}
     seed_path = out / 'manifest.json'
     seed = json.loads(seed_path.read_text()) if seed_path.exists() else {}
-    history = not previous.get('historyTraversalCompleted', False)
-    resumed_dates = history_resume_dates(previous)
-    status = dict(id='full-market-' + now().replace(':', '').replace('+', '-') + '-' + uuid.uuid4().hex[:8], status='running', phase='history' if history else 'daily', startedAt=now(), updatedAt=now(),
+    review_id=getattr(args,'review_id',None)
+    history = not previous.get('historyTraversalCompleted', False) and not review_id
+    resumed_dates = getattr(args,'review_dates',None) if review_id else history_resume_dates(previous)
+    status = dict(id='full-market-' + now().replace(':', '').replace('+', '-') + '-' + uuid.uuid4().hex[:8], status='running', phase='review' if review_id else ('history' if history else 'daily'), startedAt=now(), updatedAt=now(),
                   completedStocks=0, totalStocks=0, dates=resumed_dates, historyTraversalCompleted=not history,
                   serviceInvocationId=os.environ.get('INVOCATION_ID', ''), shutdownReady=False,
                   message='云端正在采集，已核验与待核验数据分别保存')
+    if review_id:status.update(reviewId=review_id,reviewAsOf=args.review_as_of,reviewCompleted=False,
+        message='仅复核既有历史问题记录，暂停新增当日数据')
     status.update(initial_progress(previous, seed))
     status['lastSuccessfulUpdate'] = previous.get('lastSuccessfulUpdate')
     atomic_json(state_path, status)
@@ -369,7 +387,7 @@ def run(args, publisher=None):
         signal.signal(sig, lambda *_: stop_requested.set())
     try:
         publisher.publish_status(status); atomic_json(state_path, status)
-        command = collector_command(sys.executable, out, history=history, resume_attempted=args.resume_attempted, dates=resumed_dates)
+        command = collector_command(sys.executable, out, history=history, resume_attempted=args.resume_attempted, dates=resumed_dates,review_id=review_id,review_as_of=getattr(args,'review_as_of',None))
         process = subprocess.Popen(command, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
     except Exception as exc:
         status.update(status='paused', error=type(exc).__name__, updatedAt=now(), message='云端采集启动失败，已有数据仍可查询')
@@ -406,7 +424,7 @@ def run(args, publisher=None):
             try:
                 msg = messages.get(timeout=1)
                 for key in ('completedStocks', 'totalStocks', 'dates', 'code', 'httpRequests', 'cacheHits', 'elapsedSeconds',
-                            'completedStockDates', 'totalStockDates', 'pendingStockDates', 'pendingCount'):
+                            'completedStockDates', 'totalStockDates', 'pendingStockDates', 'pendingCount', 'reviewCompleted', 'attemptedThisRun'):
                     if key in msg: status[key] = msg[key]
                 if 'pendingStockDates' in msg: status['pendingCount'] = msg['pendingStockDates']
                 if msg.get('stage') == 'collecting' or msg.get('publishCount', 0) > 0:
@@ -430,15 +448,20 @@ def run(args, publisher=None):
             if 'pendingStockDates' in report: status['pendingCount'] = report['pendingStockDates']
         else:
             report = {}
+        if review_id:
+            status['reviewCompleted']=bool(exitcode == 0 and report.get('reviewCompleted'))
         no_op = bool(not history and report.get('noOp') and report.get('exitReason') in ('no_work', 'retry_next_trading_day'))
         complete = (exitcode == 0 and status['totalStocks'] > 0 and status['completedStocks'] == status['totalStocks']) if history else (
             exitcode == 0 and bool(report.get('traversalCompleted', report.get('latestTraversalCompleted', False))))
+        if review_id:complete = status['reviewCompleted']
         # A cutoff can kill dispatched requests. A complete current day is recorded separately
         # from unfinished history, and must not turn the entire paused run into "completed".
         if not history and report.get('exitReason') in ('cutoff', 'interrupted', 'failed'):
             complete = False
         if status['status'] != 'paused':
             status.update(status='completed' if complete else 'paused', message=('当前没有新交易日或到期补采任务，已有结果保持不变' if no_op else '本轮全市场遍历完成；待核验数据仍不纳入排名') if complete else '本轮采集已暂停，未完成任务保留待补采')
+        if review_id:
+            status['message']='历史问题记录已复核一遍，仍有差异或缺失的记录保持标记' if complete else '历史复核已暂停，未完成记录保留断点；未录入当日数据'
         status['historyTraversalCompleted'] = bool(previous.get('historyTraversalCompleted') or (complete and history))
         status.update(exitCode=exitcode, updatedAt=now())
         if not no_op:

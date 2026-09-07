@@ -251,7 +251,11 @@ def validate_tree(out, minimum_universe=1000):
                     raise
                 if event.get('code') not in universe or event.get('provider') not in ('primary','bao'):
                     raise RestoreError('Invalid attempt journal')
-                validate_dates(event.get('dates')); valid_date(event.get('cycle'))
+                validate_dates(event.get('dates'))
+                cycle = event.get('cycle')
+                if isinstance(cycle,str) and re.fullmatch(r'review:\d{4}-\d{2}-\d{2}:[A-Za-z0-9_-]{1,64}',cycle):
+                    valid_date(cycle.split(':')[1])
+                else: valid_date(cycle)
     return catalog, calendar
 
 
@@ -267,7 +271,7 @@ def validate_worker_state(value):
     return value
 
 
-def restore(client, bucket, root, expected_sha=None, *, minimum_universe=1000):
+def restore(client, bucket, root, expected_sha=None, *, minimum_universe=1000, review_dates=None):
     """Validate the entire private staging tree before installing into an empty temporary root."""
     root = Path(root)
     if root.is_symlink() or any((root/name).exists() or (root/name).is_symlink() for name in ('data','worker-state.json','publisher-state.json')):
@@ -284,13 +288,14 @@ def restore(client, bucket, root, expected_sha=None, *, minimum_universe=1000):
         if not isinstance(manifest, dict) or not isinstance(manifest.get('dates'), list) or len(manifest['dates']) > 10000:
             raise RestoreError('Invalid private manifest')
         seen = set(); entries = []; snapshot_bytes = 0
+        review_set = set(validate_dates(review_dates,allow_empty=False)) if review_dates is not None else None
         start = worker.six_month_start(worker.now()[:10])
         for entry in manifest['dates']:
             day = valid_date(entry.get('date'))
             if day in seen or entry.get('file') != day+'.json':
                 raise RestoreError('Duplicate or unsafe manifest date')
             seen.add(day)
-            if day < start:
+            if (day not in review_set) if review_set is not None else (day < start):
                 continue
             payload_raw, response = get_bytes(client, bucket, 'data/'+entry['file'], MAX_DATE_BYTES)
             snapshot_bytes += len(payload_raw)
@@ -304,6 +309,8 @@ def restore(client, bucket, root, expected_sha=None, *, minimum_universe=1000):
                 raise RestoreError('Private date generation differs from manifest')
             (data/entry['file']).write_bytes(payload_raw); os.chmod(data/entry['file'], 0o600)
             entries.append(entry)
+        if review_set is not None and review_set != {entry['date'] for entry in entries}:
+            raise RestoreError('Review date missing from private saved catalog')
         private_json(data/'manifest.json', dict(manifest, dates=entries))
         state_raw, _ = get_bytes(client, bucket, STATE_KEY, 8*1024*1024, optional=True)
         state = strict_json(state_raw) if state_raw is not None else {}
@@ -454,7 +461,12 @@ def execute_worker(args, client):
     # cloud_worker.run has no EC2/systemd dependency; no shutdown commands are invoked.
     started = time.monotonic()
     options = SimpleNamespace(root=args.root,bucket=args.bucket,region=args.region,
-        max_hours=max(.01,(args.max_minutes-10)/60),publish_seconds=30,resume_attempted=True)
+        max_hours=max(.01,(args.max_minutes-10)/60),publish_seconds=30,resume_attempted=True,
+        review_id=getattr(args,'review_id',None),review_as_of=getattr(args,'review_as_of',None),
+        review_dates=getattr(args,'review_dates',None))
+    if args.mode == 'review':
+        publisher.allowed_review_dates=set(options.review_dates)
+        publisher.protected_review_out=Path(args.root)/'review-originals'
     original_observation = worker.write_observation
     def actions_observation(root, status, report, began, active_publisher):
         # The existing EC2 observation uses host uptime and an EC2 hourly rate.
@@ -475,7 +487,7 @@ def execute_worker(args, client):
         result = worker.run(options, publisher=publisher)
         state_path = Path(args.root)/'worker-state.json'
         calendar_path = Path(args.root)/'data/calendar.json'
-        if result == 0 and state_path.exists() and calendar_path.exists():
+        if args.mode != 'review' and result == 0 and state_path.exists() and calendar_path.exists():
             current = strict_json(state_path.read_bytes())
             calendar = strict_json(calendar_path.read_bytes())
             remaining = options.max_hours-(time.monotonic()-started)/3600
@@ -491,6 +503,9 @@ def spawn_worker(args, log, *, popen=subprocess.Popen):
     command = [sys.executable,str(Path(__file__).resolve()),'--internal-worker','--mode',args.mode,
         '--bucket',args.bucket,'--root',str(args.root),'--region',args.region,
         '--max-minutes',str(args.max_minutes),'--lease-owner',args.lease_owner]
+    if args.mode == 'review':
+        command += ['--review-id',args.review_id,'--review-as-of',args.review_as_of,
+                    '--review-dates',','.join(args.review_dates)]
     process = popen(command, stdout=log, stderr=subprocess.STDOUT, start_new_session=True, cwd=HERE.parent)
     timed_out = False
     try:
@@ -522,10 +537,16 @@ def run(args, client, *, executor=spawn_worker, minimum_universe=1000):
         try:
             if args.mode != 'probe':
                 lease = Lease(client,args.bucket).acquire(args.max_minutes*60+15*60)
-            report = restore(client,args.bucket,root,getattr(args,'expected_checkpoint_sha256',None),minimum_universe=minimum_universe)
+            report = restore(client,args.bucket,root,getattr(args,'expected_checkpoint_sha256',None),minimum_universe=minimum_universe,
+                review_dates=getattr(args,'review_dates',None) if args.mode == 'review' else None)
             result = dict(mode=args.mode,restoredCheckpoints=report['checkpointCount'],restoredDates=report['restoredDates'])
             if args.mode == 'probe':
                 return dict(result,status='validated',upstreamRequests=0,productionWrites=0)
+            if args.mode == 'review':
+                originals=root/'review-originals'
+                originals.mkdir(mode=0o700)
+                for day in args.review_dates:
+                    os.link(root/'data'/(day+'.json'),originals/(day+'.json'))
             state = strict_json((root/'worker-state.json').read_bytes())
             if args.mode == 'daily' and not state.get('historyTraversalCompleted'):
                 raise RuntimeError('History is unfinished; run history mode first')
@@ -564,7 +585,9 @@ def run(args, client, *, executor=spawn_worker, minimum_universe=1000):
             save_actions_state(guarded,args.bucket,root)
             return dict(result,status=current.get('status','paused'),workerExitCode=exit_code,
                 budgetExhausted=timed_out,expectedPause=expected_pause,checkpointSaved=True,historyTraversalCompleted=bool(current.get('historyTraversalCompleted')),
-                completedStocks=current.get('completedStocks',0),totalStocks=current.get('totalStocks',0))
+                completedStocks=current.get('completedStocks',0),totalStocks=current.get('totalStocks',0),
+                reviewId=current.get('reviewId'),reviewCompleted=current.get('reviewCompleted'),
+                pendingStockDates=current.get('pendingStockDates'))
         finally:
             if lease is not None:
                 lease.release()
@@ -572,14 +595,26 @@ def run(args, client, *, executor=spawn_worker, minimum_universe=1000):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--mode',required=True,choices=('probe','daily','history','auto'))
+    parser.add_argument('--mode',required=True,choices=('probe','daily','history','auto','review'))
     parser.add_argument('--bucket',required=True);parser.add_argument('--root',required=True)
     parser.add_argument('--region',default='us-east-1');parser.add_argument('--max-minutes',type=float,default=250)
     parser.add_argument('--max-hours',type=float,help='Alternative total budget in hours; includes restore and finalization')
     parser.add_argument('--expected-checkpoint-sha256')
+    parser.add_argument('--review-id')
+    parser.add_argument('--review-as-of')
+    parser.add_argument('--review-dates')
     parser.add_argument('--internal-worker',action='store_true',help=argparse.SUPPRESS)
     parser.add_argument('--lease-owner',help=argparse.SUPPRESS)
     args=parser.parse_args()
+    if args.mode == 'review':
+        if not args.review_id or not re.fullmatch(r'[A-Za-z0-9_-]{1,64}',args.review_id):
+            parser.error('A bounded review ID is required')
+        valid_date(args.review_as_of)
+        args.review_dates=validate_dates((args.review_dates or '').split(','),allow_empty=False)
+        if args.review_as_of > worker.now()[:10] or any(day >= args.review_as_of for day in args.review_dates):
+            parser.error('Review only accepts saved dates before its as-of date')
+    elif any((args.review_id,args.review_as_of,args.review_dates)):
+        parser.error('Review arguments require review mode')
     if args.max_hours is not None:
         if not math.isfinite(args.max_hours):parser.error('Invalid max-hours')
         args.max_minutes=args.max_hours*60

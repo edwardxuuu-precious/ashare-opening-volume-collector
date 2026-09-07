@@ -5,6 +5,7 @@ import argparse
 import fcntl
 import json
 import multiprocessing as mp
+import re
 import signal
 import sys
 import time
@@ -17,10 +18,11 @@ if __package__ in (None, ''):
 
 from scripts import collect
 from scripts.daily_state import (accept_rows, bao_tasks, build_state, counters, load_calendar,
-                                journal_attempt, mark_attempt, merge_checkpoint, primary_tasks, read_json, replay_attempts, persist_state)
+                                journal_attempt, mark_attempt, merge_checkpoint, primary_tasks, read_json, replay_attempts, persist_state, resume_review_attempts)
 from scripts.reconciliation import (FallbackBudget, eastmoney_pair, reconcile_stock,
                                     reconcile_baostock, baostock_supported)
 from scripts.universe_cache import load_universe, validate_universe
+from scripts.retention import accumulated_manifest
 
 ZONE = ZoneInfo('Asia/Shanghai')
 STOP = False
@@ -157,12 +159,38 @@ def publish_changes(out, items, dirty, sample=False, universe_total=None):
                         universe_total or len(items), attempted_count=attempted, baostock_fallback=True, apply_retention=False)
 
 
+def review_dates(out, args, today):
+    """Freeze an explicit review to existing saved dates strictly before the as-of date."""
+    review_id = getattr(args, 'review_id', None)
+    as_of = getattr(args, 'review_as_of', None)
+    if not review_id and not as_of:
+        return None
+    if not review_id or not re.fullmatch(r'[A-Za-z0-9_-]{1,64}', review_id):
+        raise ValueError('Review ID must be 1..64 safe characters')
+    if not as_of or datetime.strptime(as_of, '%Y-%m-%d').date().isoformat() != as_of or as_of > today:
+        raise ValueError('Review as-of must be a valid date no later than today')
+    selected = getattr(args, 'dates', None)
+    if not selected:
+        raise ValueError('Review requires explicit saved dates')
+    dates = sorted(set(selected.split(',')))
+    saved = {entry['date']: entry for entry in read_json(out/'manifest.json').get('dates', [])}
+    for day in dates:
+        if datetime.strptime(day, '%Y-%m-%d').date().isoformat() != day or day >= as_of:
+            raise ValueError('Review dates must strictly precede the review as-of date')
+        entry = saved.get(day)
+        if not entry or entry.get('file') != day+'.json' or not (out/(day+'.json')).is_file():
+            raise ValueError('Review only accepts existing saved manifest dates')
+    return dates
+
+
 def run(args):
     global STOP
     started = local_now()
     started_mono = time.monotonic()
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
+    selected_review_dates = review_dates(out, args, started.date().isoformat())
+    review_cycle = (f'review:{args.review_as_of}:{args.review_id}' if selected_review_dates is not None else None)
     context = mp.get_context('spawn')
     http = SharedHTTPBudget(context.Lock(), context.Value('d', 0), context.Value('q', 0),
                             context.Value('q', 0), args.interval, deadline_for(started, args.cutoff))
@@ -183,10 +211,14 @@ def run(args):
     universe_total = len(items)
 
     def status(stage):
-        metrics = counters(state, len(items), cycle) if state.get('dates') else dict(
+        metrics = counters(state, len(items), max(state['dates']), attempt_cycle=cycle) if state.get('dates') else dict(
             completedStocks=0,totalStocks=len(items),completedStockDates=0,totalStockDates=0,
             pendingStockDates=0,attemptedStockDates=0,latestTraversalCompleted=False,traversalCompleted=False)
-        report = dict(metrics, stage=stage, startedAt=started.isoformat(timespec='seconds'),
+        review_complete = bool(review_cycle) and exit_reason not in ('cutoff', 'interrupted', 'failed') and all(
+            state.get('attempts', {}).get(code, {}).get(day, {}).get('primaryDone') == cycle
+            and (not baostock_supported(code) or state.get('attempts', {}).get(code, {}).get(day, {}).get('baoDone') == cycle)
+            for code, days in state.get('pending', {}).items() for day in days)
+        report = dict(metrics, reviewCompleted=review_complete, stage=stage, startedAt=started.isoformat(timespec='seconds'),
             updatedAt=local_now().isoformat(timespec='seconds'), dates=state.get('dates', []),
             targetCount=metrics['totalStocks'], attemptedCount=metrics['completedStocks'],
             pendingCount=metrics['pendingStockDates'], attemptedThisRun=attempts_run,
@@ -197,7 +229,8 @@ def run(args):
             lastSuccessfulUpdate=state.get('lastSuccessfulUpdate'),
             todayTargetCount=len(items) if cycle == local_now().date().isoformat() else 0,
             todayAttemptedCount=metrics['completedStocks'] if cycle == local_now().date().isoformat() else 0,
-            latestDate=cycle, sourceFailureCounts=source_failures,
+            latestDate=max(state.get('dates') or ['']), reviewId=getattr(args, 'review_id', None),
+            reviewAsOf=getattr(args, 'review_as_of', None), sourceFailureCounts=source_failures,
             elapsedSeconds=round(time.monotonic()-started_mono, 2))
         collect.write_json(out / 'run-status.json', report)
         print(json.dumps(report, ensure_ascii=False), flush=True)
@@ -211,6 +244,8 @@ def run(args):
         nonlocal publishes
         if dirty:
             publish_changes(out, items, dirty, sample=bool(getattr(args, 'symbols', None)), universe_total=universe_total)
+            if review_cycle:
+                collect.write_json(out/'manifest.json', accumulated_manifest(read_json(out/'manifest.json')))
             publishes += 1
             dirty.clear()
 
@@ -218,9 +253,12 @@ def run(args):
         nonlocal changed, attempts_run
         path = out / 'checkpoint' / (code+'.json')
         previous_record = read_json(path)
+        if review_cycle and not set(rows) <= set(state['pending'].get(code, [])):
+            raise ValueError('Review source returned a date outside the pending review scope')
         rows = {day:dict(row, dailyAttempts=dict(previous_record.get('days', {}).get(day, {}).get('dailyAttempts', {}),
                          **{provider:cycle})) for day,row in rows.items()}
-        record = merge_checkpoint(previous_record, code, rows, local_now().date().isoformat())
+        record = merge_checkpoint(previous_record, code, rows, local_now().date().isoformat(),
+                                  preserve_history=bool(review_cycle))
         collect.write_json(path, record)
         actual = {day: record['days'][day] for day in rows}
         failures = {attempt.get('source') for row in rows.values()
@@ -254,18 +292,21 @@ def run(args):
             return 0
         http.install()
         import akshare as ak
-        calendar = load_calendar(out, started, ak.tool_trade_date_hist_sina)
-        dates = calendar['tradingDates']
-        if getattr(args, 'dates', None):
-            dates = collect.validate_dates(args.dates.split(','), started.date().isoformat(), dates)
+        if selected_review_dates is not None:
+            dates = selected_review_dates
+        else:
+            calendar = load_calendar(out, started, ak.tool_trade_date_hist_sina)
+            dates = calendar['tradingDates']
+            if getattr(args, 'dates', None):
+                dates = collect.validate_dates(args.dates.split(','), started.date().isoformat(), dates)
         if not dates:
             state = dict(version=1, dates=[], pending={}, attempts={}, observed={})
             exit_reason = 'no_work'
             return 0
-        cycle = max(dates)
+        cycle = review_cycle or max(dates)
         catalog = read_json(out / 'universe.json')
         # A holiday uses the last validated membership, without downloading stock metadata again.
-        if cycle == started.date().isoformat() or not catalog:
+        if not review_cycle and (cycle == started.date().isoformat() or not catalog):
             catalog = load_universe(out/'universe.json', started.date().isoformat(), ak.stock_info_a_code_name)
         else:
             validate_universe(catalog)
@@ -277,8 +318,16 @@ def run(args):
                 raise ValueError('Unknown A-share stock code')
             items = [item for item in items if item['code'] in selected]
         names = {item['code']: item['name'] for item in items}
-        state = build_state(out, items, dates, previous, recovery=recover)
-        replay_attempts(out, state)
+        if review_cycle:
+            previous_review = previous.get('review', {})
+            if previous_review.get('id') == args.review_id and (previous_review.get('dates') != dates or previous_review.get('asOf') != args.review_as_of):
+                raise ValueError('An existing review ID cannot change its frozen date scope')
+        state = build_state(out, items, dates, previous, recovery=recover, review_cycle=review_cycle)
+        if review_cycle:
+            state['review'] = dict(id=args.review_id, asOf=args.review_as_of, dates=dates, cycle=review_cycle)
+        replay_attempts(out, state, review_cycle=review_cycle)
+        if review_cycle:
+            resume_review_attempts(state, review_cycle)
         save()
         flush()
         status('preparing')
@@ -314,6 +363,12 @@ def run(args):
                     code, selected = ready[0]
                     record = read_json(out/'checkpoint'/(code+'.json'))
                     initial = {day: record['days'][day] for day in selected if day in record.get('days', {})}
+                    if review_cycle:
+                        for day in selected:
+                            if day not in initial:
+                                initial[day] = next((row for row in read_json(out/(day+'.json')).get('rows', [])
+                                                     if row.get('code') == code),
+                                                    collect.pending_record({'code':code, 'name':names[code]}, [day])['days'][day])
                     journal_attempt(out, state, code, selected, 'bao', cycle)
                     if initial:
                         if bao_pool is None:
@@ -343,7 +398,7 @@ def run(args):
                     pool.close()
                 pool.join()
         flush()
-        if changed:
+        if changed and not review_cycle:
             collect.retain_six_months(out, local_now().date().isoformat())
         if state.get('dates'):
             save(compact=True)
@@ -360,7 +415,9 @@ def main():
     parser.add_argument('--bao-after', default='20:05')
     parser.add_argument('--publish-every', type=int, default=50)
     parser.add_argument('--symbols', help='Explicit stock codes for an isolated sample/probe output directory')
-    parser.add_argument('--dates', help='Explicit comma-separated completed trading dates within six months')
+    parser.add_argument('--dates', help='Explicit comma-separated completed trading dates; saved history allowed in review mode')
+    parser.add_argument('--review-id', help='Unique bounded review ID; reuse it to resume without repeat attempts')
+    parser.add_argument('--review-as-of', help='Exclude this date and all later dates from a historical review')
     args = parser.parse_args()
     if not 1 <= args.workers <= 4 or args.interval < .75 or args.publish_every < 1:
         parser.error('workers must be 1..4, interval >= .75, publish-every >= 1')
