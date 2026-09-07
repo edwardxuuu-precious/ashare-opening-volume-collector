@@ -1,7 +1,7 @@
 # A-share opening volume collector
 
-Minimal collection runtime for an opening-volume dashboard. Uses AKShare and
-BaoStock, keeps historical daily results in private storage, and excludes
+Minimal collection runtime for an opening-volume dashboard. New collection uses
+only Sina through AKShare, keeps historical results with their original source, and excludes
 unverified ratios. Only the recent six months are restored for active collection;
 older saved dates remain queryable without repeated downloads.
 

@@ -7,6 +7,14 @@ import pandas as pd
 VERIFICATION_VERSION = 2
 
 
+def sina_observations(initial):
+    """Keep one Sina observation per day without retries or another provider."""
+    return {day: dict(row, sourceProvider='sina', verificationVersion=VERIFICATION_VERSION,
+                      verificationState='matched' if row['status'] == 'ok' else 'unverified',
+                      reconciliationAttempts=[observation(row, 'sina', 'initial')])
+            for day, row in initial.items()}
+
+
 def observation(row, source, stage):
     keys = ('status', 'reason', 'first15Volume', 'dailyVolume', 'minuteDayVolume',
             'dayVolumeDifference', 'dayVolumeDifferencePct', 'ratio', 'referenceRatio', 'quality')

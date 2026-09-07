@@ -10,12 +10,12 @@ try:
     from .sina_unadjusted import minute_unadjusted
     from .universe_cache import load_universe
     from .retention import six_month_start,validate_dates,retain_six_months
-    from .reconciliation import VERIFICATION_VERSION,FallbackBudget,eastmoney_pair,reconcile_stock,reconcile_baostock,needs_baostock_checkpoint
+    from .reconciliation import VERIFICATION_VERSION,FallbackBudget,eastmoney_pair,reconcile_stock,reconcile_baostock,needs_baostock_checkpoint,sina_observations
 except ImportError:
     from sina_unadjusted import minute_unadjusted
     from universe_cache import load_universe
     from retention import six_month_start,validate_dates,retain_six_months
-    from reconciliation import VERIFICATION_VERSION,FallbackBudget,eastmoney_pair,reconcile_stock,reconcile_baostock,needs_baostock_checkpoint
+    from reconciliation import VERIFICATION_VERSION,FallbackBudget,eastmoney_pair,reconcile_stock,reconcile_baostock,needs_baostock_checkpoint,sina_observations
 
 TIMES = [f'{h:02}:{m:02}:00' for h,m in [(9,45),(10,0),(10,15),(10,30),(10,45),(11,0),(11,15),(11,30),(13,15),(13,30),(13,45),(14,0),(14,15),(14,30),(14,45),(15,0)]]
 STOP_REQUESTED=threading.Event()
@@ -87,7 +87,7 @@ def write_json(path,payload):
     path.parent.mkdir(parents=True,exist_ok=True)
     tmp=path.with_suffix(path.suffix+'.tmp');tmp.write_text(json.dumps(payload,ensure_ascii=False,separators=(',',':'),allow_nan=False));tmp.replace(path)
 
-def publish(results,dates,out,scope,universe_total,attempted_count=None,reconcile_latest_first=False,baostock_fallback=False,apply_retention=True):
+def publish(results,dates,out,scope,universe_total,attempted_count=None,reconcile_latest_first=False,baostock_fallback=False,apply_retention=True,single_source=False):
     attempted_count=len(results) if attempted_count is None else attempted_count
     policy='latest_first' if reconcile_latest_first else 'all_dates'
     methodology=METHOD+(' 本轮首次回填采用最新日优先：仅最新请求交易日的差异自动重取与尝试备用；历史差异仅完成初次核对，保留初次来源证据并标记等待后续核验，尚未自动排队重核验。' if reconcile_latest_first else '')
@@ -96,7 +96,13 @@ def publish(results,dates,out,scope,universe_total,attempted_count=None,reconcil
     if baostock_fallback:
         source+=' + BaoStock整套备用核验';source_policy.append('baostock')
         methodology+=' 本轮另启用BaoStock：沪深仍有量差、历史待核验或缺失的请求日期，使用一次覆盖整个请求窗口的不复权15分钟与日线整套数据复核，股为单位；整套严格匹配才替换。前述最新日优先仅限制新浪/东方财富，BaoStock会尝试当前请求窗口内的历史缺口。北交所不请求BaoStock。未调用/被熔断跳过不等于已核验，按逐行审计标记为准。'
+    if single_source:
+        source='AKShare · 新浪（新采集）；历史记录保留原来源'
+        source_policy=['sina']
+        policy='single_source'
+        methodology='新采集固定使用AKShare新浪不复权15分钟线和日线，各取一次，不自动切换来源或因量差重取。比例=09:45首根15分钟成交量÷同日日线成交量×100%，单位为股。全天16根齐全、收盘一致且分钟合计与日线量完全一致才纳入排名。缺失和量差仍标注；既有历史记录保留原始来源，以逐行sourceProvider为准。'
     now=datetime.now(ZoneInfo('Asia/Shanghai')).isoformat(timespec='seconds');manifest={'generatedAt':now,'source':source,'sourcePolicy':source_policy,'scope':scope,'universeTotal':universe_total,'attemptedCount':attempted_count,'pendingCount':len(results)-attempted_count,'methodology':methodology,'reconciliationPolicy':policy,'dates':[]}
+    observed_sources=set()
     for day in sorted(dates,reverse=True):
         rows=[safe_saved_row(r['days'][day]) for r in results if day in r['days']];valid=sum(r['status']=='ok' for r in rows);missing=sum(r['status']=='missing' for r in rows);suspended=sum(r['status']=='suspended' for r in rows);unverified=sum(r['status']=='unverified' for r in rows)
         file=f'{day}.json';payload={'date':day,'generatedAt':now,'source':source,'sourcePolicy':source_policy,'scope':scope,'total':len(rows),'universeTotal':universe_total,'attemptedCount':attempted_count,'pendingCount':len(results)-attempted_count,'rows':rows,'methodology':methodology,'reconciliationPolicy':policy}
@@ -128,6 +134,10 @@ def publish(results,dates,out,scope,universe_total,attempted_count=None,reconcil
             if old_rows:
                 payload.update(scope=previous['scope'],universeTotal=previous['universeTotal'],attemptedCount=max(attempted_count,previous.get('attemptedCount',0)))
         payload.update(rows=rows,total=len(rows),retainedCount=retained)
+        if single_source:
+            payload['collectionSourcePolicy']=['sina']
+            payload['sourcePolicy']=sorted({'sina'} | {r.get('sourceProvider','unknown') for r in rows})
+            observed_sources.update(payload['sourcePolicy'])
         valid=sum(r['status']=='ok' for r in rows);missing=sum(r['status']=='missing' for r in rows);suspended=sum(r['status']=='suspended' for r in rows);unverified=sum(r['status']=='unverified' for r in rows)
         write_json(target,payload);manifest['dates'].append({'date':day,'status':'complete' if payload['scope']=='full' and valid+suspended==len(rows) else 'partial','total':len(rows),'valid':valid,'missing':missing,'unverified':unverified,'suspended':suspended,'file':file,'generatedAt':payload['generatedAt'],'retainedCount':retained,'scope':payload['scope']})
     previous_manifest=out/'manifest.json'
@@ -137,6 +147,10 @@ def publish(results,dates,out,scope,universe_total,attempted_count=None,reconcil
         manifest['dates'].sort(key=lambda d:d['date'],reverse=True)
     calendar_file=out/'calendar.json'
     if calendar_file.exists():manifest.update(json.loads(calendar_file.read_text()))
+    if single_source:
+        manifest['collectionSourcePolicy']=['sina']
+        previous_sources=json.loads(previous_manifest.read_text()).get('sourcePolicy',[]) if previous_manifest.exists() else []
+        manifest['sourcePolicy']=sorted(set(previous_sources) | observed_sources | {'sina'})
     write_json(out/'manifest.json',manifest)
     if apply_retention:retain_six_months(out,now[:10])
 
@@ -207,6 +221,7 @@ def load_checkpoint(path):
 
 def run_collection(args):
     import akshare as ak
+    single_source=getattr(args,'source_policy','sina')=='sina'
     started=time.monotonic();budget=RequestBudget(args.interval);budget.install()
     out=Path(args.out);cache=out/'checkpoint';cache.mkdir(parents=True,exist_ok=True)
     now=datetime.now(ZoneInfo('Asia/Shanghai'));today=now.date().isoformat()
@@ -230,7 +245,7 @@ def run_collection(args):
         items=[item for item in universe_items if item['code'] in symbols]
     else:items=universe_items if args.full else universe_items[:args.limit or 3]
     get_minute=(lambda symbol:minute_unadjusted(ak,symbol)) if getattr(args,'efficient_sina',False) else (lambda symbol:ak.stock_zh_a_minute(symbol=symbol,period='15',adjust=''))
-    bao_enabled=getattr(args,'baostock_fallback',False)
+    bao_enabled=not single_source and getattr(args,'baostock_fallback',False)
     reference=None if bao_enabled else get_minute('sz000001')
     fallback_budget=FallbackBudget();bao_budget=FallbackBudget(max_stocks=5556)
     bao_session=None
@@ -258,7 +273,8 @@ def run_collection(args):
         results,scope,attempted=make_snapshot(items,records,dates,args.full)
         if attempted_this_run!=last_published_attempt:
             publish(results,dates,out,scope,len(universe),attempted_count=attempted,
-                    reconcile_latest_first=getattr(args,'reconcile_latest_first',False),baostock_fallback=bao_enabled)
+                    reconcile_latest_first=getattr(args,'reconcile_latest_first',False),baostock_fallback=bao_enabled,
+                    single_source=single_source)
             publish_count+=1;last_published_attempt=attempted_this_run
         write_json(out/'run-status.json',{'startedAt':now.isoformat(timespec='seconds'),'updatedAt':datetime.now(ZoneInfo('Asia/Shanghai')).isoformat(timespec='seconds'),'elapsedSeconds':round(time.monotonic()-started,2),'scope':scope,'targetCount':len(items),'attemptedCount':attempted,'pendingCount':len(items)-attempted,'attemptedThisRun':attempted_this_run,'httpRequests':budget.request_count,'cacheHits':budget.cache_hits,'publishCount':publish_count,'exitReason':exit_reason,'dates':dates})
     try:
@@ -273,7 +289,7 @@ def run_collection(args):
                 by_day={day:safe_saved_row(previous['days'][day]) for day in dates}
                 failure='PreviousSourceFailure' if previous.get('fetchStatus')=='error' else None
             else:
-                for attempt in range(2):
+                for attempt in range(1 if single_source else 2):
                     try:
                         minute=reference if code=='000001' and reference is not None else get_minute(symbol)
                         daily=ak.stock_zh_a_daily(symbol=symbol,start_date=min(dates).replace('-',''),end_date=max(dates).replace('-',''),adjust='')
@@ -282,13 +298,13 @@ def run_collection(args):
                             fresh_minute=get_minute(symbol)
                             fresh_daily=ak.stock_zh_a_daily(symbol=symbol,start_date=min(dates).replace('-',''),end_date=max(dates).replace('-',''),adjust='')
                             return fresh_minute,fresh_daily
-                        by_day=reconcile_stock(code,item['name'],dates,by_day,fresh_primary,
+                        by_day=sina_observations(by_day) if single_source else reconcile_stock(code,item['name'],dates,by_day,fresh_primary,
                             lambda selected_dates:eastmoney_pair(ak,code,selected_dates),budget.clear_cache,evaluate,fallback_budget,
                             latest_first=getattr(args,'reconcile_latest_first',False))
                         failure=None;break
                     except Exception as exc:
                         failure=type(exc).__name__
-                        if attempt==0:
+                        if attempt==0 and not single_source:
                             budget.clear_cache();time.sleep(3)
             if failure and not repair_only:
                 by_day=pending_record(item,dates)['days']
@@ -319,6 +335,7 @@ def run_collection(args):
 def main():
     import fcntl,signal
     parser=argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--source-policy',choices=['sina'],default='sina')
     parser.add_argument('--full',action='store_true',help='Target the entire current A-share universe; uncollected rows remain explicitly missing')
     parser.add_argument('--limit',type=int,help='Sample size (default 3), or per-run maximum when combined with --full')
     parser.add_argument('--max-stocks',type=int,help='Maximum number of new/retried stocks in this invocation, useful with --full --resume')

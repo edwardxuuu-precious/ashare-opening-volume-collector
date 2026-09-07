@@ -257,13 +257,13 @@ def history_resume_dates(previous, today=None):
 def collector_command(python, out, history=True, resume_attempted=False, dates=None, review_id=None, review_as_of=None):
     if not history:
         command = [python, str(ROOT / 'scripts/daily_collector.py'), '--out', str(out),
-                '--workers', '4', '--interval', '0.75', '--cutoff', '21:55', '--bao-after', '20:05']
+                '--workers', '4', '--interval', '0.75', '--cutoff', '21:55', '--source-policy', 'sina']
         if review_id:
             if not dates or not review_as_of or any(day >= review_as_of for day in dates):
                 raise ValueError('Review requires frozen prior dates')
             command += ['--review-id',review_id,'--review-as-of',review_as_of,'--dates',','.join(dates)]
         return command
-    cmd = [python, str(ROOT / 'scripts/collect.py'), '--full', '--out', str(out), '--resume', '--publish-every', '50', '--interval', '0.75', '--efficient-sina', '--baostock-fallback']
+    cmd = [python, str(ROOT / 'scripts/collect.py'), '--full', '--out', str(out), '--resume', '--publish-every', '50', '--interval', '0.75', '--efficient-sina', '--source-policy', 'sina']
     cmd += ['--dates', ','.join(dates)] if history and dates else (['--months', '6'] if history else ['--days', '1'])
     if history:
         cmd += ['--reconcile-latest-first']
@@ -355,7 +355,7 @@ def run(args, publisher=None):
     resumed_dates = getattr(args,'review_dates',None) if review_id else history_resume_dates(previous)
     status = dict(id='full-market-' + now().replace(':', '').replace('+', '-') + '-' + uuid.uuid4().hex[:8], status='running', phase='review' if review_id else ('history' if history else 'daily'), startedAt=now(), updatedAt=now(),
                   completedStocks=0, totalStocks=0, dates=resumed_dates, historyTraversalCompleted=not history,
-                  serviceInvocationId=os.environ.get('INVOCATION_ID', ''), shutdownReady=False,
+                  serviceInvocationId=os.environ.get('INVOCATION_ID', ''), shutdownReady=False, collectionSourcePolicy=['sina'],
                   message='云端正在采集，已核验与待核验数据分别保存')
     if review_id:status.update(reviewId=review_id,reviewAsOf=args.review_as_of,reviewCompleted=False,
         message='仅复核既有历史问题记录，暂停新增当日数据')
@@ -424,7 +424,7 @@ def run(args, publisher=None):
             try:
                 msg = messages.get(timeout=1)
                 for key in ('completedStocks', 'totalStocks', 'dates', 'code', 'httpRequests', 'cacheHits', 'elapsedSeconds',
-                            'completedStockDates', 'totalStockDates', 'pendingStockDates', 'pendingCount', 'reviewCompleted', 'attemptedThisRun'):
+                            'completedStockDates', 'totalStockDates', 'pendingStockDates', 'pendingCount', 'reviewCompleted', 'attemptedThisRun', 'collectionSourcePolicy'):
                     if key in msg: status[key] = msg[key]
                 if 'pendingStockDates' in msg: status['pendingCount'] = msg['pendingStockDates']
                 if msg.get('stage') == 'collecting' or msg.get('publishCount', 0) > 0:

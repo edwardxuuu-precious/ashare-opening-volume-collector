@@ -20,7 +20,7 @@ from scripts import collect
 from scripts.daily_state import (accept_rows, bao_tasks, build_state, counters, load_calendar,
                                 journal_attempt, mark_attempt, merge_checkpoint, primary_tasks, read_json, replay_attempts, persist_state, resume_review_attempts)
 from scripts.reconciliation import (FallbackBudget, eastmoney_pair, reconcile_stock,
-                                    reconcile_baostock, baostock_supported)
+                                    reconcile_baostock, baostock_supported, sina_observations)
 from scripts.universe_cache import load_universe, validate_universe
 from scripts.retention import accumulated_manifest
 
@@ -94,18 +94,18 @@ class SharedFallbackBudget:
             self.failures.value = 0 if success else self.failures.value+1
 
 
-def init_primary(http, fallback):
+def init_primary(http, fallback, single_source=True):
     global PRIMARY
     signal.signal(signal.SIGINT, signal.SIG_IGN)
     http.install()
     import akshare as ak
-    PRIMARY = (ak, fallback)
+    PRIMARY = (ak, fallback, single_source)
 
 
 def fetch_primary(task):
     """No filesystem writes in children. One initial pair and at most one conflict refresh."""
     code, name, dates = task
-    ak, fallback = PRIMARY
+    ak, fallback, single_source = PRIMARY
     def pair():
         minute = collect.minute_unadjusted(ak, collect.market(code).lower()+code)
         daily = ak.stock_zh_a_daily(symbol=collect.market(code).lower()+code,
@@ -114,6 +114,8 @@ def fetch_primary(task):
     try:
         minute, daily = pair()
         initial = {day: collect.evaluate(code, name, day, minute, daily) for day in dates}
+        if single_source:
+            return code, sina_observations(initial)
         rows = reconcile_stock(code, name, dates, initial, pair,
             lambda selected: eastmoney_pair(ak, code, selected), lambda: None,
             collect.evaluate, fallback)
@@ -142,7 +144,7 @@ def fetch_bao(task):
         lambda dates: session.pair(code, dates), collect.evaluate, budget)
 
 
-def publish_changes(out, items, dirty, sample=False, universe_total=None):
+def publish_changes(out, items, dirty, sample=False, universe_total=None, single_source=False):
     """Only changed dates; each date is constructed separately to bound memory."""
     for day, updates in sorted(dirty.items(), reverse=True):
         previous = read_json(out / (day+'.json'))
@@ -156,7 +158,8 @@ def publish_changes(out, items, dirty, sample=False, universe_total=None):
         attempted = sum(record['fetchStatus'] != 'pending' for record in results)
         scope = 'sample' if sample else ('full' if attempted == len(items) else 'partial')
         collect.publish(results, [day], out, scope,
-                        universe_total or len(items), attempted_count=attempted, baostock_fallback=True, apply_retention=False)
+                        universe_total or len(items), attempted_count=attempted, baostock_fallback=not single_source,
+                        apply_retention=False, single_source=single_source)
 
 
 def review_dates(out, args, today):
@@ -190,6 +193,7 @@ def run(args):
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
     selected_review_dates = review_dates(out, args, started.date().isoformat())
+    single_source = getattr(args, 'source_policy', 'sina') == 'sina'
     review_cycle = (f'review:{args.review_as_of}:{args.review_id}' if selected_review_dates is not None else None)
     context = mp.get_context('spawn')
     http = SharedHTTPBudget(context.Lock(), context.Value('d', 0), context.Value('q', 0),
@@ -216,9 +220,10 @@ def run(args):
             pendingStockDates=0,attemptedStockDates=0,latestTraversalCompleted=False,traversalCompleted=False)
         review_complete = bool(review_cycle) and exit_reason not in ('cutoff', 'interrupted', 'failed') and all(
             state.get('attempts', {}).get(code, {}).get(day, {}).get('primaryDone') == cycle
-            and (not baostock_supported(code) or state.get('attempts', {}).get(code, {}).get(day, {}).get('baoDone') == cycle)
+            and (single_source or not baostock_supported(code) or state.get('attempts', {}).get(code, {}).get(day, {}).get('baoDone') == cycle)
             for code, days in state.get('pending', {}).items() for day in days)
-        report = dict(metrics, reviewCompleted=review_complete, stage=stage, startedAt=started.isoformat(timespec='seconds'),
+        report = dict(metrics, collectionSourcePolicy=['sina'] if single_source else ['sina','eastmoney','baostock'],
+            reviewCompleted=review_complete, stage=stage, startedAt=started.isoformat(timespec='seconds'),
             updatedAt=local_now().isoformat(timespec='seconds'), dates=state.get('dates', []),
             targetCount=metrics['totalStocks'], attemptedCount=metrics['completedStocks'],
             pendingCount=metrics['pendingStockDates'], attemptedThisRun=attempts_run,
@@ -243,7 +248,8 @@ def run(args):
     def flush():
         nonlocal publishes
         if dirty:
-            publish_changes(out, items, dirty, sample=bool(getattr(args, 'symbols', None)), universe_total=universe_total)
+            publish_changes(out, items, dirty, sample=bool(getattr(args, 'symbols', None)), universe_total=universe_total,
+                            single_source=single_source)
             if review_cycle:
                 collect.write_json(out/'manifest.json', accumulated_manifest(read_json(out/'manifest.json')))
             publishes += 1
@@ -352,11 +358,11 @@ def run(args):
                     break
                 code, selected = queued.pop(0)
                 if primary_pool is None:
-                    primary_pool = context.Pool(args.workers, initializer=init_primary, initargs=(http, fallback))
+                    primary_pool = context.Pool(args.workers, initializer=init_primary, initargs=(http, fallback, single_source))
                 journal_attempt(out, state, code, selected, 'primary', cycle)
                 active[code] = (primary_pool.apply_async(fetch_primary, ((code, names[code], selected),)), selected)
             now = local_now()
-            if backup is None and not STOP and time.monotonic() < http.deadline:
+            if not single_source and backup is None and not STOP and time.monotonic() < http.deadline:
                 ready = [(code, days) for code, days in bao_tasks(state, cycle, now, args.bao_after)
                          if code not in active]
                 if ready:
@@ -375,7 +381,7 @@ def run(args):
                             bao_pool = context.Pool(1, initializer=init_bao, initargs=(args.interval,))
                         backup = (bao_pool.apply_async(fetch_bao, ((code, names[code], initial),)), code)
             if not queued and not active and backup is None:
-                waiting = any(now.date().isoformat() in days and baostock_supported(code)
+                waiting = not single_source and any(now.date().isoformat() in days and baostock_supported(code)
                               and state['attempts'].get(code, {}).get(now.date().isoformat(), {}).get('bao') != cycle
                               for code, days in state['pending'].items()) and now.strftime('%H:%M') < args.bao_after
                 if waiting:
@@ -409,6 +415,7 @@ def run(args):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--out', required=True)
+    parser.add_argument('--source-policy', choices=['sina'], default='sina')
     parser.add_argument('--workers', type=int, default=4)
     parser.add_argument('--interval', type=float, default=.75)
     parser.add_argument('--cutoff', default='21:55')
