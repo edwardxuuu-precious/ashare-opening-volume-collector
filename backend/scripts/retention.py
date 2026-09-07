@@ -1,4 +1,4 @@
-"""Rolling six calendar months; only collector-owned dated aggregates expire."""
+"""Keep published history; six months limits only the mutable collection workspace."""
 import calendar,json,re
 from datetime import date
 from pathlib import Path
@@ -17,15 +17,23 @@ def validate_dates(dates,today,trading_dates):
         if value not in allowed:raise ValueError(f'{value} 不是已收盘的交易日')
     return values
 
+def accumulated_manifest(manifest):
+    """Expose every saved date, independently of the rolling collection calendar."""
+    result=dict(manifest)
+    saved=[entry['date'] for entry in result.get('dates',[])]
+    result['tradingDates']=sorted(set(result.get('tradingDates',[])) | set(saved))
+    result.pop('retentionMonths',None)
+    result.update(retentionPolicy='accumulate',collectionWindowMonths=6)
+    starts=saved+([result['retentionStart']] if result.get('retentionStart') else [])
+    if starts:result['retentionStart']=min(starts)
+    return result
+
 def retain_six_months(out,today):
+    """Compatibility entrypoint: retain date files; trim only disposable working checkpoints."""
     out=Path(out);start=six_month_start(today);path=out/'manifest.json'
     if path.exists():
-        manifest=json.loads(path.read_text());manifest['dates']=[d for d in manifest['dates'] if d['date']>=start]
-        manifest['tradingDates']=[d for d in manifest.get('tradingDates',[]) if start<=d<=str(today)]
-        manifest.update(retentionMonths=6,retentionStart=start)
+        manifest=accumulated_manifest(json.loads(path.read_text()))
         tmp=path.with_suffix('.json.tmp');tmp.write_text(json.dumps(manifest,ensure_ascii=False));tmp.replace(path)
-    for path in out.glob('????-??-??.json'):
-        if re.fullmatch(r'\d{4}-\d{2}-\d{2}',path.stem) and path.stem<start:path.unlink()
     for path in (out/'checkpoint').glob('*.json'):
         try:record=json.loads(path.read_text())
         except (ValueError,OSError):continue

@@ -10,7 +10,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'scripts'))
 sys.path.insert(0, str(ROOT / 'server'))
 from publisher_state import PublisherState, canonical, digest_bytes, file_digest, semantic_digest, checkpoint_digest
-from retention import six_month_start
+from retention import six_month_start, accumulated_manifest
 
 DATE_FILE = re.compile(r'^\d{4}-\d{2}-\d{2}\.json$')
 
@@ -142,7 +142,7 @@ class Publisher:
             return 0
         if not all_dates:
             entries = entries[:1]
-        previous = {d['date']: d for d in self.manifest.get('dates', []) if d['date'] >= start}
+        previous = {d['date']: d for d in self.manifest.get('dates', [])}
         selected_count = 0
         with tempfile.TemporaryDirectory(prefix='.publish-', dir=self.out.parent) as folder:
             staged = []
@@ -179,8 +179,8 @@ class Publisher:
                 staged.insert(0, self._stage(folder, 'data/stocks.json', dict(asOf=catalog['asOf'],
                     historicalMembership=False, total=len(rows), rows=rows)))
                 del catalog, rows
-            manifest = dict(source, dates=sorted(previous.values(), key=lambda d: d['date'], reverse=True),
-                            automationStatus='cloud_collector', collectorStatusPath='/data/collection-status.json')
+            manifest = accumulated_manifest(dict(source, dates=sorted(previous.values(), key=lambda d: d['date'], reverse=True),
+                            automationStatus='cloud_collector', collectorStatusPath='/data/collection-status.json'))
             if semantic_digest(manifest) == semantic_digest(self.manifest):
                 manifest['generatedAt'] = self.manifest.get('generatedAt', manifest.get('generatedAt'))
             manifest_stage = self._stage(folder, 'data/manifest.json', manifest)
@@ -200,15 +200,8 @@ class Publisher:
         return selected_count
 
     def expire(self):
-        """Only exact expired aggregate names; manifest has already removed these dates."""
-        start = six_month_start(now()[:10])
-        pager = self.client.get_paginator('list_objects_v2')
-        for page in pager.paginate(Bucket=self.bucket, Prefix='data/'):
-            for obj in page.get('Contents', []):
-                name = obj['Key'].removeprefix('data/')
-                if DATE_FILE.fullmatch(name) and name[:10] < start:
-                    self.client.delete_object(Bucket=self.bucket, Key=obj['Key'])
-                    self.state.forget(obj['Key'])
+        """Published dates accumulate permanently; only local working caches may shrink."""
+        return None
 
     def save_checkpoint(self):
         import gzip, tarfile

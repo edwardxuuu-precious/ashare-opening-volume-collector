@@ -1,7 +1,9 @@
 # A-share opening volume collector
 
 Minimal collection runtime for an opening-volume dashboard. Uses AKShare and
-BaoStock, preserves six months of checkpoints, and excludes unverified ratios.
+BaoStock, keeps historical daily results in private storage, and excludes
+unverified ratios. Only the recent six months are restored for active collection;
+older saved dates remain queryable without repeated downloads.
 
 The source probe runs without AWS permissions and prints aggregate diagnostics.
 The production workflow writes to private S3 through a repository-scoped OIDC

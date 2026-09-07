@@ -281,7 +281,7 @@ def restore(client, bucket, root, expected_sha=None, *, minimum_universe=1000):
         catalog, calendar = validate_tree(data, minimum_universe)
         raw, _ = get_bytes(client, bucket, 'data/manifest.json', 4*1024*1024)
         manifest = strict_json(raw)
-        if not isinstance(manifest, dict) or not isinstance(manifest.get('dates'), list) or len(manifest['dates']) > 186:
+        if not isinstance(manifest, dict) or not isinstance(manifest.get('dates'), list) or len(manifest['dates']) > 10000:
             raise RestoreError('Invalid private manifest')
         seen = set(); entries = []; snapshot_bytes = 0
         start = worker.six_month_start(worker.now()[:10])
@@ -322,7 +322,7 @@ def restore(client, bucket, root, expected_sha=None, *, minimum_universe=1000):
             current = validate_worker_state(strict_json(status_raw)) if status_raw else dict(historyTraversalCompleted=False, dates=dates_from_report(data, calendar))
         private_json(stage/'worker-state.json', current)
         report.update(archiveSha256=source['sha256'], archiveVersionId=source['versionId'], compressedBytes=source['bytes'],
-                      restoredDates=len(entries), snapshotBytes=snapshot_bytes, universeTotal=catalog['total'], boundRunnerState=bound)
+                      restoredDates=len(entries), archivedDates=len(seen)-len(entries), snapshotBytes=snapshot_bytes, universeTotal=catalog['total'], boundRunnerState=bound)
         private_json(stage/'restore-report.json', report)
         installed = []
         try:
