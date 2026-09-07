@@ -238,7 +238,7 @@ def run_collection(args):
         trading=saved_calendar['tradingDates']
     else:
         calendar=ak.tool_trade_date_hist_sina()
-        trading=[str(d) for d in calendar.trade_date if six_month_start(today)<=str(d)<today or (str(d)==today and now.hour>=17)]
+        trading=[str(d) for d in calendar.trade_date if six_month_start(today)<=str(d)<today or (str(d)==today and now.strftime('%H:%M')>='15:00')]
         write_json(calendar_file,{'calendarAsOf':today,'tradingDates':trading,'retentionMonths':6,'retentionStart':six_month_start(today)})
     explicit=getattr(args,'dates',None)
     dates=validate_dates(explicit.split(','),today,trading) if explicit else sorted(trading)[-(186 if getattr(args,'months',None)==6 else args.days):]

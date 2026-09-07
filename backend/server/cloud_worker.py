@@ -256,7 +256,8 @@ def history_resume_dates(previous, today=None):
                    if isinstance(d, str) and DATE_FILE.fullmatch(d + '.json') and start <= d <= today})
 
 
-def collector_command(python, out, history=True, resume_attempted=False, dates=None, review_id=None, review_as_of=None):
+def collector_command(python, out, history=True, resume_attempted=False, dates=None, review_id=None,
+                      review_as_of=None, retry_current_day=False):
     if not history:
         command = [python, str(ROOT / 'scripts/daily_collector.py'), '--out', str(out),
                 '--workers', '4', '--interval', '0.75', '--cutoff', '21:55', '--source-policy', 'sina']
@@ -264,6 +265,8 @@ def collector_command(python, out, history=True, resume_attempted=False, dates=N
             if not dates or not review_as_of or any(day >= review_as_of for day in dates):
                 raise ValueError('Review requires frozen prior dates')
             command += ['--review-id',review_id,'--review-as-of',review_as_of,'--dates',','.join(dates)]
+        elif retry_current_day:
+            command += ['--retry-current-day']
         return command
     cmd = [python, str(ROOT / 'scripts/collect.py'), '--full', '--out', str(out), '--resume', '--publish-every', '50', '--interval', '0.75', '--efficient-sina', '--source-policy', 'sina']
     cmd += ['--dates', ','.join(dates)] if history and dates else (['--months', '6'] if history else ['--days', '1'])
@@ -389,7 +392,10 @@ def run(args, publisher=None):
         signal.signal(sig, lambda *_: stop_requested.set())
     try:
         publisher.publish_status(status); atomic_json(state_path, status)
-        command = collector_command(sys.executable, out, history=history, resume_attempted=args.resume_attempted, dates=resumed_dates,review_id=review_id,review_as_of=getattr(args,'review_as_of',None))
+        command = collector_command(sys.executable, out, history=history,
+            resume_attempted=args.resume_attempted, dates=resumed_dates,
+            review_id=review_id, review_as_of=getattr(args,'review_as_of',None),
+            retry_current_day=getattr(args,'retry_current_day',False))
         process = subprocess.Popen(command, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
     except Exception as exc:
         status.update(status='paused', error=type(exc).__name__, updatedAt=now(), message='云端采集启动失败，已有数据仍可查询')

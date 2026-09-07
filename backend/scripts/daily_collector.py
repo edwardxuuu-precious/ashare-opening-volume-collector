@@ -18,7 +18,7 @@ if __package__ in (None, ''):
 
 from scripts import collect
 from scripts.daily_state import (accept_rows, bao_tasks, build_state, counters, load_calendar,
-                                journal_attempt, mark_attempt, merge_checkpoint, primary_tasks, read_json, replay_attempts, persist_state, resume_review_attempts)
+                                journal_attempt, mark_attempt, merge_checkpoint, primary_tasks, read_json, replay_attempts, persist_state, resume_current_day_attempts, resume_review_attempts)
 from scripts.reconciliation import (FallbackBudget, eastmoney_pair, reconcile_stock,
                                     reconcile_baostock, baostock_supported, sina_observations)
 from scripts.universe_cache import load_universe, validate_universe
@@ -340,6 +340,8 @@ def run(args):
         replay_attempts(out, state, review_cycle=review_cycle)
         if review_cycle:
             resume_review_attempts(state, review_cycle)
+        elif getattr(args, 'retry_current_day', False):
+            resume_current_day_attempts(state, started.date().isoformat())
         save()
         flush()
         status('preparing')
@@ -431,6 +433,8 @@ def main():
     parser.add_argument('--dates', help='Explicit comma-separated completed trading dates; saved history allowed in review mode')
     parser.add_argument('--review-id', help='Unique bounded review ID; reuse it to resume without repeat attempts')
     parser.add_argument('--review-as-of', help='Exclude this date and all later dates from a historical review')
+    parser.add_argument('--retry-current-day', action='store_true',
+                        help='Allow a later scheduled invocation to retry unfinished rows for today')
     args = parser.parse_args()
     if not 1 <= args.workers <= 4 or args.interval < .75 or args.publish_every < 1:
         parser.error('workers must be 1..4, interval >= .75, publish-every >= 1')

@@ -67,7 +67,7 @@ def load_calendar(out, now, fetcher):
     else:
         dates = saved.get('calendarDates', saved.get('tradingDates', []))
     start = six_month_start(today)
-    closed = [d for d in dates if start <= d < today or (d == today and now.strftime('%H:%M') >= '17:00')]
+    closed = [d for d in dates if start <= d < today or (d == today and now.strftime('%H:%M') >= '15:00')]
     result = dict(saved, tradingDates=closed, retentionMonths=6, retentionStart=start)
     if result != read_json(path):
         write_json(path, result)
@@ -201,6 +201,20 @@ def resume_review_attempts(state, cycle):
             for provider in ('primary', 'bao'):
                 if markers.get(provider) == cycle and markers.get(provider+'Done') != cycle:
                     markers.pop(provider)
+
+
+def resume_current_day_attempts(state, day):
+    """Let a later scheduled run retry only unfinished rows from the same trading day."""
+    for code in list(state.get('attempts', {})):
+        markers = state['attempts'][code].get(day)
+        if day not in state.get('pending', {}).get(code, []) or not markers:
+            continue
+        for provider in ('primary', 'primaryDone', 'bao', 'baoDone'):
+            markers.pop(provider, None)
+        if not markers:
+            state['attempts'][code].pop(day, None)
+        if not state['attempts'][code]:
+            state['attempts'].pop(code, None)
 
 
 def persist_state(out, state, compact=False):

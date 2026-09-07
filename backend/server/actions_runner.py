@@ -462,6 +462,7 @@ def execute_worker(args, client):
     started = time.monotonic()
     options = SimpleNamespace(root=args.root,bucket=args.bucket,region=args.region,
         max_hours=max(.01,(args.max_minutes-10)/60),publish_seconds=30,resume_attempted=True,
+        retry_current_day=True,
         review_id=getattr(args,'review_id',None),review_as_of=getattr(args,'review_as_of',None),
         review_dates=getattr(args,'review_dates',None))
     if args.mode == 'review':

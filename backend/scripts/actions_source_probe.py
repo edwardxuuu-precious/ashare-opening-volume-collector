@@ -26,14 +26,14 @@ ZONE = ZoneInfo('Asia/Shanghai')
 
 
 def select_date(calendar, moment):
-    """At 16:00 Shanghai time today becomes eligible; holidays use the latest prior date."""
+    """At the 15:00 Shanghai close today becomes eligible; holidays use the latest prior date."""
     moment = moment.astimezone(ZONE)
     today = moment.date().isoformat()
     values = calendar.trade_date if hasattr(calendar, 'trade_date') else calendar
     dates = {str(value)[:10] for value in values}
     for day in dates:
         datetime.strptime(day, '%Y-%m-%d')
-    eligible = [day for day in dates if day < today or (day == today and moment.hour >= 16)]
+    eligible = [day for day in dates if day < today or (day == today and moment.strftime('%H:%M') >= '15:00')]
     if not eligible:
         raise ValueError('No closed trading date')
     return max(eligible)
@@ -42,6 +42,14 @@ def select_date(calendar, moment):
 def classify(row):
     row = row or {}
     ratio = row.get('ratio')
+    first, daily_volume = row.get('first15Volume'), row.get('dailyVolume')
+    if (row.get('status') == 'ok' and row.get('calculationPolicy') == 'download_only'
+            and row.get('quality') == 'downloaded'
+            and all(type(value) in (int, float) and math.isfinite(value)
+                    for value in (first, daily_volume, ratio))
+            and daily_volume > 0 and 0 <= first <= daily_volume and 0 <= ratio <= 100
+            and abs(ratio - first / daily_volume * 100) <= 1e-5):
+        return 'success'
     if (row.get('status') == 'ok' and row.get('quality') == 'matched'
             and row.get('dayVolumeDifference') == 0 and isinstance(ratio, (int, float))
             and not isinstance(ratio, bool) and math.isfinite(ratio) and 0 <= ratio <= 100):
@@ -141,7 +149,8 @@ def run_probe(moment=None):
     report['backupAvailable'] = report['baostock']['success'] == 2
     report['verifiedShSzCount'] = sum(classify(primary.get(code)) == 'success' or
                                          classify(bao.get(code)) == 'success' for code in codes[:2])
-    report['passed'] = bool(report['selectedDate'] and report['backupAvailable'] and report['verifiedShSzCount'] == 2)
+    report['primaryReady'] = all(classify(primary.get(code)) == 'success' for code in codes)
+    report['passed'] = bool(report['selectedDate'] and report['primaryReady'])
     report['httpRequests'] = http.count.value
     report['elapsedSeconds'] = round(time.monotonic()-started, 3)
     return report
