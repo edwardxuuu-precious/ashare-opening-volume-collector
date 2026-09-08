@@ -94,8 +94,54 @@ def run(args, publisher):
     import akshare as ak
     calendar = load_calendar(out, began, ak.tool_trade_date_hist_sina)
     days = calendar.get('calendarDates', calendar.get('tradingDates', []))
+    today = began.date().isoformat()
+    old_state = read_json(out/'daily-state.json')
+    legacy_backlog = {}
+    for pending_dates in old_state.get('pending', {}).values():
+        for historical_day in pending_dates:
+            if historical_day < today:
+                legacy_backlog[historical_day] = legacy_backlog.get(historical_day, 0) + 1
+
+    # The legacy pending queue can omit an entire partial day. Rebuild the
+    # historical queue from the current published manifest, and inspect every
+    # nominal suspension because an empty response is not no-trade evidence.
+    manifest_complete = set()
+    for entry in read_json(out/'manifest.json').get('dates', []):
+        historical_day = entry.get('date')
+        if historical_day not in days or historical_day >= today:
+            continue
+        total = entry.get('total', 0)
+        universe_total = entry.get('universeTotal', total)
+        if type(total) is not int or total < 0 or type(universe_total) is not int or universe_total < total:
+            raise ValueError('Invalid historical manifest counts')
+        missing = entry.get('missing', 0)
+        unverified = entry.get('unverified', 0)
+        suspended = entry.get('suspended', 0)
+        if any(type(value) is not int or value < 0 for value in (missing, unverified, suspended)):
+            raise ValueError('Invalid historical manifest counts')
+        unproven = 0
+        if suspended:
+            expected_file = historical_day + '.json'
+            if entry.get('file') != expected_file or not (out/expected_file).is_file():
+                raise ValueError('Historical suspension file is unavailable')
+            payload = read_json(out/expected_file)
+            unproven = sum(row.get('status') == 'suspended' and not refresh.complete(row, historical_day)
+                           for row in payload.get('rows', []))
+        gap = missing + unverified + (universe_total - total) + unproven
+        summary = cache['targets'].setdefault(historical_day, {}).setdefault('summary', {})
+        if gap:
+            summary.update(pendingCount=gap, retryableCount=gap, dataComplete=False)
+        elif entry.get('valid', 0) + suspended == universe_total:
+            summary.update(pendingCount=0, retryableCount=0, unprocessedCount=0, dataComplete=True)
+            manifest_complete.add(historical_day)
+    for historical_day, gap in legacy_backlog.items():
+        if historical_day in days and historical_day not in manifest_complete:
+            summary = cache['targets'].setdefault(historical_day, {}).setdefault('summary', {})
+            known = max(gap, summary.get('pendingCount', 0))
+            summary.update(pendingCount=known, retryableCount=max(known, summary.get('retryableCount', 0)),
+                           dataComplete=False)
     day = refresh.select_target(phase, getattr(args, 'target_date', None), days, cache,
-                               read_json(out/'daily-state.json'), began)
+                               old_state, began)
     if not day:
         return no_work('今天休市或当前没有到期缺口，已有数据保持不变')
     catalog = read_json(out/'universe.json')
@@ -139,16 +185,10 @@ def run(args, publisher):
                 collect.write_json(checkpoint_path, merge_checkpoint(saved_record, code, {day:rows[code]},
                     began.date().isoformat(), preserve_history=True))
             dirty[code] = rows[code]
-    old_state = read_json(out/'daily-state.json')
-    backlog = {}
-    for pending in old_state.get('pending', {}).values():
-        for historical_day in pending:
-            if historical_day != day: backlog[historical_day] = backlog.get(historical_day, 0)+1
-    for historical_day, count in backlog.items():
-        cache['targets'].setdefault(historical_day, {}).setdefault('summary',
-            dict(pendingCount=count, retryableCount=count, unprocessedCount=0, dataComplete=False))
-    historical_pending = sum(count for d,count in backlog.items()
-        if not cache['targets'][d].get('summary', {}).get('dataComplete'))
+    historical_pending = sum(saved.get('summary', {}).get('pendingCount', 0)
+        for historical_day, saved in cache['targets'].items()
+        if historical_day < today and historical_day != day
+        and saved.get('summary', {}).get('dataComplete') is not True)
     status = dict(previous, id='refresh-'+day+'-'+began.strftime('%H%M%S'), phase=phase,
         targetDate=day, dates=[day], startedAt=began.isoformat(), status='running', state='running',
         historicalPendingCount=historical_pending, collectionSourcePolicy=['sina'], calculationPolicy='download_only',
