@@ -135,7 +135,10 @@ def fetch(task):
                     firstDataRequestAt=request_started)
     daily = pd.DataFrame()
     if snapshot_supplied and snapshot:
-        daily = pd.DataFrame([dict(date=day, volume=snapshot.get('dailyVolume'))])
+        snapshot_volume = snapshot.get('dailyVolume')
+        if not volume(snapshot_volume):
+            snapshot_volume = previous.get('dailyVolume')
+        daily = pd.DataFrame([dict(date=day, volume=snapshot_volume)])
     elif snapshot_supplied:
         errors.append('snapshot:missing')
     elif volume(previous.get('dailyVolume')) and previous['dailyVolume'] > 0:

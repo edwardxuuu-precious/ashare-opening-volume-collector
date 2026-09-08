@@ -1,15 +1,18 @@
 """One bounded post-close Sina market snapshot for the current trading day."""
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 import math
 import re
 from zoneinfo import ZoneInfo
+
+from .reconciliation import quote_metrics
 
 
 ZONE = ZoneInfo('Asia/Shanghai')
 PREFIXES = {'sz': 'SZ', 'sh': 'SH', 'bj': 'BJ'}
 REQUIRED = {'代码', '最新价', '昨收', '最高', '最低', '成交量', '时间戳'}
+DAILY_FALLBACK_LIMIT = 10
 
 
 def _number(value):
@@ -33,6 +36,28 @@ def _metrics(row):
 def _post_close_time(value):
     match = re.search(r'(\d{2}:\d{2}:\d{2})', str(value))
     return match.group(1) if match and match.group(1) >= '15:00:00' else None
+
+
+def _daily_quote_fallback(ak, code, day):
+    """Fill rare symbols omitted by the bulk snapshot without changing volume."""
+    prefix = 'sh' if code.startswith(('60', '68')) else 'sz' if code.startswith(('00', '30')) else 'bj'
+    symbol = prefix + code
+    start = (datetime.fromisoformat(day).date() - timedelta(days=10)).strftime('%Y%m%d')
+    if prefix in ('sh', 'sz'):
+        frame = ak.stock_zh_a_hist_tx(symbol=symbol, start_date=start,
+                                      end_date=day.replace('-', ''), adjust='')
+        adapter = 'tencent_daily_quote_fallback'
+        provider = 'tencent'
+    else:
+        frame = ak.stock_zh_a_daily(symbol=symbol, start_date=start,
+                                    end_date=day.replace('-', ''), adjust='')
+        adapter = 'sina_daily_quote_fallback'
+        provider = 'sina'
+    pct_change, amplitude = quote_metrics(frame, day)
+    if pct_change is None or amplitude is None:
+        return None
+    return dict(code=code, date=day, market=PREFIXES[prefix], pctChange=pct_change,
+                amplitude=amplitude, sourceProvider=provider, dailyAdapter=adapter)
 
 
 def load_snapshot(ak, universe, day, *, moment=None):
@@ -71,6 +96,14 @@ def load_snapshot(ak, universe, day, *, moment=None):
                      if _post_close_time(rows[code]['quoteTime'])}
     if not expected_markets <= fresh_markets:
         raise ValueError('Sina spot snapshot is stale for one or more target markets')
+    for code in sorted(expected - set(rows))[:DAILY_FALLBACK_LIMIT]:
+        try:
+            fallback = _daily_quote_fallback(ak, code, day)
+        except Exception:
+            fallback = None
+        if fallback:
+            rows[code] = fallback
+    available = expected & set(rows)
     return dict(date=day, rows={code:rows[code] for code in sorted(available)},
                 availableCount=len(available), missingCodes=sorted(expected-set(rows)),
                 extraCodes=sorted(set(rows)-expected), coverage=coverage,
