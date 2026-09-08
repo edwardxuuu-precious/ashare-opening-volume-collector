@@ -24,7 +24,9 @@ def volume(value):
 def complete(row):
     if row.get('status') == 'suspended':
         evidence = row.get('noTradeEvidence', {})
-        return evidence.get('kind') == 'explicit_zero_daily_volume' and evidence.get('volume') == 0
+        from .no_trade_evidence import valid_notice
+        return ((evidence.get('kind') == 'explicit_zero_daily_volume' and evidence.get('volume') == 0)
+                or valid_notice(evidence, row.get('code')))
     return row.get('status') == 'ok' and volumes_present(row) and type(row.get('ratio')) in (int, float) and abs(
         row['ratio'] - row['first15Volume'] / row['dailyVolume'] * 100) <= 1e-5
 
@@ -93,6 +95,13 @@ def fetch(task):
     from .sina_daily import daily_unadjusted
     item, day, opening, previous, phase = task
     code = item['code']; symbol = collect.market(code).lower() + code
+    from .no_trade_evidence import evidence
+    notice = evidence(code, day)
+    if phase != 'opening' and notice:
+        row = collect.pending_record(item, [day])['days'][day]
+        row.update(status='suspended', calculationPolicy='download_only', ratio=None,
+                   reason='公司公告确认目标日停牌，无交易', noTradeEvidence=notice)
+        return dict(code=code,row=row,opening=None,errors=[],speedDegraded=False,firstDataRequestAt=None)
     errors = []; degraded = False; request_started = None
     first = opening if volume(opening) else previous.get('first15Volume')
     minute = pd.DataFrame()
