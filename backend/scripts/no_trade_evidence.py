@@ -16,6 +16,8 @@ NOTICES = {
         'https://file.finance.sina.com.cn/211.154.219.97:9494/MRGG/CNSESH_STOCK/2026/2026-9/2026-09-08/12588319.PDF'),
     ('600929', '2026-09-07'): ('2026-034', '2026-09-05',
         'https://static.cninfo.com.cn/finalpage/2026-09-05/1225548997.PDF'),
+    ('688432', '2026-09-07'): ('2026-038', '2026-09-05',
+        'https://file.finance.sina.com.cn/211.154.219.97:9494/MRGG/CNSESH_STOCK/2026/2026-9/2026-09-05/12585235.PDF'),
 }
 
 
