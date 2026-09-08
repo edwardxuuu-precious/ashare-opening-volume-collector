@@ -244,8 +244,7 @@ def run(args, publisher):
     try:
         needs_snapshot = any(
             not refresh.complete(rows.get(code, {}), day) or
-            (rows.get(code, {}).get('status') != 'suspended' and
-             not refresh.quotes_present(rows.get(code, {})))
+            not refresh.quotes_present(rows.get(code, {}))
             for code in names)
         if phase != 'opening' and day == today and needs_snapshot:
             close_snapshot = sina_spot.load_snapshot(ak, items, day, moment=began)
@@ -265,7 +264,8 @@ def run(args, publisher):
                 if phase != 'opening':
                     row = result['row']
                     # Preserve independently captured quote fields and exact history.
-                    row = dict(rows.get(code, {}), **{key:value for key,value in row.items() if value is not None or key in ('ratio','reason')})
+                    row = dict(rows.get(code, {}), **{key:value for key,value in row.items()
+                               if value is not None or key in ('ratio','reason','pctChange','amplitude')})
                     record_path = out/'checkpoint'/(code+'.json')
                     saved_record = read_json(record_path)
                     saved_day = saved_record.get('days', {}).get(day, {})

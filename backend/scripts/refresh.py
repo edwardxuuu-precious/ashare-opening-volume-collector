@@ -35,6 +35,9 @@ def complete(row, day=None):
 
 def quotes_present(row):
     """A quote snapshot was applied, including an explicitly unavailable value."""
+    if row.get('status') == 'suspended':
+        return ('pctChange' in row and 'amplitude' in row and
+                row.get('pctChange') is None and row.get('amplitude') is None)
     return all(key in row and (row[key] is None or
                (type(row[key]) in (int, float) and math.isfinite(row[key])))
                for key in ('pctChange', 'amplitude'))

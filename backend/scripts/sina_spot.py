@@ -25,6 +25,9 @@ def _metrics(row):
     previous = _number(row.get('昨收'))
     high = _number(row.get('最高'))
     low = _number(row.get('最低'))
+    volume = _number(row.get('成交量'))
+    if volume == 0:
+        return None, None
     if None in (close, previous, high, low) or previous <= 0:
         return None, None
     return round((close-previous)/previous*100, 4), round((high-low)/previous*100, 4)
