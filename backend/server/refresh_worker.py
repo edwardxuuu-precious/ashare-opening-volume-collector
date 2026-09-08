@@ -42,7 +42,7 @@ def validate_cache(value):
 
 def metrics(items, rows, target, phase):
     codes = {item['code'] for item in items}
-    ok = {code for code in codes if refresh.complete(rows.get(code, {}))}
+    ok = {code for code in codes if refresh.complete(rows.get(code, {}), target.get('date'))}
     observed = {code for code in codes if code in ok or target.get('attempts', {}).get(code, {}).get('committed')
                 or (code in rows and rows[code].get('reason') != '尚未采集')}
     # Valid downloaded rows from the old collector count as observed, not just new attempts.
@@ -104,6 +104,7 @@ def run(args, publisher):
     validate_universe(catalog)
     items = catalog['rows']; names = {item['code']:item for item in items}
     target = cache['targets'].setdefault(day, {})
+    target['date'] = day
     saved_payload = read_json(out/(day+'.json'))
     saved_rows = saved_payload.get('rows', [])
     if target.get('universe'):
@@ -119,12 +120,12 @@ def run(args, publisher):
     for item in items:
         code = item['code']
         row = read_json(out/'checkpoint'/(code+'.json')).get('days', {}).get(day)
-        if row and (not refresh.complete(rows.get(code, {})) or refresh.complete(row)):
+        if row and (not refresh.complete(rows.get(code, {}), day) or refresh.complete(row, day)):
             rows[code] = row
         if refresh.volume(rows.get(code, {}).get('first15Volume')):
             openings.setdefault(code, rows[code]['first15Volume'])
         if phase != 'opening' and code in rows:
-            if rows[code].get('status') == 'suspended' and not refresh.complete(rows[code]):
+            if rows[code].get('status') == 'suspended' and not refresh.complete(rows[code], day):
                 rows[code] = dict(rows[code], status='missing', ratio=None, reason='旧空响应缺少无交易依据，重新补采')
             dirty[code] = rows[code]
     old_state = read_json(out/'daily-state.json')
@@ -196,7 +197,7 @@ def run(args, publisher):
                 if result.get('firstDataRequestAt'):
                     key = phase+'FirstDataRequestAt'
                     target[key] = min(target.get(key, result['firstDataRequestAt']), result['firstDataRequestAt'])
-                success = refresh.volume(result.get('opening')) if phase == 'opening' else refresh.complete(result['row'])
+                success = refresh.volume(result.get('opening')) if phase == 'opening' else refresh.complete(result['row'], day)
                 if refresh.volume(result.get('opening')): openings[code] = result['opening']
                 if phase != 'opening':
                     row = result['row']
@@ -205,7 +206,7 @@ def run(args, publisher):
                     record_path = out/'checkpoint'/(code+'.json')
                     saved_record = read_json(record_path)
                     saved_day = saved_record.get('days', {}).get(day, {})
-                    if saved_day.get('status') == 'suspended' and not refresh.complete(saved_day):
+                    if saved_day.get('status') == 'suspended' and not refresh.complete(saved_day, day):
                         saved_record = dict(saved_record, days=dict(saved_record['days'], **{day:rows[code]}))
                     record = merge_checkpoint(saved_record, code, {day:row}, began.date().isoformat(), preserve_history=True)
                     collect.write_json(record_path, record)
@@ -215,9 +216,9 @@ def run(args, publisher):
                 status['speedDegraded'] |= result['speedDegraded']
                 changed_count += 1
                 if changed_count % 50 == 0: sync()
-            unresolved = [code for code in names if (code not in openings if phase=='opening' else not refresh.complete(rows.get(code, {})))]
+            unresolved = [code for code in names if (code not in openings if phase=='opening' else not refresh.complete(rows.get(code, {}), day))]
             if not unresolved and not active: break
-            pending = [code for code in unresolved if code not in active and refresh.retry_due(attempts.get(code, {}), now())]
+            pending = [code for code in unresolved if code not in active and refresh.ready(code, day, phase, attempts.get(code, {}), now())]
             pending.sort(key=lambda code: (bool(attempts.get(code, {}).get('committed')), code))
             for code in pending[:max(0, 4-len(active))]:
                 if stopped or time.monotonic() >= deadline: break

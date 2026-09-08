@@ -21,9 +21,11 @@ def volume(value):
     return type(value) in (int, float) and math.isfinite(value) and value >= 0 and value == int(value)
 
 
-def complete(row):
+def complete(row, day=None):
     if row.get('status') == 'suspended':
         evidence = row.get('noTradeEvidence', {})
+        if not isinstance(evidence, dict) or (day and evidence.get('date') != day):
+            return False
         from .no_trade_evidence import valid_notice
         return ((evidence.get('kind') == 'explicit_zero_daily_volume' and evidence.get('volume') == 0)
                 or valid_notice(evidence, row.get('code')))
@@ -36,6 +38,11 @@ def retry_due(attempt, now):
     if not attempt.get('committed'):
         return True
     return not attempt.get('nextRetryAt') or datetime.fromisoformat(attempt['nextRetryAt']) <= now
+
+
+def ready(code, day, phase, attempt, now):
+    from .no_trade_evidence import evidence
+    return (phase != 'opening' and evidence(code, day) is not None) or retry_due(attempt, now)
 
 
 def commit_attempt(previous, now, success):
