@@ -100,7 +100,9 @@ def fetch(task):
     """Keep each successful half even if the other request fails; reuse exact-day cache."""
     import pandas as pd
     from .sina_daily import daily_unadjusted
-    item, day, opening, previous, phase = task
+    item, day, opening, previous, phase = task[:5]
+    snapshot_supplied = len(task) == 6
+    snapshot = task[5] if snapshot_supplied else None
     code = item['code']; symbol = collect.market(code).lower() + code
     from .no_trade_evidence import evidence
     notice = evidence(code, day)
@@ -125,7 +127,11 @@ def fetch(task):
         return dict(code=code, opening=row.get('first15Volume'), errors=errors, speedDegraded=False,
                     firstDataRequestAt=request_started)
     daily = pd.DataFrame()
-    if volume(previous.get('dailyVolume')) and previous['dailyVolume'] > 0:
+    if snapshot_supplied and snapshot:
+        daily = pd.DataFrame([dict(date=day, volume=snapshot.get('dailyVolume'))])
+    elif snapshot_supplied:
+        errors.append('snapshot:missing')
+    elif volume(previous.get('dailyVolume')) and previous['dailyVolume'] > 0:
         daily = pd.DataFrame([dict(date=day, volume=previous['dailyVolume'])])
     else:
         try:
@@ -135,6 +141,10 @@ def fetch(task):
         except Exception as exc:
             errors.append('daily:'+type(exc).__name__)
     row = evaluate_downloaded(code, item['name'], day, minute, daily, collect.market)
+    if snapshot:
+        for key in ('pctChange', 'amplitude', 'dailyAdapter', 'quoteTime'):
+            if key in snapshot:
+                row[key] = snapshot[key]
     if row.get('dailyVolume') == 0:
         row.update(status='suspended', ratio=None, noTradeEvidence=dict(kind='explicit_zero_daily_volume',
             provider='sina', date=day, symbol=symbol, volume=0))

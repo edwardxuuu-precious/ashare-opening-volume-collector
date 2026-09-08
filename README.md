@@ -1,8 +1,10 @@
 # A-share opening volume collector
 
 Minimal collection runtime for an opening-volume dashboard. New collection uses
-only Sina through AKShare, keeps historical results with their original source, and
-calculates opening volume divided by daily volume without reconciliation. Only the recent six months are restored for active collection;
+only Sina through AKShare. The current trading day uses one bounded whole-market
+snapshot after 15:30; historical gaps use Sina daily bars. Results keep their
+original source and calculate opening volume divided by daily volume without
+reconciliation. Only the recent six months are restored for active collection;
 older saved dates remain queryable without repeated downloads.
 
 The source probe runs without AWS permissions and prints aggregate diagnostics.

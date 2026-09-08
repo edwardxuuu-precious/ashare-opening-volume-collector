@@ -6,7 +6,9 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 POLICY = 'download_only'
-METHOD = '新采集固定使用AKShare新浪不复权15分钟线和日线。开盘占比=09:45首根15分钟成交量÷同日日线成交量×100%，单位为股。不比对全天分钟合计和日线，不进行备用源核对。历史记录保留原始来源。'
+METHOD = ('新采集固定使用AKShare新浪。开盘占比=09:45首根15分钟成交量÷同日全天成交量×100%，单位为股；'
+          '当天全天量、涨跌幅和振幅在15:30后取一次新浪全市场快照，历史补数仍取新浪不复权日线。'
+          '不比对全天分钟合计，不进行备用源核对。历史记录保留原始来源。')
 
 
 def volumes_present(row):

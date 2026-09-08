@@ -8,7 +8,7 @@ from zoneinfo import ZoneInfo
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from scripts import collect, refresh
+from scripts import collect, refresh, sina_spot
 from scripts.daily_collector import SharedHTTPBudget, deadline_for, publish_changes
 from scripts.daily_state import load_calendar, read_json, merge_checkpoint
 from scripts.universe_cache import load_universe, validate_universe
@@ -198,6 +198,7 @@ def run(args, publisher):
     for key in ('error','exitCode','exitReason','fullyPublishedAt','firstPassCompletedAt'):
         status.pop(key, None)
     active = {}; pool = None; changed_count = 0; published = False; last_sync = 0
+    close_snapshot = None
 
     def persist():
         threshold = (began.date()-timedelta(days=7)).isoformat()
@@ -240,6 +241,11 @@ def run(args, publisher):
         last_sync = time.monotonic()
 
     try:
+        if phase != 'opening' and day == today:
+            close_snapshot = sina_spot.load_snapshot(ak, items, day, moment=began)
+            status.update(closeSnapshotAvailableCount=close_snapshot['availableCount'],
+                          closeSnapshotMissingCount=len(close_snapshot['missingCodes']),
+                          closeSnapshotSource=close_snapshot['source'])
         sync()
         while not stopped and time.monotonic() < deadline:
             for code, future in list(active.items()):
@@ -276,7 +282,10 @@ def run(args, publisher):
                 attempts[code] = dict(attempts.get(code, {}), committed=False, dispatchedAt=now().isoformat())
                 persist()
                 if pool is None: pool = ctx.Pool(4, initializer=refresh.init_worker, initargs=(budget,))
-                active[code] = pool.apply_async(refresh.fetch, ((names[code], day, openings.get(code), rows.get(code, {}), phase),))
+                task = (names[code], day, openings.get(code), rows.get(code, {}), phase)
+                if close_snapshot is not None:
+                    task += (close_snapshot['rows'].get(code),)
+                active[code] = pool.apply_async(refresh.fetch, (task,))
             # Commit the last <50 first-pass rows before waiting on retry timers.
             if not active and not pending:
                 if dirty or time.monotonic()-last_sync >= 60: sync()
@@ -290,7 +299,8 @@ def run(args, publisher):
             message=('开盘量预采完成；15:30 开始下载全天量' if phase=='opening' else '目标交易日数据已补齐') if complete else '保存断点，等待下一轮到期补采')
         return 0
     except Exception as exc:
-        status.update(status='paused', state='paused', exitCode=1, exitReason='failed', error=type(exc).__name__)
+        status.update(status='paused', state='paused', exitCode=1, exitReason='failed',
+                      error=type(exc).__name__, errorDetail=str(exc))
         raise
     finally:
         if pool is not None:
