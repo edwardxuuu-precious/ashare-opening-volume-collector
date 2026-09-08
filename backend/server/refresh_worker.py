@@ -198,6 +198,7 @@ def run(args, publisher):
     for key in ('error','exitCode','exitReason','fullyPublishedAt','firstPassCompletedAt'):
         status.pop(key, None)
     active = {}; pool = None; changed_count = 0; published = False; last_sync = 0
+    quote_attempted = set()
     close_snapshot = None
 
     def persist():
@@ -241,7 +242,11 @@ def run(args, publisher):
         last_sync = time.monotonic()
 
     try:
-        needs_snapshot = any(not refresh.complete(rows.get(code, {}), day) for code in names)
+        needs_snapshot = any(
+            not refresh.complete(rows.get(code, {}), day) or
+            (rows.get(code, {}).get('status') != 'suspended' and
+             not refresh.quotes_present(rows.get(code, {})))
+            for code in names)
         if phase != 'opening' and day == today and needs_snapshot:
             close_snapshot = sina_spot.load_snapshot(ak, items, day, moment=began)
             status.update(closeSnapshotAvailableCount=close_snapshot['availableCount'],
@@ -274,9 +279,24 @@ def run(args, publisher):
                 status['speedDegraded'] |= result['speedDegraded']
                 changed_count += 1
                 if changed_count % 50 == 0: sync()
-            unresolved = [code for code in names if (code not in openings if phase=='opening' else not refresh.complete(rows.get(code, {}), day))]
+            def quote_repairable(code):
+                row = rows.get(code, {})
+                return (phase != 'opening' and day == today and
+                        not refresh.quotes_present(row) and
+                        (row.get('status') == 'suspended' or
+                         close_snapshot is not None and code in close_snapshot['rows']))
+
+            unresolved = [code for code in names if (
+                code not in openings if phase == 'opening' else
+                not refresh.complete(rows.get(code, {}), day) or
+                quote_repairable(code)
+            )]
             if not unresolved and not active: break
-            pending = [code for code in unresolved if code not in active and refresh.ready(code, day, phase, attempts.get(code, {}), now())]
+            pending = [code for code in unresolved if code not in active and (
+                quote_repairable(code) and code not in quote_attempted or
+                not refresh.complete(rows.get(code, {}), day) and
+                refresh.ready(code, day, phase, attempts.get(code, {}), now())
+            )]
             pending.sort(key=lambda code: (bool(attempts.get(code, {}).get('committed')), code))
             for code in pending[:max(0, 4-len(active))]:
                 if stopped or time.monotonic() >= deadline: break
@@ -286,6 +306,8 @@ def run(args, publisher):
                 task = (names[code], day, openings.get(code), rows.get(code, {}), phase)
                 if close_snapshot is not None:
                     task += (close_snapshot['rows'].get(code),)
+                if quote_repairable(code):
+                    quote_attempted.add(code)
                 active[code] = pool.apply_async(refresh.fetch, (task,))
             # Commit the last <50 first-pass rows before waiting on retry timers.
             if not active and not pending:

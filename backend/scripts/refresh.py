@@ -33,6 +33,13 @@ def complete(row, day=None):
         row['ratio'] - row['first15Volume'] / row['dailyVolume'] * 100) <= 1e-5
 
 
+def quotes_present(row):
+    """A quote snapshot was applied, including an explicitly unavailable value."""
+    return all(key in row and (row[key] is None or
+               (type(row[key]) in (int, float) and math.isfinite(row[key])))
+               for key in ('pctChange', 'amplitude'))
+
+
 def retry_due(attempt, now):
     # A dispatch without a committed result is immediately reclaimable, even tomorrow.
     if not attempt.get('committed'):
