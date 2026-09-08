@@ -6,9 +6,6 @@ import math
 import re
 from zoneinfo import ZoneInfo
 
-from .reconciliation import quote_metrics
-
-
 ZONE = ZoneInfo('Asia/Shanghai')
 PREFIXES = {'sz': 'SZ', 'sh': 'SH', 'bj': 'BJ'}
 REQUIRED = {'代码', '最新价', '昨收', '最高', '最低', '成交量', '时间戳'}
@@ -38,6 +35,29 @@ def _post_close_time(value):
     return match.group(1) if match and match.group(1) >= '15:00:00' else None
 
 
+def _daily_metrics(frame, day):
+    date_col = 'date' if 'date' in frame else ('日期' if '日期' in frame else None)
+    close_col = 'close' if 'close' in frame else '收盘'
+    high_col = 'high' if 'high' in frame else '最高'
+    low_col = 'low' if 'low' in frame else '最低'
+    if date_col is None or not {close_col, high_col, low_col} <= set(frame.columns):
+        return None, None
+    values = frame[[date_col, close_col, high_col, low_col]].copy()
+    values[date_col] = values[date_col].astype(str).str[:10]
+    values = values.drop_duplicates(subset=date_col, keep='last').sort_values(date_col).reset_index(drop=True)
+    hit = values.index[values[date_col] == day]
+    if len(hit) != 1 or int(hit[0]) == 0:
+        return None, None
+    index = int(hit[0])
+    previous = _number(values.iloc[index - 1][close_col])
+    close = _number(values.iloc[index][close_col])
+    high = _number(values.iloc[index][high_col])
+    low = _number(values.iloc[index][low_col])
+    if None in (previous, close, high, low) or previous <= 0:
+        return None, None
+    return round((close - previous) / previous * 100, 4), round((high - low) / previous * 100, 4)
+
+
 def _daily_quote_fallback(ak, code, day):
     """Fill rare symbols omitted by the bulk snapshot without changing volume."""
     prefix = 'sh' if code.startswith(('60', '68')) else 'sz' if code.startswith(('00', '30')) else 'bj'
@@ -53,7 +73,7 @@ def _daily_quote_fallback(ak, code, day):
                                     end_date=day.replace('-', ''), adjust='')
         adapter = 'sina_daily_quote_fallback'
         provider = 'sina'
-    pct_change, amplitude = quote_metrics(frame, day)
+    pct_change, amplitude = _daily_metrics(frame, day)
     if pct_change is None or amplitude is None:
         return None
     return dict(code=code, date=day, market=PREFIXES[prefix], pctChange=pct_change,
