@@ -679,7 +679,9 @@ def main():
 
 def successful_exit(result):
     return (result.get('status') in ('validated','completed','no_work') or
-            bool(result.get('expectedPause') and result.get('checkpointSaved')))
+            bool(result.get('expectedPause') and result.get('checkpointSaved')) or
+            bool(result.get('status') == 'paused' and result.get('workerExitCode') == 0
+                 and result.get('checkpointSaved')))
 
 
 if __name__=='__main__':
