@@ -133,6 +133,8 @@ def run(args, publisher):
             # but before the large archive upload. Rebuild only this exact day
             # from its already published valid rows, without another source call.
             if refresh.complete(rows[code], day) and not refresh.complete(row or {}, day):
+                if not saved_record:
+                    saved_record = dict(code=code, days={})
                 saved_record = dict(saved_record, days=dict(saved_record.get('days', {}), **{day:rows[code]}))
                 collect.write_json(checkpoint_path, merge_checkpoint(saved_record, code, {day:rows[code]},
                     began.date().isoformat(), preserve_history=True))
