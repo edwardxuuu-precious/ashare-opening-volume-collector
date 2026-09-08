@@ -101,6 +101,10 @@ class Publisher:
     def publish_status(self, status):
         visible = dict(status, **self.latest_published, state=status['status'], id=status.get('id', 'full-market'),
                        latestDate=max(status.get('dates') or [status.get('latestDate', '')]))
+        # Full exchange calendars belong in the private checkpoint. Repeating them in a
+        # 20-second browser status response turns a sub-2 KB progress record into >100 KB.
+        visible.pop('calendarDates', None)
+        visible.pop('calendarValidThrough', None)
         if 'pendingStockDates' in status:
             visible['pendingCount'] = status['pendingStockDates']
         self.put_json('data/collection-status.json', visible)
@@ -191,7 +195,9 @@ class Publisher:
                 staged.insert(0, self._stage(folder, 'data/stocks.json', dict(asOf=catalog['asOf'],
                     historicalMembership=False, total=len(rows), rows=rows)))
                 del catalog, rows
-            manifest = accumulated_manifest(dict(source, dates=sorted(previous.values(), key=lambda d: d['date'], reverse=True),
+            public_source = dict(source)
+            public_source.pop('calendarDates', None)
+            manifest = accumulated_manifest(dict(public_source, dates=sorted(previous.values(), key=lambda d: d['date'], reverse=True),
                             automationStatus='cloud_collector', collectorStatusPath='/data/collection-status.json'))
             if semantic_digest(manifest) == semantic_digest(self.manifest):
                 manifest['generatedAt'] = self.manifest.get('generatedAt', manifest.get('generatedAt'))
