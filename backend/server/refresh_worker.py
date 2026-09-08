@@ -119,7 +119,9 @@ def run(args, publisher):
     dirty = {}
     for item in items:
         code = item['code']
-        row = read_json(out/'checkpoint'/(code+'.json')).get('days', {}).get(day)
+        checkpoint_path = out/'checkpoint'/(code+'.json')
+        saved_record = read_json(checkpoint_path)
+        row = saved_record.get('days', {}).get(day)
         if row and (not refresh.complete(rows.get(code, {}), day) or refresh.complete(row, day)):
             rows[code] = row
         if refresh.volume(rows.get(code, {}).get('first15Volume')):
@@ -127,6 +129,13 @@ def run(args, publisher):
         if phase != 'opening' and code in rows:
             if rows[code].get('status') == 'suspended' and not refresh.complete(rows[code], day):
                 rows[code] = dict(rows[code], status='missing', ratio=None, reason='旧空响应缺少无交易依据，重新补采')
+            # A hosted runner may die after the target snapshot/cache is durable
+            # but before the large archive upload. Rebuild only this exact day
+            # from its already published valid rows, without another source call.
+            if refresh.complete(rows[code], day) and not refresh.complete(row or {}, day):
+                saved_record = dict(saved_record, days=dict(saved_record.get('days', {}), **{day:rows[code]}))
+                collect.write_json(checkpoint_path, merge_checkpoint(saved_record, code, {day:rows[code]},
+                    began.date().isoformat(), preserve_history=True))
             dirty[code] = rows[code]
     old_state = read_json(out/'daily-state.json')
     backlog = {}
