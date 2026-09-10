@@ -50,6 +50,8 @@ class RequestWindowClosed(TimeoutError):
 
 class SharedHTTPBudget:
     """A permit is shared across *all* spawned processes, including hidden AKShare calls."""
+    TRANSIENT_GET_ATTEMPTS = 3
+
     def __init__(self, lock, last, count, byte_count, interval, deadline):
         self.lock, self.last, self.count = lock, last, count
         self.byte_count, self.interval, self.deadline = byte_count, interval, deadline
@@ -68,13 +70,22 @@ class SharedHTTPBudget:
         import requests
         original = requests.sessions.Session.request
         def bounded(session, method, url, **kwargs):
-            self.reserve()
-            kwargs['timeout'] = max(.1, min(20, self.deadline-time.monotonic()))
-            response = original(session, method, url, **kwargs)
-            response.raise_for_status()
-            with self.lock:
-                self.byte_count.value += len(response.content)
-            return response
+            attempts = self.TRANSIENT_GET_ATTEMPTS if method.upper() == 'GET' else 1
+            transient = (requests.exceptions.Timeout, requests.exceptions.ConnectionError)
+            last_error = None
+            for _ in range(attempts):
+                self.reserve()
+                kwargs['timeout'] = max(.1, min(20, self.deadline-time.monotonic()))
+                try:
+                    response = original(session, method, url, **kwargs)
+                    response.raise_for_status()
+                except transient as exc:
+                    last_error = exc
+                    continue
+                with self.lock:
+                    self.byte_count.value += len(response.content)
+                return response
+            raise last_error
         requests.sessions.Session.request = bounded
 
 
