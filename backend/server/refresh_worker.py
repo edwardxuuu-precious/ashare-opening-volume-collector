@@ -14,6 +14,7 @@ from scripts.daily_state import load_calendar, read_json, merge_checkpoint
 from scripts.universe_cache import load_universe, validate_universe
 
 ZONE = ZoneInfo('Asia/Shanghai')
+SOURCE_HTTP_FAILURE_LIMIT = 20
 
 
 def now():
@@ -198,6 +199,7 @@ def run(args, publisher):
     for key in ('error','exitCode','exitReason','fullyPublishedAt','firstPassCompletedAt'):
         status.pop(key, None)
     active = {}; pool = None; changed_count = 0; published = False; last_sync = 0
+    source_http_failure_streak = 0; source_throttled = False
     quote_attempted = set()
     close_snapshot = None
 
@@ -260,6 +262,16 @@ def run(args, publisher):
                     key = phase+'FirstDataRequestAt'
                     target[key] = min(target.get(key, result['firstDataRequestAt']), result['firstDataRequestAt'])
                 success = refresh.volume(result.get('opening')) if phase == 'opening' else refresh.complete(result['row'], day)
+                if not success and any(error.endswith(':HTTPError') for error in result.get('errors', [])):
+                    source_http_failure_streak += 1
+                    status['sourceHTTPFailureStreak'] = source_http_failure_streak
+                    if source_http_failure_streak >= SOURCE_HTTP_FAILURE_LIMIT:
+                        source_throttled = True
+                        stopped = True
+                        status['sourceThrottled'] = True
+                elif result.get('firstDataRequestAt'):
+                    source_http_failure_streak = 0
+                    status['sourceHTTPFailureStreak'] = 0
                 if refresh.volume(result.get('opening')): openings[code] = result['opening']
                 if phase != 'opening':
                     row = result['row']
@@ -318,8 +330,10 @@ def run(args, publisher):
         finished = metrics(items, rows, target, phase)
         complete = finished['openingComplete'] if phase=='opening' else finished['dataComplete']
         status.update(status='completed' if complete else 'paused', state='completed' if complete else 'paused',
-            exitCode=0, exitReason='completed' if complete else ('interrupted' if stopped else 'cutoff'),
-            message=('开盘量预采完成；15:30 开始下载全天量' if phase=='opening' else '目标交易日数据已补齐') if complete else '保存断点，等待下一轮到期补采')
+            exitCode=0, exitReason='completed' if complete else (
+                'source_throttled' if source_throttled else 'interrupted' if stopped else 'cutoff'),
+            message=('开盘量预采完成；15:30 开始下载全天量' if phase=='opening' else '目标交易日数据已补齐') if complete else (
+                '上游连续拒绝请求，已保存断点并等待新 runner 接力' if source_throttled else '保存断点，等待下一轮到期补采'))
         return 0
     except Exception as exc:
         status.update(status='paused', state='paused', exitCode=1, exitReason='failed',
