@@ -245,10 +245,9 @@ def run(args, publisher):
         last_sync = time.monotonic()
 
     try:
-        needs_snapshot = any(
-            not refresh.volume(rows.get(code, {}).get('dailyVolume')) or
-            not refresh.quotes_present(rows.get(code, {}))
-            for code in names)
+        daily_missing = sum(not refresh.volume(rows.get(code, {}).get('dailyVolume')) for code in names)
+        needs_snapshot = (daily_missing / max(1, len(names)) > .01 or
+                          any(not refresh.quotes_present(rows.get(code, {})) for code in names))
         if phase != 'opening' and day == today and needs_snapshot:
             close_snapshot = sina_spot.load_snapshot(ak, items, day, moment=began)
             status.update(closeSnapshotAvailableCount=close_snapshot['availableCount'],
