@@ -243,7 +243,7 @@ def run(args, publisher):
 
     try:
         needs_snapshot = any(
-            not refresh.complete(rows.get(code, {}), day) or
+            not refresh.volume(rows.get(code, {}).get('dailyVolume')) or
             not refresh.quotes_present(rows.get(code, {}))
             for code in names)
         if phase != 'opening' and day == today and needs_snapshot:
