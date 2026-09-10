@@ -194,7 +194,8 @@ def run(args, publisher):
         targetDate=day, dates=[day], startedAt=began.isoformat(), status='running', state='running',
         historicalPendingCount=historical_pending, collectionSourcePolicy=['sina'], calculationPolicy='download_only',
         calendarDates=days, calendarValidThrough=max(days), speedDegraded=False, attemptedThisRun=0,
-        publicationCommitted=False, message='上午预采开盘量，未发布未收盘指标' if phase=='opening' else '正在补齐目标交易日数据')
+        publicationCommitted=False, sourceThrottled=False, sourceHTTPFailureStreak=0,
+        message='上午预采开盘量，未发布未收盘指标' if phase=='opening' else '正在补齐目标交易日数据')
     # Do not inherit a previous run's terminal/error flags.
     for key in ('error','exitCode','exitReason','fullyPublishedAt','firstPassCompletedAt'):
         status.pop(key, None)
