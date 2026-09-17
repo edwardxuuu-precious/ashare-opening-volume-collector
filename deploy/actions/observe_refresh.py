@@ -107,6 +107,57 @@ def audit(status, payload, manifest, checked_at=None):
     )
 
 
+def missing_payload_report(status, day, checked_at=None):
+    """Return an aggregate failure report when the status points at no payload.
+
+    A missing private object is an expected consistency failure during an
+    interrupted publication, not an observer failure.  Keeping it structured
+    makes the GitHub check actionable without revealing the status body.
+    """
+    checked_at = (checked_at or datetime.now(ZONE)).astimezone(ZONE)
+    target = target_state(status, day)
+    expected = latest_closed_day(status, checked_at)
+    errors = ['payload_missing']
+    if target.get('dataComplete') is not True:
+        errors.append('status_incomplete')
+    else:
+        errors.append('false_completion')
+    if expected is None:
+        errors.append('calendar_unavailable')
+    elif day != expected:
+        errors.append('target_not_latest_closed_day')
+    outcome = target.get('outcome')
+    if outcome in ('incomplete_checkpointed', 'failed'):
+        errors.append('worker_outcome_' + outcome)
+    return dict(
+        date=day,
+        expectedClosedDate=expected,
+        checkedAt=checked_at.isoformat(),
+        health='needs_attention',
+        total=None,
+        calculable=0,
+        confirmedNoTrade=0,
+        unresolved=target.get('unprocessedCount'),
+        dataComplete=False,
+        publicationErrors=sorted(set(errors)),
+        latestPublicationAt=None,
+        phase=target.get('phase', status.get('phase')),
+        outcome=outcome,
+        unprocessedCount=target.get('unprocessedCount'),
+        retryableCount=target.get('retryableCount'),
+        nextRetryAt=target.get('nextRetryAt'),
+        exitReason=target.get('exitReason', status.get('exitReason')),
+        publishedAt=target.get('publishedAt', target.get('fullyPublishedAt')),
+        firstPassCompletedAt=target.get('firstPassCompletedAt'),
+        fullyPublishedAt=target.get('fullyPublishedAt'),
+        firstDataRequestAt=target.get('firstDataRequestAt'),
+        sameDayFirstRequestBy1535=at_or_before(target.get('firstDataRequestAt'), day, '15:35:00'),
+        sameDayFirstPassBy1700=at_or_before(target.get('firstPassCompletedAt'), day, '17:00:00'),
+        sourceMissingReasons=[],
+        independentSchedulerAcceptance='requires_enabled_schedule_and_dispatch_log_readback',
+    )
+
+
 def missing(exc):
     return getattr(exc, 'response', {}).get('Error', {}).get('Code') in ('NoSuchKey', '404', 'NotFound')
 
@@ -144,12 +195,13 @@ def observe(profile='dev', target=None):
     # a moving snapshot healthy until the manifest, payload, and status agree.
     for _ in range(3):
         manifest = read('data/manifest.json')
-        payload = read('data/' + day + '.json')
+        payload = read('data/' + day + '.json', optional=True)
         refresh_status = read('collector/refresh-status.json', optional=True)
         publication_status = read('data/collection-status.json')
         status = refresh_status or publication_status
         source = 'collector/refresh-status.json' if refresh_status else 'data/collection-status.json'
-        result = audit(status, payload, manifest)
+        result = (audit(status, payload, manifest) if payload
+                  else missing_payload_report(status, day))
         if result['health'] == 'healthy':
             break
     result['statusSource'] = source

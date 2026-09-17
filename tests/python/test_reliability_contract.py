@@ -5,7 +5,7 @@ import unittest
 
 import actions_runner
 from deploy.actions.dispatcher import pending
-from deploy.actions.observe_refresh import audit
+from deploy.actions.observe_refresh import audit, missing_payload_report
 
 DAY = '2026-09-08'
 
@@ -110,6 +110,14 @@ class HealthAuditTests(unittest.TestCase):
         result = audit(status(calendarDates=[]), payload(), manifest(), self.checked_at)
         self.assertEqual(result['health'], 'needs_attention')
         self.assertIn('calendar_unavailable', result['publicationErrors'])
+
+    def test_missing_payload_is_an_actionable_health_failure(self):
+        result = missing_payload_report(status(), DAY, self.checked_at)
+        self.assertEqual(result['health'], 'needs_attention')
+        self.assertFalse(result['dataComplete'])
+        self.assertIn('payload_missing', result['publicationErrors'])
+        self.assertIn('false_completion', result['publicationErrors'])
+        self.assertIsNone(result['total'])
 
 
 if __name__ == '__main__':
