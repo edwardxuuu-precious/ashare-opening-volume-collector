@@ -69,7 +69,7 @@ def run(args, publisher):
     previous = read_json(root/'worker-state.json')
     cache = validate_cache(read_json(out/'refresh-state.json', dict(version=1, targets={})))
     def no_work(reason):
-        value = dict(previous, status='completed', state='completed', phase=phase, noOp=True,
+        value = dict(previous, status='completed', state='completed', outcome='no_work', phase=phase, noOp=True,
                      exitCode=0, exitReason='no_work', updatedAt=began.isoformat(),
                      message=reason)
         collect.write_json(root/'worker-state.json', value)
@@ -191,13 +191,13 @@ def run(args, publisher):
         if historical_day < today and historical_day != day
         and saved.get('summary', {}).get('dataComplete') is not True)
     status = dict(previous, id='refresh-'+day+'-'+began.strftime('%H%M%S'), phase=phase,
-        targetDate=day, dates=[day], startedAt=began.isoformat(), status='running', state='running',
+        targetDate=day, dates=[day], startedAt=began.isoformat(), status='running', state='running', outcome='running',
         historicalPendingCount=historical_pending, collectionSourcePolicy=['sina'], calculationPolicy='download_only',
         calendarDates=days, calendarValidThrough=max(days), speedDegraded=False, attemptedThisRun=0,
         publicationCommitted=False, sourceThrottled=False, sourceHTTPFailureStreak=0,
         message='上午预采开盘量，未发布未收盘指标' if phase=='opening' else '正在补齐目标交易日数据')
     # Do not inherit a previous run's terminal/error flags.
-    for key in ('error','exitCode','exitReason','fullyPublishedAt','firstPassCompletedAt'):
+    for key in ('error','exitCode','exitReason','fullyPublishedAt','firstPassCompletedAt','publishedAt'):
         status.pop(key, None)
     active = {}; pool = None; changed_count = 0; published = False; last_sync = 0
     source_http_failure_streak = 0; source_throttled = False
@@ -228,11 +228,13 @@ def run(args, publisher):
             target.setdefault('fullyPublishedAt', now().isoformat())
         status.update(summary, updatedAt=now().isoformat(), httpRequests=budget.count.value,
             httpResponseBytes=budget.byte_count.value, firstPassCompletedAt=target.get('firstPassCompletedAt'),
-            fullyPublishedAt=target.get('fullyPublishedAt'), publicationCommitted=published,
+            fullyPublishedAt=target.get('fullyPublishedAt'), publishedAt=target.get('fullyPublishedAt'),
+            publicationCommitted=published,
             elapsedSeconds=round(time.monotonic()-started, 2))
         status['firstDataRequestAt'] = target.get(phase+'FirstDataRequestAt')
         if target.get('fullyPublishedAt'): status['lastSuccessfulUpdate'] = target['fullyPublishedAt']
-        target['summary'] = dict(summary, firstPassCompletedAt=target.get('firstPassCompletedAt'), fullyPublishedAt=target.get('fullyPublishedAt'))
+        target['summary'] = dict(summary, firstPassCompletedAt=target.get('firstPassCompletedAt'),
+            fullyPublishedAt=target.get('fullyPublishedAt'), publishedAt=target.get('fullyPublishedAt'))
         persist()
         # The small cache is durable every 50 completions without uploading the full archive.
         publisher.put_json('collector/refresh-state.json', cache)
@@ -330,13 +332,14 @@ def run(args, publisher):
         finished = metrics(items, rows, target, phase)
         complete = finished['openingComplete'] if phase=='opening' else finished['dataComplete']
         status.update(status='completed' if complete else 'paused', state='completed' if complete else 'paused',
+            outcome='completed' if complete else 'incomplete_checkpointed',
             exitCode=0, exitReason='completed' if complete else (
                 'source_throttled' if source_throttled else 'interrupted' if stopped else 'cutoff'),
             message=('开盘量预采完成；15:30 开始下载全天量' if phase=='opening' else '目标交易日数据已补齐') if complete else (
                 '上游连续拒绝请求，已保存断点并等待新 runner 接力' if source_throttled else '保存断点，等待下一轮到期补采'))
         return 0
     except Exception as exc:
-        status.update(status='paused', state='paused', exitCode=1, exitReason='failed',
+        status.update(status='paused', state='paused', outcome='failed', exitCode=1, exitReason='failed',
                       error=type(exc).__name__, errorDetail=str(exc))
         raise
     finally:

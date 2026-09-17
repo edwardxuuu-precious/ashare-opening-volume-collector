@@ -568,7 +568,7 @@ def run(args, client, *, executor=spawn_worker, minimum_universe=1000):
                 phase=getattr(args,'phase',None),target_date=getattr(args,'target_date',None))
             result = dict(mode=args.mode,restoredCheckpoints=report['checkpointCount'],restoredDates=report['restoredDates'])
             if args.mode == 'probe':
-                return dict(result,status='validated',upstreamRequests=0,productionWrites=0)
+                return dict(result,status='validated',outcome='validated',upstreamRequests=0,productionWrites=0)
             if args.mode == 'review':
                 originals=root/'review-originals'
                 originals.mkdir(mode=0o700)
@@ -578,11 +578,12 @@ def run(args, client, *, executor=spawn_worker, minimum_universe=1000):
             if args.mode == 'daily' and not state.get('historyTraversalCompleted'):
                 raise RuntimeError('History is unfinished; run history mode first')
             if args.mode == 'history' and state.get('historyTraversalCompleted'):
-                return dict(result,status='no_work',historyTraversalCompleted=True)
+                return dict(result,status='no_work',outcome='no_work',historyTraversalCompleted=True)
             remaining = args.max_minutes-(time.monotonic()-started)/60
             if remaining <= 10.1:
-                return dict(result,status='paused',budgetExhausted=True,checkpointSaved=True,
-                            expectedPause=True,workStarted=False)
+                return dict(result,status='paused',outcome='incomplete_checkpointed',
+                            phase=getattr(args, 'phase', None),targetDate=getattr(args, 'target_date', None),
+                            budgetExhausted=True,checkpointSaved=True,expectedPause=True,workStarted=False)
             options = SimpleNamespace(**dict(vars(args),lease_owner=lease.owner,max_minutes=remaining))
             log_path = root/'worker-private.log'
             with log_path.open('w') as log:
@@ -610,7 +611,26 @@ def run(args, client, *, executor=spawn_worker, minimum_universe=1000):
             if ARCHIVE_KEY not in receipts:
                 publisher.save_checkpoint()
             save_actions_state(guarded,args.bucket,root)
-            return dict(result,status=current.get('status','paused'),workerExitCode=exit_code,
+            phase = current.get('phase', getattr(args, 'phase', None))
+            data_complete = current.get('dataComplete')
+            opening_complete = current.get('openingComplete')
+            completed = opening_complete is True if phase == 'opening' else data_complete is True
+            if current.get('noOp'):
+                outcome = 'no_work'
+            elif completed:
+                outcome = 'completed'
+            elif current.get('exitReason') == 'failed' and current.get('error'):
+                outcome = 'failed'
+            else:
+                outcome = 'incomplete_checkpointed'
+            return dict(result,status=current.get('status','paused'),outcome=outcome,
+                phase=phase,targetDate=current.get('targetDate', getattr(args, 'target_date', None)),
+                dataComplete=data_complete,openingComplete=opening_complete,
+                unprocessedCount=current.get('unprocessedCount'),retryableCount=current.get('retryableCount'),
+                nextRetryAt=current.get('nextRetryAt'),exitReason=current.get('exitReason'),
+                publishedAt=current.get('publishedAt', current.get('fullyPublishedAt')),
+                publicationCommitted=current.get('publicationCommitted'),
+                workerExitCode=exit_code,
                 budgetExhausted=timed_out,expectedPause=expected_pause,checkpointSaved=True,historyTraversalCompleted=bool(current.get('historyTraversalCompleted')),
                 completedStocks=current.get('completedStocks',0),totalStocks=current.get('totalStocks',0),
                 reviewId=current.get('reviewId'),reviewCompleted=current.get('reviewCompleted'),
@@ -673,15 +693,15 @@ def main():
         if root.is_dir() and not root.is_symlink() and not root.resolve().is_relative_to(HERE.parents[1]):
             with (root/'runner-private-error.log').open('a') as log:
                 os.chmod(log.name,0o600);traceback.print_exc(file=log)
-        print(json.dumps(dict(status='failed',errorType=type(exc).__name__),separators=(',',':')))
+        print(json.dumps(dict(status='failed',outcome='failed',errorType=type(exc).__name__),separators=(',',':')))
         return 1
 
 
 def successful_exit(result):
-    return (result.get('status') in ('validated','completed','no_work') or
-            bool(result.get('expectedPause') and result.get('checkpointSaved')) or
-            bool(result.get('status') == 'paused' and result.get('workerExitCode') == 0
-                 and result.get('checkpointSaved')))
+    outcome = result.get('outcome')
+    if outcome is not None:
+        return outcome in ('validated', 'completed', 'no_work')
+    return result.get('status') in ('validated', 'completed', 'no_work')
 
 
 if __name__=='__main__':

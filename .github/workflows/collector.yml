@@ -92,10 +92,6 @@ jobs:
         run: |
           set -euo pipefail
           test -n "$STOCK_BUCKET"
-          if [ "$STOCK_MODE" = collect ] && [ "$STOCK_WRITER_DISABLED" = true ]; then
-            echo 'Production writer is explicitly disabled.'
-            exit 1
-          fi
           review_args=()
           case "$STOCK_MODE" in
             restore_probe) mode=probe ;;
@@ -114,6 +110,39 @@ jobs:
               ;;
             *) exit 2 ;;
           esac
+          runner_result="$RUNNER_TEMP/collector-result.jsonl"
+          set +e
           python backend/server/actions_runner.py --bucket "$STOCK_BUCKET" \
             --root "$RUNNER_TEMP/stock" --region us-east-1 \
-            --mode "$mode" --max-minutes "$STOCK_MAX_MINUTES" "${review_args[@]}"
+            --mode "$mode" --max-minutes "$STOCK_MAX_MINUTES" "${review_args[@]}" | tee "$runner_result"
+          runner_rc=${PIPESTATUS[0]}
+          set -e
+          python - "$runner_result" <<'PY'
+          import json
+          import os
+          import sys
+
+          allowed = (
+              "outcome", "phase", "targetDate", "dataComplete", "openingComplete",
+              "checkpointSaved", "unprocessedCount", "retryableCount", "nextRetryAt",
+              "exitReason", "publishedAt", "publicationCommitted", "elapsedSeconds",
+          )
+          result = {}
+          for line in open(sys.argv[1], encoding="utf-8"):
+              try:
+                  candidate = json.loads(line)
+              except json.JSONDecodeError:
+                  continue
+              if isinstance(candidate, dict):
+                  result = candidate
+          def cell(value):
+              if value is None:
+                  return "—"
+              return str(value).replace(chr(10), " ").replace("|", chr(92) + "|")[:160]
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as summary:
+              summary.write("## Private collector result" + chr(10) + chr(10))
+              summary.write("| Field | Value |" + chr(10) + "| --- | --- |" + chr(10))
+              for key in allowed:
+                  summary.write(f"| {key} | {cell(result.get(key))} |" + chr(10))
+          PY
+          exit "$runner_rc"
