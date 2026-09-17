@@ -194,7 +194,7 @@ class SchedulerTemplateTests(unittest.TestCase):
         self.assertNotIn("AWS::EC2", str(value))
         self.assertNotIn("AWS::DynamoDB", str(value))
         self.assertNotIn("AWS::KMS::Key", str(value))
-        self.assertEqual(value["Resources"]["Dispatcher"]["Properties"]["ReservedConcurrentExecutions"], 1)
+        self.assertNotIn("ReservedConcurrentExecutions", value["Resources"]["Dispatcher"]["Properties"])
 
     def test_parameter_and_artifact_scope(self):
         for name in ("/other/app-key", "/stock/scheduler/../secret", "*"):

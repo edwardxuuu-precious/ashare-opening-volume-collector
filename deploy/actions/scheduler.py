@@ -45,7 +45,12 @@ def template(bucket, code_key, private_key_parameter, app_id, installation_id, r
                 ]}}]}},
         "Dispatcher": {"Type": "AWS::Lambda::Function", "Properties": {
             "FunctionName": sub("${AWS::StackName}-dispatcher"), "Runtime": "python3.12", "Handler": "dispatcher.handler",
-            "Architectures": ["x86_64"], "MemorySize": 128, "Timeout": 90, "ReservedConcurrentExecutions": 1,
+            # Do not reserve account concurrency. Some small AWS accounts must
+            # retain ten unreserved executions and reject even a reservation of
+            # one. Scheduler triggers are deliberately offset and dispatch_once
+            # additionally checks the GitHub active run, writer lease and retry
+            # ledger before it can create a workflow run.
+            "Architectures": ["x86_64"], "MemorySize": 128, "Timeout": 90,
             "Role": {"Fn::GetAtt": ["DispatcherRole", "Arn"]}, "Code": {"S3Bucket": bucket, "S3Key": code_key},
             "Environment": {"Variables": {"STOCK_BUCKET": bucket, "GITHUB_PRIVATE_KEY_PARAMETER": private_key_parameter,
                 "GITHUB_APP_ID": str(app_id), "GITHUB_INSTALLATION_ID": str(installation_id), "GITHUB_REPOSITORY_ID": str(repository_id)}}}},
