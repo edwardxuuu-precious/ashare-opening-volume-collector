@@ -15,6 +15,7 @@ from scripts.universe_cache import load_universe, validate_universe
 
 ZONE = ZoneInfo('Asia/Shanghai')
 SOURCE_HTTP_FAILURE_LIMIT = 20
+SOURCE_COOLDOWN_SECONDS = (5, 15, 30, 60, 120)
 
 
 def now():
@@ -75,6 +76,22 @@ def should_finish_for_deferred_retry(unresolved, active, pending, next_retry_at,
     """Return the lease when every remaining item is deliberately backoff-gated."""
     return bool(unresolved) and not active and not pending and bool(next_retry_at) and \
         datetime.fromisoformat(next_retry_at) > checked_at
+
+
+def source_cooldown_seconds(failure_streak):
+    """Back off the whole source after stock-level HTTP failures."""
+    index = min(max(1, failure_streak)-1, len(SOURCE_COOLDOWN_SECONDS)-1)
+    return SOURCE_COOLDOWN_SECONDS[index]
+
+
+def source_dispatch_capacity(failure_streak):
+    """Probe recovery serially before returning to four concurrent workers."""
+    return 1 if failure_streak else 4
+
+
+def source_recovery_confirmed(first_data_request_at, current, cooldown_until):
+    """Ignore successes already in flight when the source entered cooldown."""
+    return bool(first_data_request_at) and current >= cooldown_until
 
 
 def run(args, publisher):
@@ -221,6 +238,7 @@ def run(args, publisher):
         status.pop(key, None)
     active = {}; pool = None; changed_count = 0; published = False; last_sync = 0
     source_http_failure_streak = 0; source_throttled = False
+    source_cooldown_until = 0.0
     retry_deferred = False
     quote_attempted = set()
     close_snapshot = None
@@ -288,11 +306,16 @@ def run(args, publisher):
                 if not success and any(error.endswith(':HTTPError') for error in result.get('errors', [])):
                     source_http_failure_streak += 1
                     status['sourceHTTPFailureStreak'] = source_http_failure_streak
+                    source_cooldown_until = max(
+                        source_cooldown_until,
+                        time.monotonic()+source_cooldown_seconds(source_http_failure_streak))
                     if source_http_failure_streak >= SOURCE_HTTP_FAILURE_LIMIT:
                         source_throttled = True
                         stopped = True
                         status['sourceThrottled'] = True
-                elif result.get('firstDataRequestAt'):
+                elif source_recovery_confirmed(
+                        result.get('firstDataRequestAt'), time.monotonic(),
+                        source_cooldown_until):
                     source_http_failure_streak = 0
                     status['sourceHTTPFailureStreak'] = 0
                 if refresh.volume(result.get('opening')): openings[code] = result['opening']
@@ -333,13 +356,17 @@ def run(args, publisher):
                 quote_repairable(code)
             )]
             if not unresolved and not active: break
-            pending = [code for code in unresolved if code not in active and (
+            source_cooling = not stopped and time.monotonic() < source_cooldown_until
+            status['sourceCooldownSeconds'] = round(
+                max(0, source_cooldown_until-time.monotonic()), 2)
+            pending = [] if source_cooling else [code for code in unresolved if code not in active and (
                 quote_repairable(code) and code not in quote_attempted or
                 not refresh.complete(rows.get(code, {}), day) and
                 refresh.ready(code, day, phase, attempts.get(code, {}), now())
             )]
             pending.sort(key=lambda code: (bool(attempts.get(code, {}).get('committed')), code))
-            for code in pending[:max(0, 4-len(active))]:
+            capacity = source_dispatch_capacity(source_http_failure_streak)
+            for code in pending[:max(0, capacity-len(active))]:
                 if stopped or time.monotonic() >= deadline: break
                 attempts[code] = dict(attempts.get(code, {}), committed=False, dispatchedAt=now().isoformat())
                 persist()
@@ -352,6 +379,11 @@ def run(args, publisher):
                 active[code] = pool.apply_async(refresh.fetch, (task,))
             # Commit the last <50 first-pass rows before waiting on retry timers.
             if not active and not pending:
+                if source_cooling:
+                    if dirty or time.monotonic()-last_sync >= 60: sync()
+                    time.sleep(min(5, max(0, source_cooldown_until-time.monotonic()),
+                                   max(0, deadline-time.monotonic())))
+                    continue
                 next_retry = metrics(items, rows, target, phase).get('nextRetryAt')
                 if should_finish_for_deferred_retry(unresolved, active, pending, next_retry, now()):
                     retry_deferred = True

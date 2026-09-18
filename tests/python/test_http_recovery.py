@@ -10,6 +10,20 @@ from scripts import daily_collector
 
 
 class HTTPRecoveryTests(unittest.TestCase):
+    def test_stock_level_http_failures_cool_the_source_and_probe_serially(self):
+        self.assertEqual(
+            [refresh_worker.source_cooldown_seconds(streak)
+             for streak in (1, 2, 3, 4, 5, 20)],
+            [5, 15, 30, 60, 120, 120],
+        )
+        self.assertEqual(refresh_worker.source_dispatch_capacity(0), 4)
+        self.assertEqual(refresh_worker.source_dispatch_capacity(1), 1)
+        self.assertEqual(refresh_worker.source_dispatch_capacity(20), 1)
+        self.assertFalse(refresh_worker.source_recovery_confirmed(
+            '2026-09-08T10:00:00Z', 104.0, 105.0))
+        self.assertTrue(refresh_worker.source_recovery_confirmed(
+            '2026-09-08T10:00:00Z', 105.0, 105.0))
+
     def test_status_uses_nearest_future_retry_instead_of_expired_retry(self):
         items = [dict(code='000001'), dict(code='600519')]
         target = dict(date='2026-09-08', attempts={
