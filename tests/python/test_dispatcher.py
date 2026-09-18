@@ -108,6 +108,17 @@ class DispatcherDecisionTests(unittest.TestCase):
         target["unprocessedCount"] = 1
         self.assertEqual(choose_work(saved, "watchdog", at())[1], "source_retry_not_due")
 
+    def test_watchdog_uses_due_history_while_current_day_retry_is_deferred(self):
+        saved = status(targets={
+            "2026-09-08": {"openingComplete": False, "nextRetryAt": "2026-09-08T03:00:00Z"},
+            "2026-09-07": {"dataComplete": False, "unprocessedCount": 4},
+        })
+        work, reason = choose_work(saved, "watchdog", at("10:00"))
+        self.assertEqual(reason, "due")
+        self.assertEqual(work["phase"], "catchup")
+        self.assertEqual(work["target_date"], "2026-09-07")
+        self.assertEqual(choose_work(saved, "opening", at("10:00"))[1], "source_retry_not_due")
+
     def test_green_first_pass_does_not_mean_complete(self):
         saved = status(targets={"2026-09-08": {"firstPassCompletedAt": "2026-09-08T08:00:00Z",
                        "unprocessedCount": 0, "retryableCount": 6, "dataComplete": False}})

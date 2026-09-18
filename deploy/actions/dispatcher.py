@@ -98,6 +98,15 @@ def choose_work(status, phase, now):
     else:
         selected = None
 
+    # A throttled current-day run must not make the watchdog idle when an older
+    # checkpoint is already due.  Explicit opening/close schedules retain
+    # their strict current-day behavior; only the watchdog may use an idle
+    # single-writer window to continue historical recovery.
+    priority_retry_deferred = bool(selected and phase == "watchdog" and
+                                   (retry_at := instant(selected[2].get("nextRetryAt"))) and now < retry_at)
+    if priority_retry_deferred:
+        selected = None
+
     if selected is None:
         if "09:40" <= clock < "09:50" or "15:20" <= clock < "15:30":
             return None, "priority_yield_window"
@@ -110,6 +119,8 @@ def choose_work(status, phase, now):
         if not candidates and phase == "catchup" and closed and closed[0] not in targets:
             candidates = [closed[0]]
         if not candidates:
+            if priority_retry_deferred:
+                return None, "source_retry_not_due"
             return None, "no_known_backlog"
         day = candidates[0]
         deadline = "09:40" if clock < "09:40" else ("15:20" if clock < "15:20" else "23:55")
