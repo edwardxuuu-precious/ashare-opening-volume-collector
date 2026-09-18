@@ -117,7 +117,8 @@ def run_probe(moment=None):
     ctx = mp.get_context('spawn')
     primary_deadline = started + 600
     http = daily.SharedHTTPBudget(ctx.Lock(), ctx.Value('d', 0), ctx.Value('i', 0),
-                                  ctx.Value('q', 0), .75, primary_deadline)
+                                  ctx.Value('q', 0), .75, primary_deadline,
+                                  ctx.Value('d', 0), ctx.Value('q', 0))
     report = dict(schemaVersion=1, scope='three_stock_sample', fullMarketVerified=False,
                   fullMarketDurationVerified=False,
                   executionEnvironment='github_actions' if os.environ.get('GITHUB_ACTIONS') == 'true' else 'local',

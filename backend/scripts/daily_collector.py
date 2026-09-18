@@ -51,20 +51,39 @@ class RequestWindowClosed(TimeoutError):
 class SharedHTTPBudget:
     """A permit is shared across *all* spawned processes, including hidden AKShare calls."""
     TRANSIENT_GET_ATTEMPTS = 3
+    TRANSIENT_BACKOFF_SECONDS = (2.0, 5.0, 15.0, 30.0)
 
-    def __init__(self, lock, last, count, byte_count, interval, deadline):
+    def __init__(self, lock, last, count, byte_count, interval, deadline,
+                 cooldown_until, transient_failures):
         self.lock, self.last, self.count = lock, last, count
         self.byte_count, self.interval, self.deadline = byte_count, interval, deadline
+        self.cooldown_until = cooldown_until
+        self.transient_failures = transient_failures
 
     def reserve(self):
         with self.lock:
-            delay = max(0, self.interval - (time.monotonic()-self.last.value))
-            if time.monotonic()+delay >= self.deadline:
+            moment = time.monotonic()
+            delay = max(0, self.interval - (moment-self.last.value),
+                        self.cooldown_until.value-moment)
+            if moment+delay >= self.deadline:
                 raise RequestWindowClosed('Daily request cutoff reached')
             time.sleep(delay)
             self.last.value = time.monotonic()
             self.count.value += 1
             return self.last.value
+
+    def record_transient(self):
+        with self.lock:
+            self.transient_failures.value += 1
+            index = min(self.transient_failures.value-1,
+                        len(self.TRANSIENT_BACKOFF_SECONDS)-1)
+            delay = self.TRANSIENT_BACKOFF_SECONDS[index]
+            self.cooldown_until.value = max(
+                self.cooldown_until.value, time.monotonic()+delay)
+
+    def record_success(self):
+        with self.lock:
+            self.transient_failures.value = 0
 
     def install(self):
         import requests
@@ -81,7 +100,9 @@ class SharedHTTPBudget:
                     response.raise_for_status()
                 except transient as exc:
                     last_error = exc
+                    self.record_transient()
                     continue
+                self.record_success()
                 with self.lock:
                     self.byte_count.value += len(response.content)
                 return response
@@ -209,7 +230,8 @@ def run(args):
     review_cycle = (f'review:{args.review_as_of}:{args.review_id}' if selected_review_dates is not None else None)
     context = mp.get_context('spawn')
     http = SharedHTTPBudget(context.Lock(), context.Value('d', 0), context.Value('q', 0),
-                            context.Value('q', 0), args.interval, deadline_for(started, args.cutoff))
+                            context.Value('q', 0), args.interval, deadline_for(started, args.cutoff),
+                            context.Value('d', 0), context.Value('q', 0))
     state_path = out / 'daily-state.json'
     previous = read_json(state_path)
     state = previous

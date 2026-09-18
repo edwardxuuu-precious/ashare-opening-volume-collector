@@ -51,15 +51,19 @@ def metrics(items, rows, target, phase):
     unprocessed = len(codes - observed)
     missing = len(codes - ok)
     attempts = target.get('openingAttempts' if phase == 'opening' else 'attempts', {})
-    due = [a['nextRetryAt'] for code, a in attempts.items() if a.get('nextRetryAt') and
-           (code not in target.get('openings', {}) if phase == 'opening' else code not in ok)]
+    checked_at = now()
+    due = [(datetime.fromisoformat(a['nextRetryAt']), a['nextRetryAt'])
+           for code, a in attempts.items() if a.get('nextRetryAt') and
+           (code not in target.get('openings', {}) if phase == 'opening' else code not in ok)
+           and datetime.fromisoformat(a['nextRetryAt']) > checked_at]
     return dict(totalStocks=len(codes), completedStocks=len(observed), unprocessedCount=unprocessed,
         calculableCount=sum(rows.get(code, {}).get('status') == 'ok' for code in ok),
         noTradeCount=sum(rows.get(code, {}).get('status') == 'suspended' for code in ok),
         retryableCount=missing-unprocessed, pendingStockDates=missing, pendingCount=missing,
         firstPassComplete=unprocessed == 0, dataComplete=missing == 0,
         openingCachedCount=len(codes & set(target.get('openings', {}))),
-        openingComplete=codes <= set(target.get('openings', {})), nextRetryAt=min(due) if due else None)
+        openingComplete=codes <= set(target.get('openings', {})),
+        nextRetryAt=min(due, key=lambda value: value[0])[1] if due else None)
 
 
 def should_finish_after_stop(stopped, active):
@@ -95,7 +99,9 @@ def run(args, publisher):
     ctx = mp.get_context('spawn')
     cutoff = refresh.yield_at(phase, began)
     deadline = min(deadline_for(began, cutoff), started+max(.1, args.max_minutes-10)*60)
-    budget = SharedHTTPBudget(ctx.Lock(), ctx.Value('d',0), ctx.Value('q',0), ctx.Value('q',0), .75, deadline)
+    budget = SharedHTTPBudget(ctx.Lock(), ctx.Value('d',0), ctx.Value('q',0),
+                              ctx.Value('q',0), .75, deadline,
+                              ctx.Value('d',0), ctx.Value('q',0))
     stopped = False
     def stop(*_):
         nonlocal stopped
