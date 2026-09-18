@@ -69,6 +69,13 @@ class CompletionContractTests(unittest.TestCase):
         for outcome in ('incomplete_checkpointed', 'failed', 'running'):
             self.assertFalse(actions_runner.successful_exit(dict(outcome=outcome)))
 
+    def test_no_work_cannot_mask_an_incomplete_opening_or_close(self):
+        self.assertFalse(actions_runner.successful_exit(dict(
+            outcome='no_work', phase='opening', openingComplete=False,
+            dataComplete=False, unprocessedCount=5565,
+            exitReason='source_throttled', checkpointSaved=True,
+        )))
+
     def test_explicit_incomplete_target_is_watchdog_work(self):
         self.assertTrue(pending(dict(dataComplete=False)))
         self.assertFalse(pending(dict(dataComplete=True, pendingCount=99)))

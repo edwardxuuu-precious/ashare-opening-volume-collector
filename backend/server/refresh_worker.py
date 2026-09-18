@@ -196,8 +196,11 @@ def run(args, publisher):
         calendarDates=days, calendarValidThrough=max(days), speedDegraded=False, attemptedThisRun=0,
         publicationCommitted=False, sourceThrottled=False, sourceHTTPFailureStreak=0,
         message='上午预采开盘量，未发布未收盘指标' if phase=='opening' else '正在补齐目标交易日数据')
-    # Do not inherit a previous run's terminal/error flags.
-    for key in ('error','exitCode','exitReason','fullyPublishedAt','firstPassCompletedAt','publishedAt'):
+    # Do not inherit a previous run's terminal/error flags.  In particular,
+    # ``noOp`` is only valid for this invocation's explicit no-work paths.  If
+    # it leaks from an earlier window check, a throttled, incomplete refresh can
+    # otherwise be reported as ``no_work`` and turn a GitHub run green.
+    for key in ('error','exitCode','exitReason','noOp','fullyPublishedAt','firstPassCompletedAt','publishedAt'):
         status.pop(key, None)
     active = {}; pool = None; changed_count = 0; published = False; last_sync = 0
     source_http_failure_streak = 0; source_throttled = False

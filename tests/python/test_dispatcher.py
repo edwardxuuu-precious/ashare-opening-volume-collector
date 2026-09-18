@@ -101,12 +101,12 @@ class DispatcherDecisionTests(unittest.TestCase):
         self.assertEqual(choose_work(status(), "watchdog", at("07:00"))[1], "no_known_backlog")
         self.assertEqual(choose_work(status(), "catchup", at("07:00"))[0]["target_date"], "2026-09-07")
 
-    def test_next_source_retry_blocks_only_when_unprocessed_is_zero(self):
+    def test_next_source_retry_blocks_even_with_unprocessed_rows(self):
         target = {"retryableCount": 5, "unprocessedCount": 0, "nextRetryAt": "2026-09-08T08:00:00Z"}
         saved = status(targets={"2026-09-08": target})
         self.assertEqual(choose_work(saved, "watchdog", at())[1], "source_retry_not_due")
         target["unprocessedCount"] = 1
-        self.assertEqual(choose_work(saved, "watchdog", at())[1], "due")
+        self.assertEqual(choose_work(saved, "watchdog", at())[1], "source_retry_not_due")
 
     def test_green_first_pass_does_not_mean_complete(self):
         saved = status(targets={"2026-09-08": {"firstPassCompletedAt": "2026-09-08T08:00:00Z",

@@ -117,7 +117,11 @@ def choose_work(status, phase, now):
 
     selected_phase, day, target, deadline = selected
     next_retry = instant(target.get("nextRetryAt"))
-    if next_retry and now < next_retry and not count(target.get("unprocessedCount")):
+    # The worker publishes an explicit source backoff after throttling.  It
+    # applies even while the first pass still has unprocessed rows: otherwise
+    # watchdog would create a new GitHub runner every five minutes and hammer
+    # the same throttled source.
+    if next_retry and now < next_retry:
         return None, "source_retry_not_due"
     until = now.replace(hour=int(deadline[:2]), minute=int(deadline[3:]), second=0, microsecond=0)
     minutes = min(285, int((until - now).total_seconds() // 60))

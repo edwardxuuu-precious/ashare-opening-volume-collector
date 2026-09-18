@@ -700,6 +700,12 @@ def main():
 def successful_exit(result):
     outcome = result.get('outcome')
     if outcome is not None:
+        # A genuine no-op has no incomplete target attached.  Never let a
+        # stale/no-op marker mask an explicit incomplete opening or close
+        # result; the checkpoint remains durable but the workflow must alert.
+        if outcome == 'no_work' and (result.get('dataComplete') is False or
+                                     result.get('openingComplete') is False):
+            return False
         return outcome in ('validated', 'completed', 'no_work')
     return result.get('status') in ('validated', 'completed', 'no_work')
 
