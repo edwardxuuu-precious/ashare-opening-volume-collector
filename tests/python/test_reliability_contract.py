@@ -4,6 +4,7 @@ from pathlib import Path
 import unittest
 
 import actions_runner
+import refresh_worker
 from deploy.actions.dispatcher import pending
 from deploy.actions.observe_refresh import audit, missing_payload_report
 
@@ -79,6 +80,11 @@ class CompletionContractTests(unittest.TestCase):
     def test_explicit_incomplete_target_is_watchdog_work(self):
         self.assertTrue(pending(dict(dataComplete=False)))
         self.assertFalse(pending(dict(dataComplete=True, pendingCount=99)))
+
+    def test_source_throttle_finishes_after_active_requests_drain(self):
+        self.assertFalse(refresh_worker.should_finish_after_stop(True, {'600519': object()}))
+        self.assertTrue(refresh_worker.should_finish_after_stop(True, {}))
+        self.assertFalse(refresh_worker.should_finish_after_stop(False, {}))
 
 
 class HealthAuditTests(unittest.TestCase):

@@ -62,6 +62,11 @@ def metrics(items, rows, target, phase):
         openingComplete=codes <= set(target.get('openings', {})), nextRetryAt=min(due) if due else None)
 
 
+def should_finish_after_stop(stopped, active):
+    """Stop once an interruption has drained the already-dispatched work."""
+    return stopped and not active
+
+
 def run(args, publisher):
     root = Path(args.root); out = root/'data'
     phase = args.phase
@@ -296,6 +301,12 @@ def run(args, publisher):
                 status['speedDegraded'] |= result['speedDegraded']
                 changed_count += 1
                 if changed_count % 50 == 0: sync()
+            # A source throttle sets ``stopped`` after the current child work
+            # is allowed to drain.  Do not spin until the collection cutoff
+            # with no eligible work: persist the checkpoint and let the
+            # dispatcher restart after ``nextRetryAt`` instead.
+            if should_finish_after_stop(stopped, active):
+                break
             def quote_repairable(code):
                 row = rows.get(code, {})
                 return (phase != 'opening' and day == today and
