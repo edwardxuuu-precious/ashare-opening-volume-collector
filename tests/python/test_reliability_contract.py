@@ -86,6 +86,15 @@ class CompletionContractTests(unittest.TestCase):
         self.assertTrue(refresh_worker.should_finish_after_stop(True, {}))
         self.assertFalse(refresh_worker.should_finish_after_stop(False, {}))
 
+    def test_deferred_retries_release_the_worker_without_waiting_for_cutoff(self):
+        checked = datetime.fromisoformat('2026-09-08T10:00:00+08:00')
+        self.assertTrue(refresh_worker.should_finish_for_deferred_retry(
+            ['600519'], {}, [], '2026-09-08T10:05:00+08:00', checked))
+        self.assertFalse(refresh_worker.should_finish_for_deferred_retry(
+            ['600519'], {}, [], '2026-09-08T09:59:00+08:00', checked))
+        self.assertFalse(refresh_worker.should_finish_for_deferred_retry(
+            ['600519'], {'600519': object()}, [], '2026-09-08T10:05:00+08:00', checked))
+
 
 class HealthAuditTests(unittest.TestCase):
     def setUp(self):

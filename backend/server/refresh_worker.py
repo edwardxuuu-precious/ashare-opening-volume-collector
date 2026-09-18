@@ -67,6 +67,12 @@ def should_finish_after_stop(stopped, active):
     return stopped and not active
 
 
+def should_finish_for_deferred_retry(unresolved, active, pending, next_retry_at, checked_at):
+    """Return the lease when every remaining item is deliberately backoff-gated."""
+    return bool(unresolved) and not active and not pending and bool(next_retry_at) and \
+        datetime.fromisoformat(next_retry_at) > checked_at
+
+
 def run(args, publisher):
     root = Path(args.root); out = root/'data'
     phase = args.phase
@@ -209,6 +215,7 @@ def run(args, publisher):
         status.pop(key, None)
     active = {}; pool = None; changed_count = 0; published = False; last_sync = 0
     source_http_failure_streak = 0; source_throttled = False
+    retry_deferred = False
     quote_attempted = set()
     close_snapshot = None
 
@@ -339,6 +346,10 @@ def run(args, publisher):
                 active[code] = pool.apply_async(refresh.fetch, (task,))
             # Commit the last <50 first-pass rows before waiting on retry timers.
             if not active and not pending:
+                next_retry = metrics(items, rows, target, phase).get('nextRetryAt')
+                if should_finish_for_deferred_retry(unresolved, active, pending, next_retry, now()):
+                    retry_deferred = True
+                    break
                 if dirty or time.monotonic()-last_sync >= 60: sync()
                 time.sleep(min(5, max(0, deadline-time.monotonic())))
             else:
@@ -348,9 +359,12 @@ def run(args, publisher):
         status.update(status='completed' if complete else 'paused', state='completed' if complete else 'paused',
             outcome='completed' if complete else 'incomplete_checkpointed',
             exitCode=0, exitReason='completed' if complete else (
-                'source_throttled' if source_throttled else 'interrupted' if stopped else 'cutoff'),
+                'source_throttled' if source_throttled else 'source_retry_not_due' if retry_deferred else
+                'interrupted' if stopped else 'cutoff'),
             message=('开盘量预采完成；15:30 开始下载全天量' if phase=='opening' else '目标交易日数据已补齐') if complete else (
-                '上游连续拒绝请求，已保存断点并等待新 runner 接力' if source_throttled else '保存断点，等待下一轮到期补采'))
+                '上游连续拒绝请求，已保存断点并等待新 runner 接力' if source_throttled else
+                '所有剩余项尚未到期，已保存断点并等待下一轮到期补采' if retry_deferred else
+                '保存断点，等待下一轮到期补采'))
         return 0
     except Exception as exc:
         status.update(status='paused', state='paused', outcome='failed', exitCode=1, exitReason='failed',
