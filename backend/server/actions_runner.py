@@ -113,6 +113,10 @@ def worker_failure_summary(root):
                 candidate = value.get('errorType') if isinstance(value, dict) else None
                 if isinstance(candidate, str) and re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]{0,63}', candidate):
                     public_type = candidate
+                stage = value.get('stage') if isinstance(value, dict) else None
+                if isinstance(stage, str) and re.fullmatch(r'[a-z_]{1,32}', stage):
+                    public_stage = 'backfill:' + stage
+                if candidate:
                     break
     return public_type, public_stage
 

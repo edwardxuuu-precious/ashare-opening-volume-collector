@@ -368,7 +368,7 @@ def run(args):
                     quote.update(priceSourceProvider=provider, dailyAdapter=adapter)
                 table[day] = quote
             return code, table
-        except Exception as exc:
+        except (Exception, SystemExit) as exc:
             return code, type(exc).__name__ + ': ' + str(exc)[:120]
 
     completed = failed = refetched = 0
