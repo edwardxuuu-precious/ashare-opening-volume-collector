@@ -44,8 +44,8 @@ class PriceBackfillMemoryTests(unittest.TestCase):
 
             self.assertEqual(selected,['2026-09-18'])
             self.assertEqual(incomplete,days)
-            self.assertEqual(rows_seen,1)
-            self.assertEqual(needs,{'000001':['2026-09-18']})
+            self.assertEqual(rows_seen,4)
+            self.assertEqual(needs,{'000001':sorted(days)})
 
     def test_provider_system_exit_becomes_checkpointed_source_failure(self):
         with tempfile.TemporaryDirectory() as folder:

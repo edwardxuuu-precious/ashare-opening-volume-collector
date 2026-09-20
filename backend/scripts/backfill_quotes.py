@@ -204,7 +204,9 @@ def scan_needs(out, cache_quotes, force, start=DEFAULT_FROM, end=DEFAULT_TO, bat
         if any(not complete_price(row) for row in payload['rows']):
             candidate_dates.append(day)
     selected_dates = candidate_dates[:batch_size]
-    for day in selected_dates:
+    # Fetch each stock's complete frozen need window once. Publication remains
+    # bounded to selected_dates, while later 20-day batches reuse the v2 cache.
+    for day in candidate_dates:
         payload = load_json(Path(out)/(day+'.json'))
         for row in payload['rows']:
             code = row.get('code')
