@@ -6,9 +6,11 @@ import math
 import re
 from zoneinfo import ZoneInfo
 
+from .reconciliation import missing_prices, normalize_ohlc, quote_observation
+
 ZONE = ZoneInfo('Asia/Shanghai')
 PREFIXES = {'sz': 'SZ', 'sh': 'SH', 'bj': 'BJ'}
-REQUIRED = {'代码', '最新价', '昨收', '最高', '最低', '成交量', '时间戳'}
+REQUIRED = {'代码', '最新价', '昨收', '今开', '最高', '最低', '成交量', '时间戳'}
 DAILY_FALLBACK_LIMIT = 10
 
 
@@ -33,32 +35,20 @@ def _metrics(row):
     return round((close-previous)/previous*100, 4), round((high-low)/previous*100, 4)
 
 
+def _observation(row):
+    prices = normalize_ohlc(row.get('今开'), row.get('最高'), row.get('最低'), row.get('最新价'))
+    pct_change, amplitude = _metrics(row)
+    return dict(prices, pctChange=pct_change, amplitude=amplitude)
+
+
 def _post_close_time(value):
     match = re.search(r'(\d{2}:\d{2}:\d{2})', str(value))
     return match.group(1) if match and match.group(1) >= '15:00:00' else None
 
 
 def _daily_metrics(frame, day):
-    date_col = 'date' if 'date' in frame else ('日期' if '日期' in frame else None)
-    close_col = 'close' if 'close' in frame else '收盘'
-    high_col = 'high' if 'high' in frame else '最高'
-    low_col = 'low' if 'low' in frame else '最低'
-    if date_col is None or not {close_col, high_col, low_col} <= set(frame.columns):
-        return None, None
-    values = frame[[date_col, close_col, high_col, low_col]].copy()
-    values[date_col] = values[date_col].astype(str).str[:10]
-    values = values.drop_duplicates(subset=date_col, keep='last').sort_values(date_col).reset_index(drop=True)
-    hit = values.index[values[date_col] == day]
-    if len(hit) != 1 or int(hit[0]) == 0:
-        return None, None
-    index = int(hit[0])
-    previous = _number(values.iloc[index - 1][close_col])
-    close = _number(values.iloc[index][close_col])
-    high = _number(values.iloc[index][high_col])
-    low = _number(values.iloc[index][low_col])
-    if None in (previous, close, high, low) or previous <= 0:
-        return None, None
-    return round((close - previous) / previous * 100, 4), round((high - low) / previous * 100, 4)
+    quote = quote_observation(frame, day)
+    return quote['pctChange'], quote['amplitude']
 
 
 def _daily_quote_fallback(ak, code, day):
@@ -76,11 +66,11 @@ def _daily_quote_fallback(ak, code, day):
                                     end_date=day.replace('-', ''), adjust='')
         adapter = 'sina_daily_quote_fallback'
         provider = 'sina'
-    pct_change, amplitude = _daily_metrics(frame, day)
-    if pct_change is None or amplitude is None:
+    quote = quote_observation(frame, day)
+    if quote['priceStatus'] != 'available':
         return None
-    return dict(code=code, date=day, market=PREFIXES[prefix], pctChange=pct_change,
-                amplitude=amplitude, sourceProvider=provider, dailyAdapter=adapter)
+    return dict(code=code, date=day, market=PREFIXES[prefix], **quote,
+                priceSourceProvider=provider, sourceProvider=provider, dailyAdapter=adapter)
 
 
 def load_snapshot(ak, universe, day, *, moment=None):
@@ -101,10 +91,13 @@ def load_snapshot(ak, universe, day, *, moment=None):
         volume = _number(source.get('成交量'))
         if volume is None or volume < 0 or volume != int(volume):
             continue
-        pct_change, amplitude = _metrics(source)
+        quote = _observation(source)
+        if quote['priceStatus'] == 'available':
+            quote['priceSourceProvider'] = 'sina'
+        else:
+            quote.update(missing_prices())
         rows[code] = dict(code=code, date=day, market=PREFIXES[prefix],
-                          dailyVolume=int(volume), pctChange=pct_change,
-                          amplitude=amplitude, quoteTime=str(source.get('时间戳')),
+                          dailyVolume=int(volume), **quote, quoteTime=str(source.get('时间戳')),
                           sourceProvider='sina', dailyAdapter='sina_market_snapshot')
     expected = {item['code'] for item in universe}
     available = expected & set(rows)

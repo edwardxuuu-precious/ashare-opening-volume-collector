@@ -33,6 +33,7 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(HERE.parent / 'scripts'))
 import cloud_worker as worker
+from reconciliation import PRICE_REQUIRED_FROM
 from import_checkpoint_batch import strict_json, valid_date, record_disposition
 from publisher_state import canonical, file_digest
 from universe_cache import validate_universe
@@ -48,7 +49,9 @@ MAX_CHECKPOINT = 8 * 1024 * 1024
 STATE_LIMITS = {'universe.json': 4*1024*1024, 'calendar.json': 2*1024*1024,
                 'refresh-state.json': 32*1024*1024,
                 'run-status.json': 2*1024*1024, 'daily-state.json': 192*1024*1024,
-                'daily-attempts.jsonl': 128*1024*1024}
+                'daily-attempts.jsonl': 128*1024*1024,
+                'price-backfill-state.json': 2*1024*1024,
+                'price-backfill-cache.json': 256*1024*1024}
 CP_NAME = re.compile(r'checkpoint/([0-9]{6})\.json')
 SHA = re.compile(r'[0-9a-f]{64}')
 LEASE_GUARD_SECONDS = 180
@@ -257,6 +260,14 @@ def validate_tree(out, minimum_universe=1000):
                 if isinstance(cycle,str) and re.fullmatch(r'review:\d{4}-\d{2}-\d{2}:[A-Za-z0-9_-]{1,64}',cycle):
                     valid_date(cycle.split(':')[1])
                 else: valid_date(cycle)
+    price_cache = out/'price-backfill-cache.json'
+    price_state = out/'price-backfill-state.json'
+    if price_cache.exists():
+        from scripts.backfill_quotes import validate_cache
+        validate_cache(strict_json(price_cache.read_bytes()))
+    if price_state.exists():
+        from scripts.backfill_quotes import validate_state
+        validate_state(strict_json(price_state.read_bytes()))
     return catalog, calendar
 
 
@@ -272,7 +283,8 @@ def validate_worker_state(value):
     return value
 
 
-def restore(client, bucket, root, expected_sha=None, *, minimum_universe=1000, review_dates=None, phase=None, target_date=None):
+def restore(client, bucket, root, expected_sha=None, *, minimum_universe=1000, review_dates=None,
+            phase=None, target_date=None, backfill_range=None):
     """Validate the entire private staging tree before installing into an empty temporary root."""
     root = Path(root)
     if root.is_symlink() or any((root/name).exists() or (root/name).is_symlink() for name in ('data','worker-state.json','publisher-state.json')):
@@ -314,7 +326,10 @@ def restore(client, bucket, root, expected_sha=None, *, minimum_universe=1000, r
             seen.add(day)
             if target_set is not None and day not in target_set:
                 continue
-            if (day not in review_set) if review_set is not None else (day < start):
+            if backfill_range is not None:
+                if not backfill_range[0] <= day <= backfill_range[1]:
+                    continue
+            elif (day not in review_set) if review_set is not None else (day < start):
                 continue
             payload_raw, response = get_bytes(client, bucket, 'data/'+entry['file'], MAX_DATE_BYTES)
             snapshot_bytes += len(payload_raw)
@@ -475,6 +490,43 @@ def execute_worker(args, client):
     if getattr(args, 'phase', None):
         from refresh_worker import run as refresh_run
         return refresh_run(args, publisher)
+    if args.mode == 'price_backfill':
+        from scripts import backfill_quotes
+        out = Path(args.root)/'data'
+        entries = strict_json((out/'manifest.json').read_bytes()).get('dates', [])
+        publisher.allowed_review_dates = {entry['date'] for entry in entries}
+        options = SimpleNamespace(
+            out=str(out), cache=str(out/'price-backfill-cache.json'),
+            backfill_id=args.backfill_id, from_date=args.backfill_from,
+            to_date=args.backfill_to, batch_size=args.backfill_batch_size,
+            workers=8, interval=.35, cutoff='23:50', lookback=14,
+            retries=2, save_every=200, force=False,
+        )
+        backfill_quotes.STOP = False
+        previous_handlers = {sig: signal.getsignal(sig) for sig in (signal.SIGTERM, signal.SIGINT)}
+        def stop_backfill(*_):
+            backfill_quotes.STOP = True
+        for sig in previous_handlers:
+            signal.signal(sig, stop_backfill)
+        try:
+            result = backfill_quotes.run(options)
+        finally:
+            for sig, handler in previous_handlers.items():
+                signal.signal(sig, handler)
+        publisher.publish(all_dates=True)
+        publisher.save_checkpoint()
+        state = backfill_quotes.validate_state(strict_json((out/'price-backfill-state.json').read_bytes()))
+        previous_path = Path(args.root)/'worker-state.json'
+        previous = strict_json(previous_path.read_bytes()) if previous_path.exists() else {}
+        previous.update(status='completed' if result == 0 else 'paused', state='completed' if result == 0 else 'paused',
+                        outcome='completed' if result == 0 else 'incomplete_checkpointed',
+                        phase='price_backfill', exitCode=result, exitReason=state['exitReason'],
+                        priceBackfillId=state['backfillId'], priceBackfillCompleted=state['completed'],
+                        priceBackfillSelectedDates=state['selectedDates'],
+                        priceBackfillRemainingDates=len(state['remainingDates']),
+                        updatedAt=state['updatedAt'])
+        private_json(previous_path, previous)
+        return result
     previous = validate_worker_state(strict_json((Path(args.root)/'worker-state.json').read_bytes()))
     if args.mode == 'daily' and not previous.get('historyTraversalCompleted'):
         raise RuntimeError('Historical traversal must finish before daily mode')
@@ -532,6 +584,9 @@ def spawn_worker(args, log, *, popen=subprocess.Popen):
     if args.mode == 'review':
         command += ['--review-id',args.review_id,'--review-as-of',args.review_as_of,
                     '--review-dates',','.join(args.review_dates)]
+    if args.mode == 'price_backfill':
+        command += ['--backfill-id',args.backfill_id,'--backfill-from',args.backfill_from,
+                    '--backfill-to',args.backfill_to,'--backfill-batch-size',str(args.backfill_batch_size)]
     process = popen(command, stdout=log, stderr=subprocess.STDOUT, start_new_session=True, cwd=HERE.parent)
     timed_out = False
     try:
@@ -563,9 +618,12 @@ def run(args, client, *, executor=spawn_worker, minimum_universe=1000):
         try:
             if args.mode != 'probe':
                 lease = Lease(client,args.bucket).acquire(args.max_minutes*60+15*60)
+            backfill_range = ((args.backfill_from, args.backfill_to)
+                              if args.mode == 'price_backfill' else None)
             report = restore(client,args.bucket,root,getattr(args,'expected_checkpoint_sha256',None),minimum_universe=minimum_universe,
                 review_dates=getattr(args,'review_dates',None) if args.mode == 'review' else None,
-                phase=getattr(args,'phase',None),target_date=getattr(args,'target_date',None))
+                phase=getattr(args,'phase',None),target_date=getattr(args,'target_date',None),
+                backfill_range=backfill_range)
             result = dict(mode=args.mode,restoredCheckpoints=report['checkpointCount'],restoredDates=report['restoredDates'])
             if args.mode == 'probe':
                 return dict(result,status='validated',outcome='validated',upstreamRequests=0,productionWrites=0)
@@ -611,10 +669,23 @@ def run(args, client, *, executor=spawn_worker, minimum_universe=1000):
             if ARCHIVE_KEY not in receipts:
                 publisher.save_checkpoint()
             save_actions_state(guarded,args.bucket,root)
+            if args.mode == 'price_backfill':
+                state = strict_json((root/'data/price-backfill-state.json').read_bytes())
+                return dict(result,status=current.get('status','paused'),outcome=current.get('outcome','incomplete_checkpointed'),
+                    phase='price_backfill',checkpointSaved=True,exitReason=state.get('exitReason'),
+                    publishedAt=state.get('updatedAt'),priceBackfillId=state.get('backfillId'),
+                    priceBackfillCompleted=state.get('completed'),
+                    priceBackfillSelectedDates=state.get('selectedDates'),
+                    priceBackfillRemainingDates=len(state.get('remainingDates',[])),
+                    workerExitCode=exit_code,budgetExhausted=timed_out)
             phase = current.get('phase', getattr(args, 'phase', None))
             data_complete = current.get('dataComplete')
+            price_data_complete = current.get('priceDataComplete')
             opening_complete = current.get('openingComplete')
-            completed = opening_complete is True if phase == 'opening' else data_complete is True
+            target_date = current.get('targetDate', getattr(args, 'target_date', None))
+            price_required = bool(target_date and target_date >= PRICE_REQUIRED_FROM)
+            completed = (opening_complete is True if phase == 'opening' else
+                         data_complete is True and (not price_required or price_data_complete is True))
             if current.get('noOp'):
                 outcome = 'no_work'
             elif completed:
@@ -624,8 +695,8 @@ def run(args, client, *, executor=spawn_worker, minimum_universe=1000):
             else:
                 outcome = 'incomplete_checkpointed'
             return dict(result,status=current.get('status','paused'),outcome=outcome,
-                phase=phase,targetDate=current.get('targetDate', getattr(args, 'target_date', None)),
-                dataComplete=data_complete,openingComplete=opening_complete,
+                phase=phase,targetDate=target_date,
+                dataComplete=data_complete,priceDataComplete=price_data_complete,openingComplete=opening_complete,
                 unprocessedCount=current.get('unprocessedCount'),retryableCount=current.get('retryableCount'),
                 nextRetryAt=current.get('nextRetryAt'),exitReason=current.get('exitReason'),
                 publishedAt=current.get('publishedAt', current.get('fullyPublishedAt')),
@@ -642,7 +713,7 @@ def run(args, client, *, executor=spawn_worker, minimum_universe=1000):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--mode',required=True,choices=('probe','daily','history','auto','review'))
+    parser.add_argument('--mode',required=True,choices=('probe','daily','history','auto','review','price_backfill'))
     parser.add_argument('--bucket',required=True);parser.add_argument('--root',required=True)
     parser.add_argument('--region',default='us-east-1');parser.add_argument('--max-minutes',type=float,default=250)
     parser.add_argument('--max-hours',type=float,help='Alternative total budget in hours; includes restore and finalization')
@@ -652,6 +723,10 @@ def main():
     parser.add_argument('--review-id')
     parser.add_argument('--review-as-of')
     parser.add_argument('--review-dates')
+    parser.add_argument('--backfill-id')
+    parser.add_argument('--backfill-from')
+    parser.add_argument('--backfill-to')
+    parser.add_argument('--backfill-batch-size',type=int,default=20)
     parser.add_argument('--internal-worker',action='store_true',help=argparse.SUPPRESS)
     parser.add_argument('--lease-owner',help=argparse.SUPPRESS)
     args=parser.parse_args()
@@ -669,6 +744,14 @@ def main():
             parser.error('Review only accepts saved dates before its as-of date')
     elif any((args.review_id,args.review_as_of,args.review_dates)):
         parser.error('Review arguments require review mode')
+    if args.mode == 'price_backfill':
+        if not args.backfill_id or not re.fullmatch(r'[A-Za-z0-9_-]{1,64}',args.backfill_id):
+            parser.error('Price backfill requires a stable ID')
+        valid_date(args.backfill_from);valid_date(args.backfill_to)
+        if args.backfill_from > args.backfill_to or not 1 <= args.backfill_batch_size <= 20:
+            parser.error('Invalid price backfill range or batch size')
+    elif any((args.backfill_id,args.backfill_from,args.backfill_to)):
+        parser.error('Price backfill arguments require price_backfill mode')
     if args.max_hours is not None:
         if not math.isfinite(args.max_hours):parser.error('Invalid max-hours')
         args.max_minutes=args.max_hours*60
@@ -699,10 +782,13 @@ def main():
 
 def successful_exit(result):
     outcome = result.get('outcome')
+    target_date = result.get('targetDate')
+    if (target_date and target_date >= PRICE_REQUIRED_FROM and
+            result.get('dataComplete') is True and result.get('priceDataComplete') is not True):
+        return False
     if outcome is not None:
-        # A genuine no-op has no incomplete target attached.  Never let a
-        # stale/no-op marker mask an explicit incomplete opening or close
-        # result; the checkpoint remains durable but the workflow must alert.
+        # A genuine no-op has no incomplete target attached. Never let a
+        # stale marker hide an explicitly incomplete opening or close result.
         if outcome == 'no_work' and (result.get('dataComplete') is False or
                                      result.get('openingComplete') is False):
             return False

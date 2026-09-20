@@ -142,7 +142,7 @@ def fetch_primary(task):
     def pair():
         minute = collect.minute_unadjusted(ak, collect.market(code).lower()+code)
         daily = ak.stock_zh_a_daily(symbol=collect.market(code).lower()+code,
-            start_date=min(dates).replace('-', ''), end_date=max(dates).replace('-', ''), adjust='')
+            start_date=collect.window_start(dates), end_date=max(dates).replace('-', ''), adjust='')
         return minute, daily
     try:
         minute, daily = pair()

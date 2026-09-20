@@ -9,9 +9,15 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from scripts import collect, refresh, sina_spot
+from scripts.exchange_status import load_sse_suspensions
 from scripts.daily_collector import SharedHTTPBudget, deadline_for, publish_changes
 from scripts.daily_state import load_calendar, read_json, merge_checkpoint
 from scripts.universe_cache import load_universe, validate_universe
+from scripts.no_trade_evidence import evidence as reviewed_no_trade_evidence
+from scripts.reconciliation import (PRICE_FIELDS, PRICE_REQUIRED_FROM,
+                                    STATUS_EXPLANATION_REQUIRED_FROM,
+                                    price_counts, special_status_counts,
+                                    special_status_explained)
 
 ZONE = ZoneInfo('Asia/Shanghai')
 SOURCE_HTTP_FAILURE_LIMIT = 20
@@ -44,7 +50,8 @@ def validate_cache(value):
 
 def metrics(items, rows, target, phase):
     codes = {item['code'] for item in items}
-    ok = {code for code in codes if refresh.complete(rows.get(code, {}), target.get('date'))}
+    day = target.get('date')
+    ok = {code for code in codes if refresh.complete(rows.get(code, {}), day)}
     observed = {code for code in codes if code in ok or target.get('attempts', {}).get(code, {}).get('committed')
                 or (code in rows and rows[code].get('reason') != '尚未采集')}
     # Valid downloaded rows from the old collector count as observed, not just new attempts.
@@ -57,19 +64,34 @@ def metrics(items, rows, target, phase):
            for code, a in attempts.items() if a.get('nextRetryAt') and
            (code not in target.get('openings', {}) if phase == 'opening' else code not in ok)
            and datetime.fromisoformat(a['nextRetryAt']) > checked_at]
+    result_rows = [rows.get(code, {}) for code in codes]
+    coverage = price_counts(result_rows)
+    explanation_coverage = special_status_counts(result_rows)
+    explanation_required = bool(day and day >= STATUS_EXPLANATION_REQUIRED_FROM)
+    explanation_pending = (explanation_coverage['specialStatusUnexplained']
+                           if explanation_required else 0)
+    pending = missing + explanation_pending
     return dict(totalStocks=len(codes), completedStocks=len(observed), unprocessedCount=unprocessed,
         calculableCount=sum(rows.get(code, {}).get('status') == 'ok' for code in ok),
         noTradeCount=sum(rows.get(code, {}).get('status') == 'suspended' for code in ok),
-        retryableCount=missing-unprocessed, pendingStockDates=missing, pendingCount=missing,
-        firstPassComplete=unprocessed == 0, dataComplete=missing == 0,
+        retryableCount=pending-unprocessed, pendingStockDates=pending, pendingCount=pending,
+        firstPassComplete=unprocessed == 0, dataComplete=pending == 0,
         openingCachedCount=len(codes & set(target.get('openings', {}))),
         openingComplete=codes <= set(target.get('openings', {})),
-        nextRetryAt=min(due, key=lambda value: value[0])[1] if due else None)
+        nextRetryAt=min(due, key=lambda value: value[0])[1] if due else None,
+        **coverage, **explanation_coverage)
 
 
 def should_finish_after_stop(stopped, active):
     """Stop once an interruption has drained the already-dispatched work."""
     return stopped and not active
+
+
+def target_complete(summary, phase, day):
+    if phase == 'opening':
+        return summary.get('openingComplete') is True
+    return (summary.get('dataComplete') is True and
+            (day < PRICE_REQUIRED_FROM or summary.get('priceDataComplete') is True))
 
 
 def should_finish_for_deferred_retry(unresolved, active, pending, next_retry_at, checked_at):
@@ -160,8 +182,11 @@ def run(args, publisher):
             if entry.get('file') != expected_file or not (out/expected_file).is_file():
                 raise ValueError('Historical suspension file is unavailable')
             payload = read_json(out/expected_file)
-            unproven = sum(row.get('status') == 'suspended' and not refresh.complete(row, historical_day)
-                           for row in payload.get('rows', []))
+            explanation_required = historical_day >= STATUS_EXPLANATION_REQUIRED_FROM
+            unproven = sum(row.get('status') == 'suspended' and (
+                not refresh.complete(row, historical_day) or
+                explanation_required and not special_status_explained(row))
+                for row in payload.get('rows', []))
         gap = missing + unverified + (universe_total - total) + unproven
         summary = cache['targets'].setdefault(historical_day, {}).setdefault('summary', {})
         if gap:
@@ -230,17 +255,37 @@ def run(args, publisher):
         calendarDates=days, calendarValidThrough=max(days), speedDegraded=False, attemptedThisRun=0,
         publicationCommitted=False, sourceThrottled=False, sourceHTTPFailureStreak=0,
         message='上午预采开盘量，未发布未收盘指标' if phase=='opening' else '正在补齐目标交易日数据')
-    # Do not inherit a previous run's terminal/error flags.  In particular,
-    # ``noOp`` is only valid for this invocation's explicit no-work paths.  If
-    # it leaks from an earlier window check, a throttled, incomplete refresh can
-    # otherwise be reported as ``no_work`` and turn a GitHub run green.
+    # Do not inherit a previous run's terminal/error flags. In particular,
+    # ``noOp`` only describes this invocation's explicit no-work paths.
     for key in ('error','exitCode','exitReason','noOp','fullyPublishedAt','firstPassCompletedAt','publishedAt'):
         status.pop(key, None)
+    exchange_status_evidence = {}
+    unresolved_sh = [code for code in names if code.startswith('6') and (
+                     not refresh.complete(rows.get(code, {}), day) or
+                     rows.get(code, {}).get('status') == 'suspended' and
+                     not special_status_explained(rows[code]))]
+    if phase != 'opening' and unresolved_sh:
+        try:
+            exchange_status_evidence = load_sse_suspensions(day)
+            exchange_status_evidence = {
+                code: value for code, value in exchange_status_evidence.items()
+                if code in names
+            }
+            status.update(exchangeStatusSource='sse',
+                          exchangeStatusAvailable=True,
+                          exchangeStatusMatchCount=len(exchange_status_evidence))
+        except Exception as exc:
+            # A status-source outage must not convert an empty quote response into
+            # a suspension. The ordinary retry path remains authoritative.
+            status.update(exchangeStatusSource='sse', exchangeStatusAvailable=False,
+                          exchangeStatusMatchCount=0,
+                          exchangeStatusError=type(exc).__name__)
     active = {}; pool = None; changed_count = 0; published = False; last_sync = 0
     source_http_failure_streak = 0; source_throttled = False
     source_cooldown_until = 0.0
     retry_deferred = False
     quote_attempted = set()
+    status_attempted = set()
     close_snapshot = None
 
     def persist():
@@ -263,7 +308,7 @@ def run(args, publisher):
         summary = metrics(items, rows, target, phase)
         if phase != 'opening' and summary['firstPassComplete']:
             target.setdefault('firstPassCompletedAt', now().isoformat())
-        if phase != 'opening' and summary['dataComplete'] and published:
+        if phase != 'opening' and target_complete(summary, phase, day) and published:
             target.setdefault('fullyPublishedAt', now().isoformat())
         status.update(summary, updatedAt=now().isoformat(), httpRequests=budget.count.value,
             httpResponseBytes=budget.byte_count.value, firstPassCompletedAt=target.get('firstPassCompletedAt'),
@@ -288,7 +333,7 @@ def run(args, publisher):
     try:
         daily_missing = sum(not refresh.volume(rows.get(code, {}).get('dailyVolume')) for code in names)
         needs_snapshot = (daily_missing / max(1, len(names)) > .01 or
-                          any(not refresh.quotes_present(rows.get(code, {})) for code in names))
+                          any(not refresh.quotes_present(rows.get(code, {}), day) for code in names))
         if phase != 'opening' and day == today and needs_snapshot:
             close_snapshot = sina_spot.load_snapshot(ak, items, day, moment=began)
             status.update(closeSnapshotAvailableCount=close_snapshot['availableCount'],
@@ -323,7 +368,10 @@ def run(args, publisher):
                     row = result['row']
                     # Preserve independently captured quote fields and exact history.
                     row = dict(rows.get(code, {}), **{key:value for key,value in row.items()
-                               if value is not None or key in ('ratio','reason','pctChange','amplitude')})
+                               if value is not None or key in ('ratio','reason','pctChange','amplitude',
+                                                               *PRICE_FIELDS,'priceStatus')})
+                    if row.get('priceStatus') != 'available':
+                        row.pop('priceSourceProvider', None)
                     record_path = out/'checkpoint'/(code+'.json')
                     saved_record = read_json(record_path)
                     saved_day = saved_record.get('days', {}).get(day, {})
@@ -337,32 +385,39 @@ def run(args, publisher):
                 status['speedDegraded'] |= result['speedDegraded']
                 changed_count += 1
                 if changed_count % 50 == 0: sync()
-            # A source throttle sets ``stopped`` after the current child work
-            # is allowed to drain.  Do not spin until the collection cutoff
-            # with no eligible work: persist the checkpoint and let the
-            # dispatcher restart after ``nextRetryAt`` instead.
+            # Once a throttle has stopped new dispatches, drain only the work
+            # already in flight and release the runner for a later retry.
             if should_finish_after_stop(stopped, active):
                 break
             def quote_repairable(code):
                 row = rows.get(code, {})
                 return (phase != 'opening' and day == today and
-                        not refresh.quotes_present(row) and
+                        not refresh.quotes_present(row, day) and
                         (row.get('status') == 'suspended' or
                          close_snapshot is not None and code in close_snapshot['rows']))
+
+            def status_repairable(code):
+                row = rows.get(code, {})
+                return (phase != 'opening' and row.get('status') == 'suspended' and
+                        not special_status_explained(row) and
+                        (reviewed_no_trade_evidence(code, day) is not None or
+                         code in exchange_status_evidence))
 
             unresolved = [code for code in names if (
                 code not in openings if phase == 'opening' else
                 not refresh.complete(rows.get(code, {}), day) or
-                quote_repairable(code)
+                quote_repairable(code) or status_repairable(code)
             )]
             if not unresolved and not active: break
             source_cooling = not stopped and time.monotonic() < source_cooldown_until
             status['sourceCooldownSeconds'] = round(
                 max(0, source_cooldown_until-time.monotonic()), 2)
             pending = [] if source_cooling else [code for code in unresolved if code not in active and (
+                status_repairable(code) and code not in status_attempted or
                 quote_repairable(code) and code not in quote_attempted or
                 not refresh.complete(rows.get(code, {}), day) and
-                refresh.ready(code, day, phase, attempts.get(code, {}), now())
+                refresh.ready(code, day, phase, attempts.get(code, {}), now(),
+                              exchange_status_evidence.get(code))
             )]
             pending.sort(key=lambda code: (bool(attempts.get(code, {}).get('committed')), code))
             capacity = source_dispatch_capacity(source_http_failure_streak)
@@ -374,8 +429,14 @@ def run(args, publisher):
                 task = (names[code], day, openings.get(code), rows.get(code, {}), phase)
                 if close_snapshot is not None:
                     task += (close_snapshot['rows'].get(code),)
+                if exchange_status_evidence.get(code):
+                    if len(task) == 5:
+                        task += (None,)
+                    task += (exchange_status_evidence[code],)
                 if quote_repairable(code):
                     quote_attempted.add(code)
+                if status_repairable(code):
+                    status_attempted.add(code)
                 active[code] = pool.apply_async(refresh.fetch, (task,))
             # Commit the last <50 first-pass rows before waiting on retry timers.
             if not active and not pending:
@@ -393,7 +454,7 @@ def run(args, publisher):
             else:
                 time.sleep(.1)
         finished = metrics(items, rows, target, phase)
-        complete = finished['openingComplete'] if phase=='opening' else finished['dataComplete']
+        complete = target_complete(finished, phase, day)
         status.update(status='completed' if complete else 'paused', state='completed' if complete else 'paused',
             outcome='completed' if complete else 'incomplete_checkpointed',
             exitCode=0, exitReason='completed' if complete else (

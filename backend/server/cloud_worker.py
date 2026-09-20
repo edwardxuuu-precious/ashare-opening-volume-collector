@@ -12,6 +12,8 @@ sys.path.insert(0, str(ROOT / 'server'))
 from publisher_state import PublisherState, canonical, digest_bytes, file_digest, semantic_digest, checkpoint_digest
 from retention import six_month_start, accumulated_manifest
 from download_only import POLICY
+from reconciliation import (PRICE_FIELDS, PRICE_SCHEMA_VERSION, price_counts,
+                            special_status_counts, validate_price_row)
 
 DATE_FILE = re.compile(r'^\d{4}-\d{2}-\d{2}\.json$')
 
@@ -43,6 +45,18 @@ def validate_day(data, date):
                 raise ValueError('Invalid numeric value')
             if daily <= 0 or not 0 <= first <= daily or not 0 <= ratio <= 100 or abs(ratio - first / daily * 100) > 1e-5:
                 raise ValueError('Invalid ratio arithmetic')
+        validate_price_row(row)
+    if data.get('priceSchemaVersion') is not None:
+        if data.get('priceSchemaVersion') != PRICE_SCHEMA_VERSION or data.get('priceFields') != list(PRICE_FIELDS):
+            raise ValueError('Invalid price schema')
+        expected = price_counts(data['rows'])
+        if any(data.get(key) != value for key, value in expected.items()):
+            raise ValueError('Invalid price coverage counts')
+    if any(key in data for key in ('specialStatusExplained', 'specialStatusUnexplained',
+                                   'statusExplanationComplete')):
+        expected = special_status_counts(data['rows'])
+        if any(data.get(key) != value for key, value in expected.items()):
+            raise ValueError('Invalid special-status coverage counts')
     return data
 
 class Publisher:
@@ -82,6 +96,31 @@ class Publisher:
         self.verified.add(key)
         return receipt
 
+    def _conditional_headers(self, key):
+        """Bind a write to the exact object version observed immediately before it."""
+        if not hasattr(self.client, 'head_object'):
+            return {}
+        try:
+            remote = self.client.head_object(Bucket=self.bucket, Key=key)
+        except Exception as exc:
+            code = getattr(exc, 'response', {}).get('Error', {}).get('Code')
+            no_such_key = getattr(getattr(self.client, 'exceptions', None), 'NoSuchKey', ())
+            if (no_such_key and isinstance(exc, no_such_key)) or code in ('404', 'NoSuchKey', 'NotFound'):
+                return {'IfNoneMatch': '*'}
+            raise
+        etag = remote.get('ETag')
+        if not isinstance(etag, str) or not etag:
+            raise ValueError('Existing private object has no conditional-write ETag')
+        return {'IfMatch': etag}
+
+    def _verify_remote_hash(self, key, expected):
+        """Read back server metadata before recording a successful publication receipt."""
+        if not hasattr(self.client, 'head_object'):
+            return
+        remote = self.client.head_object(Bucket=self.bucket, Key=key)
+        if remote.get('Metadata', {}).get('sha256') != expected:
+            raise ValueError('Private object hash readback mismatch')
+
     def put_json(self, key, value):
         body = canonical(value)
         digest = digest_bytes(body)
@@ -91,7 +130,9 @@ class Publisher:
             return False
         self.client.put_object(Bucket=self.bucket, Key=key, Body=body,
                                ContentType='application/json; charset=utf-8', CacheControl='no-store',
-                               ServerSideEncryption='AES256', Metadata={'sha256': digest})
+                               ServerSideEncryption='AES256', Metadata={'sha256': digest},
+                               **self._conditional_headers(key))
+        self._verify_remote_hash(key, digest)
         self.state.record(key, digest, semantic_digest(value), value.get('generatedAt'))
         self.verified.add(key)
         self.metrics['uploadedObjects'] += 1
@@ -129,7 +170,9 @@ class Publisher:
             raise ValueError('Staged publication hash changed while reading')
         self.client.put_object(Bucket=self.bucket, Key=item['key'], Body=body,
             ContentType='application/json; charset=utf-8', CacheControl='no-store',
-            ServerSideEncryption='AES256', Metadata={'sha256': item['sha256']})
+            ServerSideEncryption='AES256', Metadata={'sha256': item['sha256']},
+            **self._conditional_headers(item['key']))
+        self._verify_remote_hash(item['key'], item['sha256'])
         self.state.record(item['key'], item['sha256'], item['semantic'], item['generatedAt'])
         self.verified.add(item['key'])
         self.metrics['uploadedObjects'] += 1
@@ -245,6 +288,7 @@ class Publisher:
         archive_digest = file_digest(archive)
         self.client.upload_file(str(archive), self.bucket, 'collector/checkpoint.tar.gz',
             ExtraArgs={'ServerSideEncryption':'AES256', 'Metadata':{'sha256': archive_digest, 'content-sha256': digest}})
+        self._verify_remote_hash('collector/checkpoint.tar.gz', archive_digest)
         self.state.record('collector/checkpoint.tar.gz', archive_digest, digest)
         self.verified.add('collector/checkpoint.tar.gz')
         self.metrics['checkpointUploads'] += 1

@@ -10,19 +10,19 @@ try:
     from .sina_unadjusted import minute_unadjusted
     from .universe_cache import load_universe
     from .retention import six_month_start,validate_dates,retain_six_months
-    from .reconciliation import VERIFICATION_VERSION,FallbackBudget,eastmoney_pair,reconcile_stock,reconcile_baostock,needs_baostock_checkpoint,sina_observations
+    from .reconciliation import VERIFICATION_VERSION,FallbackBudget,eastmoney_pair,reconcile_stock,reconcile_baostock,needs_baostock_checkpoint,sina_observations,QUOTE_FIELDS,QUOTE_METHOD,quote_metrics,window_start,PRICE_FIELDS,PRICE_SCHEMA_VERSION,missing_prices,price_counts,special_status_counts
     from .download_only import POLICY, METHOD as DOWNLOAD_METHOD, evaluate_downloaded
 except ImportError:
     from sina_unadjusted import minute_unadjusted
     from universe_cache import load_universe
     from retention import six_month_start,validate_dates,retain_six_months
-    from reconciliation import VERIFICATION_VERSION,FallbackBudget,eastmoney_pair,reconcile_stock,reconcile_baostock,needs_baostock_checkpoint,sina_observations
+    from reconciliation import VERIFICATION_VERSION,FallbackBudget,eastmoney_pair,reconcile_stock,reconcile_baostock,needs_baostock_checkpoint,sina_observations,QUOTE_FIELDS,QUOTE_METHOD,quote_metrics,window_start,PRICE_FIELDS,PRICE_SCHEMA_VERSION,missing_prices,price_counts,special_status_counts
     from download_only import POLICY, METHOD as DOWNLOAD_METHOD, evaluate_downloaded
 
 TIMES = [f'{h:02}:{m:02}:00' for h,m in [(9,45),(10,0),(10,15),(10,30),(10,45),(11,0),(11,15),(11,30),(13,15),(13,30),(13,45),(14,0),(14,15),(14,30),(14,45),(15,0)]]
 STOP_REQUESTED=threading.Event()
 SOURCE='AKShare · 新浪优先，东方财富整套备用核验'
-METHOD='比例 = 同一来源09:45首根15分钟K线成交量 ÷ 同日日线成交量 × 100%，统一为股。新浪优先；差异时清缓存重取一次，再尝试东方财富不复权15分钟和日线整套备用（原始单位均为手，乘100转股）。全天16根齐全、日期与收盘一致、成交量合计精确对齐才纳入排名；不设置股数容差。待核验记录仅保留参考比例，不纳入排名和统计；首根沿用所选来源的开盘成交归属，不保证跨来源首根完全等价，不自行补减集合竞价。历史股票名单是采集当日的在市A股快照。'
+METHOD='比例 = 同一来源09:45首根15分钟K线成交量 ÷ 同日日线成交量 × 100%，统一为股。新浪优先；差异时清缓存重取一次，再尝试东方财富不复权15分钟和日线整套备用（原始单位均为手，乘100转股）。全天16根齐全、日期与收盘一致、成交量合计精确对齐才纳入排名；不设置股数容差。待核验记录仅保留参考比例，不纳入排名和统计；首根沿用所选来源的开盘成交归属，不保证跨来源首根完全等价，不自行补减集合竞价。历史股票名单是采集当日的在市A股快照。'+QUOTE_METHOD
 
 def market(code):
     if code.startswith(('60','68')):return 'SH'
@@ -39,13 +39,14 @@ def finite_number(value):
 def evaluate(code,name,day,minute,daily,daily_lot=False):
     row={'code':str(code),'name':name,'market':market(str(code)),'first15Volume':None,'dailyVolume':None,'ratio':None,'status':'missing','sourceProvider':'sina','verificationVersion':VERIFICATION_VERSION}
     m=minute.copy();d=daily.copy()
-    if 'day' not in m or 'volume' not in m:
-        row['reason']='分钟数据缺失';return row
-    x=m[m['day'].astype(str).str[:10]==day].copy()
     date_col='日期' if '日期' in d else 'date';vol_col='成交量' if '成交量' in d else 'volume'
     z=d[d[date_col].astype(str).str[:10]==day] if date_col in d else pd.DataFrame()
     if len(z)!=1 or vol_col not in z:
         row['reason']='该日的日线数据缺失或重复';return row
+    row.update(zip(QUOTE_FIELDS, quote_metrics(d, day)))
+    if 'day' not in m or 'volume' not in m:
+        row['reason']='分钟数据缺失';return row
+    x=m[m['day'].astype(str).str[:10]==day].copy()
     dv=finite_number(z.iloc[0][vol_col])
     if dv is not None:dv*=100 if daily_lot else 1
     if dv is None or dv<0 or not dv.is_integer():
@@ -104,7 +105,7 @@ def publish(results,dates,out,scope,universe_total,attempted_count=None,reconcil
         source_policy=['sina']
         policy='none'
         methodology=DOWNLOAD_METHOD
-    now=datetime.now(ZoneInfo('Asia/Shanghai')).isoformat(timespec='seconds');manifest={'generatedAt':now,'source':source,'sourcePolicy':source_policy,'scope':scope,'universeTotal':universe_total,'attemptedCount':attempted_count,'pendingCount':len(results)-attempted_count,'methodology':methodology,'reconciliationPolicy':policy,'dates':[]}
+    now=datetime.now(ZoneInfo('Asia/Shanghai')).isoformat(timespec='seconds');manifest={'generatedAt':now,'source':source,'sourcePolicy':source_policy,'scope':scope,'universeTotal':universe_total,'attemptedCount':attempted_count,'pendingCount':len(results)-attempted_count,'methodology':methodology,'reconciliationPolicy':policy,'priceSchemaVersion':PRICE_SCHEMA_VERSION,'priceFields':list(PRICE_FIELDS),'dates':[]}
     observed_sources=set()
     for day in sorted(dates,reverse=True):
         rows=[safe_saved_row(r['days'][day]) for r in results if day in r['days']];valid=sum(r['status']=='ok' for r in rows);missing=sum(r['status']=='missing' for r in rows);suspended=sum(r['status']=='suspended' for r in rows);unverified=sum(r['status']=='unverified' for r in rows)
@@ -138,14 +139,20 @@ def publish(results,dates,out,scope,universe_total,attempted_count=None,reconcil
             merged.extend(old_rows.values());rows=merged
             if old_rows:
                 payload.update(scope=previous['scope'],universeTotal=previous['universeTotal'],attemptedCount=max(attempted_count,previous.get('attemptedCount',0)))
-        payload.update(rows=rows,total=len(rows),retainedCount=retained)
+        coverage=price_counts(rows)
+        explanation_coverage=special_status_counts(rows)
+        payload.update(rows=rows,total=len(rows),retainedCount=retained,
+                       priceSchemaVersion=PRICE_SCHEMA_VERSION,priceFields=list(PRICE_FIELDS),
+                       **coverage,**explanation_coverage)
+        payload['quoteFields']=dict(payload.get('quoteFields') or {},adjustment='none',unit='CNY/share',
+                                    priceFields=list(PRICE_FIELDS))
         if single_source:
             payload['collectionSourcePolicy']=['sina']
             payload['calculationPolicy']=POLICY
             payload['sourcePolicy']=sorted({'sina'} | {r.get('sourceProvider','unknown') for r in rows})
             observed_sources.update(payload['sourcePolicy'])
         valid=sum(r['status']=='ok' for r in rows);missing=sum(r['status']=='missing' for r in rows);suspended=sum(r['status']=='suspended' for r in rows);unverified=sum(r['status']=='unverified' for r in rows)
-        write_json(target,payload);manifest['dates'].append({'date':day,'status':'complete' if payload['scope']=='full' and valid+suspended==len(rows) else 'partial','total':len(rows),'valid':valid,'missing':missing,'unverified':unverified,'suspended':suspended,'file':file,'generatedAt':payload['generatedAt'],'retainedCount':retained,'scope':payload['scope']})
+        write_json(target,payload);manifest['dates'].append({'date':day,'status':'complete' if payload['scope']=='full' and valid+suspended==len(rows) else 'partial','total':len(rows),'valid':valid,'missing':missing,'unverified':unverified,'suspended':suspended,'file':file,'generatedAt':payload['generatedAt'],'retainedCount':retained,'scope':payload['scope'],'priceSchemaVersion':PRICE_SCHEMA_VERSION,**coverage,**explanation_coverage})
     previous_manifest=out/'manifest.json'
     if previous_manifest.exists():
         requested=set(dates)
@@ -208,7 +215,9 @@ def attempted_checkpoint(record, dates):
 def pending_record(item,dates):
     return {'code':item['code'],'fetchStatus':'pending','days':{
         day:{'code':item['code'],'name':item['name'],'market':market(item['code']),
-             'first15Volume':None,'dailyVolume':None,'ratio':None,'status':'missing','reason':'尚未采集','verificationVersion':VERIFICATION_VERSION}
+             'first15Volume':None,'dailyVolume':None,'ratio':None,'pctChange':None,'amplitude':None,
+             'status':'missing','reason':'尚未采集','verificationVersion':VERIFICATION_VERSION,
+             **missing_prices()}
         for day in dates}}
 
 
@@ -299,12 +308,12 @@ def run_collection(args):
                 for attempt in range(1 if single_source else 2):
                     try:
                         minute=reference if code=='000001' and reference is not None else get_minute(symbol)
-                        daily=ak.stock_zh_a_daily(symbol=symbol,start_date=min(dates).replace('-',''),end_date=max(dates).replace('-',''),adjust='')
+                        daily=ak.stock_zh_a_daily(symbol=symbol,start_date=window_start(dates),end_date=max(dates).replace('-',''),adjust='')
                         by_day={d:(evaluate_downloaded(code,item['name'],d,minute,daily,market) if single_source
                                    else evaluate(code,item['name'],d,minute,daily)) for d in dates}
                         def fresh_primary():
                             fresh_minute=get_minute(symbol)
-                            fresh_daily=ak.stock_zh_a_daily(symbol=symbol,start_date=min(dates).replace('-',''),end_date=max(dates).replace('-',''),adjust='')
+                            fresh_daily=ak.stock_zh_a_daily(symbol=symbol,start_date=window_start(dates),end_date=max(dates).replace('-',''),adjust='')
                             return fresh_minute,fresh_daily
                         by_day=by_day if single_source else reconcile_stock(code,item['name'],dates,by_day,fresh_primary,
                             lambda selected_dates:eastmoney_pair(ak,code,selected_dates),budget.clear_cache,evaluate,fallback_budget,

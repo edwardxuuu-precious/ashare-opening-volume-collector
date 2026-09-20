@@ -66,7 +66,8 @@ class PublisherState:
 def checkpoint_members(out):
     out = Path(out)
     result = []
-    for name in ('checkpoint', 'universe.json', 'calendar.json', 'run-status.json', 'daily-state.json', 'daily-attempts.jsonl', 'refresh-state.json'):
+    for name in ('checkpoint', 'universe.json', 'calendar.json', 'run-status.json', 'daily-state.json', 'daily-attempts.jsonl', 'refresh-state.json',
+                 'price-backfill-state.json', 'price-backfill-cache.json'):
         path = out / name
         if path.is_symlink():
             raise ValueError('Checkpoint symlinks are not supported')

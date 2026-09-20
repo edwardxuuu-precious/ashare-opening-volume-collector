@@ -5,7 +5,8 @@ only Sina through AKShare. The current trading day uses one bounded whole-market
 snapshot after 15:30; historical gaps use Sina daily bars. Results keep their
 original source and calculate opening volume divided by daily volume without
 reconciliation. Only the recent six months are restored for active collection;
-older saved dates remain queryable without repeated downloads.
+the bounded manual OHLC backfill may additionally restore its frozen historical
+range. Older saved dates otherwise remain queryable without repeated downloads.
 
 The source probe runs without AWS permissions and prints aggregate diagnostics.
 The production workflow writes to private S3 through a repository-scoped OIDC

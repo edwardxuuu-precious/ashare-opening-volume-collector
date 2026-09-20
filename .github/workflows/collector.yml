@@ -11,6 +11,7 @@ on:
           - restore_probe
           - collect
           - review
+          - price_backfill
       max_minutes:
         description: Total runtime budget; 12 for handoff smoke, 285 for normal updates
         required: true
@@ -36,6 +37,22 @@ on:
       target_date:
         description: Explicit trading date YYYY-MM-DD; empty selects the eligible trading date
         type: string
+      backfill_id:
+        description: Stable resumable OHLC backfill identifier
+        type: string
+        default: ohlc-v1-20260920
+      backfill_from:
+        description: First saved date included in OHLC backfill
+        type: string
+        default: '2026-03-06'
+      backfill_to:
+        description: Last saved date included in OHLC backfill
+        type: string
+        default: '2026-09-18'
+      backfill_batch_size:
+        description: Newest incomplete dates patched per run, maximum 20
+        type: string
+        default: '20'
   schedule:
     # Backup only. The independent dispatcher uses Asia/Shanghai schedules.
     - cron: '50 1 * * 1-5'
@@ -72,6 +89,10 @@ jobs:
       STOCK_REVIEW_DATES: ${{ inputs.review_dates }}
       STOCK_PHASE: ${{ inputs.phase }}
       STOCK_TARGET_DATE: ${{ inputs.target_date }}
+      STOCK_BACKFILL_ID: ${{ inputs.backfill_id }}
+      STOCK_BACKFILL_FROM: ${{ inputs.backfill_from }}
+      STOCK_BACKFILL_TO: ${{ inputs.backfill_to }}
+      STOCK_BACKFILL_BATCH_SIZE: ${{ inputs.backfill_batch_size }}
       STOCK_SCHEDULE: ${{ github.event.schedule }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
@@ -108,6 +129,11 @@ jobs:
               test "$STOCK_WRITER_DISABLED" = true
               review_args=(--review-id "$STOCK_REVIEW_ID" --review-as-of "$STOCK_REVIEW_AS_OF" --review-dates "$STOCK_REVIEW_DATES")
               ;;
+            price_backfill)
+              mode=price_backfill
+              review_args=(--backfill-id "$STOCK_BACKFILL_ID" --backfill-from "$STOCK_BACKFILL_FROM" \
+                --backfill-to "$STOCK_BACKFILL_TO" --backfill-batch-size "$STOCK_BACKFILL_BATCH_SIZE")
+              ;;
             *) exit 2 ;;
           esac
           runner_result="$RUNNER_TEMP/collector-result.jsonl"
@@ -123,9 +149,11 @@ jobs:
           import sys
 
           allowed = (
-              "outcome", "phase", "targetDate", "dataComplete", "openingComplete",
+              "outcome", "phase", "targetDate", "dataComplete", "priceDataComplete", "openingComplete",
               "checkpointSaved", "unprocessedCount", "retryableCount", "nextRetryAt",
               "exitReason", "publishedAt", "publicationCommitted", "elapsedSeconds",
+              "priceBackfillId", "priceBackfillCompleted", "priceBackfillSelectedDates",
+              "priceBackfillRemainingDates",
           )
           result = {}
           for line in open(sys.argv[1], encoding="utf-8"):

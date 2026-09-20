@@ -1,10 +1,151 @@
 """Bounded same-provider reconciliation; conflicting observations never become valid ratios."""
 from __future__ import annotations
-from datetime import datetime
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
+import math
 import pandas as pd
 
-VERIFICATION_VERSION = 2
+VERIFICATION_VERSION = 3
+QUOTE_FIELDS = ('pctChange', 'amplitude')
+PRICE_FIELDS = ('open', 'high', 'low', 'close')
+PRICE_SCHEMA_VERSION = 1
+PRICE_REQUIRED_FROM = '2026-09-21'
+STATUS_EXPLANATION_REQUIRED_FROM = '2026-09-18'
+QUOTE_METHOD = ('涨跌幅与振幅取自同一日线来源：涨跌幅=(当日收盘-上一交易日收盘)/上一交易日收盘×100%；'
+                '振幅=(当日最高-当日最低)/上一交易日收盘×100%。日线窗口缺少前收或最高最低时两字段留空，不影响开盘占比。')
+
+
+def _finite_number(value):
+    if isinstance(value, bool):
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) else None
+
+
+def missing_prices(status='missing'):
+    """Return an atomic price state. Partial OHLC values are never exposed."""
+    if status not in ('missing', 'not_traded'):
+        raise ValueError('Invalid price status')
+    return {**{field: None for field in PRICE_FIELDS}, 'priceStatus': status}
+
+
+def normalize_ohlc(open_price, high, low, close):
+    """Validate one unadjusted daily bar as an indivisible observation."""
+    values = tuple(_finite_number(value) for value in (open_price, high, low, close))
+    if any(value is None or value <= 0 for value in values):
+        return missing_prices()
+    open_price, high, low, close = values
+    if not (low <= open_price <= high and low <= close <= high):
+        return missing_prices()
+    return dict(open=open_price, high=high, low=low, close=close, priceStatus='available')
+
+
+def validate_price_row(row, allow_legacy=True):
+    """Validate the persisted atomic OHLC contract and return its state."""
+    if 'priceStatus' not in row and allow_legacy:
+        return None
+    present = {field for field in (*PRICE_FIELDS, 'priceStatus') if field in row}
+    if present != set((*PRICE_FIELDS, 'priceStatus')):
+        raise ValueError('Partial OHLC price record')
+    status = row.get('priceStatus')
+    if status not in ('available', 'not_traded', 'missing'):
+        raise ValueError('Invalid price status')
+    if status == 'available':
+        normalized = normalize_ohlc(*(row[field] for field in PRICE_FIELDS))
+        if normalized['priceStatus'] != 'available':
+            raise ValueError('Invalid OHLC values')
+        if row.get('priceSourceProvider') not in ('sina', 'tencent'):
+            raise ValueError('Available OHLC requires a supported source')
+    else:
+        if any(row[field] is not None for field in PRICE_FIELDS):
+            raise ValueError('Unavailable OHLC must be entirely null')
+        if status == 'not_traded' and row.get('status') != 'suspended':
+            raise ValueError('Only confirmed no-trade rows may use not_traded')
+        if status == 'not_traded' and (not isinstance(row.get('noTradeEvidence'), dict)
+                                       or not row['noTradeEvidence']):
+            raise ValueError('No-trade OHLC requires evidence')
+    return status
+
+
+def price_counts(rows):
+    states = [validate_price_row(row) or 'missing' for row in rows]
+    return dict(
+        priceAvailable=states.count('available'),
+        priceNoTrade=states.count('not_traded'),
+        priceMissing=states.count('missing'),
+        priceDataComplete='missing' not in states,
+    )
+
+
+def special_status_explained(row):
+    """Return whether a no-trade row has a concrete user-facing explanation."""
+    if row.get('status') != 'suspended':
+        return True
+    status = row.get('specialStatus')
+    required = ('type', 'label', 'description', 'startedAt', 'source')
+    if not isinstance(status, dict) or any(not isinstance(status.get(key), str) or not status[key].strip()
+                                           for key in required):
+        return False
+    try:
+        return datetime.strptime(status['startedAt'], '%Y-%m-%d').date().isoformat() == status['startedAt']
+    except ValueError:
+        return False
+
+
+def special_status_counts(rows):
+    no_trade = [row for row in rows if row.get('status') == 'suspended']
+    explained = sum(special_status_explained(row) for row in no_trade)
+    return dict(specialStatusExplained=explained,
+                specialStatusUnexplained=len(no_trade)-explained,
+                statusExplanationComplete=explained == len(no_trade))
+
+
+def window_start(dates, lookback_days=10):
+    """Start a daily fetch a few calendar days earlier so the first requested
+    trading day still has a previous close for pctChange/amplitude."""
+    return (datetime.strptime(min(dates), '%Y-%m-%d') - timedelta(days=lookback_days)).strftime('%Y%m%d')
+
+
+def quote_observation(d, day):
+    """Return atomic OHLC plus derived quote metrics from one daily frame."""
+    date_col = 'date' if 'date' in d else ('日期' if '日期' in d else None)
+    open_col = 'open' if 'open' in d else '开盘'
+    close_col = 'close' if 'close' in d else '收盘'
+    high_col = 'high' if 'high' in d else '最高'
+    low_col = 'low' if 'low' in d else '最低'
+    result = dict(missing_prices(), pctChange=None, amplitude=None)
+    required = {open_col, close_col, high_col, low_col}
+    if date_col is None or not required <= set(d.columns):
+        return result
+    frame = d[[date_col, open_col, close_col, high_col, low_col]].copy()
+    frame[date_col] = frame[date_col].astype(str).str[:10]
+    frame = frame.drop_duplicates(subset=date_col, keep='last').sort_values(date_col).reset_index(drop=True)
+    hit = frame.index[frame[date_col] == day]
+    if len(hit) != 1:
+        return result
+    i = int(hit[0])
+    prices = normalize_ohlc(frame.iloc[i][open_col], frame.iloc[i][high_col],
+                            frame.iloc[i][low_col], frame.iloc[i][close_col])
+    result.update(prices)
+    if prices['priceStatus'] != 'available' or i == 0:
+        return result
+    prev = _finite_number(frame.iloc[i-1][close_col])
+    if prev is None or prev <= 0:
+        return result
+    result.update(
+        pctChange=round((prices['close'] - prev) / prev * 100, 4),
+        amplitude=round((prices['high'] - prices['low']) / prev * 100, 4),
+    )
+    return result
+
+
+def quote_metrics(d, day):
+    """Backward-compatible derived-metric interface."""
+    quote = quote_observation(d, day)
+    return quote['pctChange'], quote['amplitude']
 
 
 def sina_observations(initial):
@@ -47,7 +188,7 @@ def eastmoney_pair(ak, code, dates):
     minute = ak.stock_zh_a_hist_min_em(symbol=code, period='15',
         start_date=start+' 09:30:00', end_date=end+' 15:00:00', adjust='')
     daily = ak.stock_zh_a_hist(symbol=code, period='daily',
-        start_date=start.replace('-', ''), end_date=end.replace('-', ''), adjust='', timeout=20)
+        start_date=window_start(dates), end_date=end.replace('-', ''), adjust='', timeout=20)
     minute = minute.rename(columns={'时间':'day', '成交量':'volume', '收盘':'close'}).copy()
     daily = daily.rename(columns={'日期':'date', '成交量':'volume', '收盘':'close'}).copy()
     # Never substitute missing fields or infer a unit from numeric magnitude.

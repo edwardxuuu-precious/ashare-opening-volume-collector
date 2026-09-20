@@ -5,10 +5,15 @@ from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+try:
+    from .reconciliation import VERIFICATION_VERSION, QUOTE_METHOD, quote_observation
+except ImportError:
+    from reconciliation import VERIFICATION_VERSION, QUOTE_METHOD, quote_observation
+
 POLICY = 'download_only'
 METHOD = ('新采集固定使用AKShare新浪。开盘占比=09:45首根15分钟成交量÷同日全天成交量×100%，单位为股；'
           '当天全天量、涨跌幅和振幅在15:30后取一次新浪全市场快照，历史补数仍取新浪不复权日线。'
-          '不比对全天分钟合计，不进行备用源核对。历史记录保留原始来源。')
+          '不比对全天分钟合计，不进行备用源核对。历史记录保留原始来源。' + QUOTE_METHOD)
 
 
 def volumes_present(row):
@@ -22,7 +27,7 @@ def downloaded_row(original):
     # Existing successful observations retain their exact identity and source.
     if row.get('status') in ('ok','suspended'):
         return row
-    row.update(calculationPolicy=POLICY, verificationVersion=2)
+    row.update(calculationPolicy=POLICY, verificationVersion=VERIFICATION_VERSION)
     if volumes_present(row):
         row.update(status='ok', ratio=round(row['first15Volume']/row['dailyVolume']*100,6),
                    quality='downloaded', verificationState='downloaded')
@@ -33,7 +38,7 @@ def downloaded_row(original):
 
 
 def evaluate_downloaded(code, name, day, minute, daily, market):
-    row=dict(code=code,name=name,market=market(code),sourceProvider='sina',verificationVersion=2,
+    row=dict(code=code,name=name,market=market(code),sourceProvider='sina',verificationVersion=VERIFICATION_VERSION,
              calculationPolicy=POLICY,status='missing',first15Volume=None,dailyVolume=None,ratio=None)
     opening_rows = 0
     daily_rows = 0
@@ -45,18 +50,16 @@ def evaluate_downloaded(code, name, day, minute, daily, market):
             row['first15Volume']=_number(opening.iloc[0]['volume'])
     date_col='date' if 'date' in daily else '日期'
     volume_col='volume' if 'volume' in daily else '成交量'
+    row.update(quote_observation(daily, day))
+    if row['priceStatus'] == 'available':
+        row['priceSourceProvider'] = 'sina'
     if date_col in daily and volume_col in daily:
         selected=daily[daily[date_col].astype(str).str[:10]==day]
         daily_rows=len(selected)
         if len(selected)==1:row['dailyVolume']=_number(selected.iloc[0][volume_col])
-    # A completed historical request with no minute or daily row means there was
-    # no trading session for this listed security (for example, a suspension).
-    # Treat it as terminal so the backlog does not retry it forever. Keep the
-    # current date retryable in case the provider has not published it yet.
-    today=datetime.now(ZoneInfo('Asia/Shanghai')).date().isoformat()
-    if day < today and opening_rows == 0 and daily_rows == 0:
-        row['status']='suspended'
-        return row
+    # An empty history response is not formal evidence of a suspension or
+    # delisting.  Keep it retryable until a source reports zero volume or an
+    # exact-date exchange/company record is attached by the refresh layer.
     return downloaded_row(row)
 
 

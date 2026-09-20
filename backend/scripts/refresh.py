@@ -4,6 +4,7 @@ import math
 
 from . import collect
 from .download_only import evaluate_downloaded, volumes_present
+from .reconciliation import PRICE_FIELDS, PRICE_REQUIRED_FROM, missing_prices, validate_price_row
 
 AK = None
 
@@ -27,20 +28,26 @@ def complete(row, day=None):
         if not isinstance(evidence, dict) or (day and evidence.get('date') != day):
             return False
         from .no_trade_evidence import valid_notice
+        from .exchange_status import valid_exchange_evidence
         return ((evidence.get('kind') == 'explicit_zero_daily_volume' and evidence.get('volume') == 0)
-                or valid_notice(evidence, row.get('code')))
+                or valid_notice(evidence, row.get('code'))
+                or valid_exchange_evidence(evidence, row.get('code')))
     return row.get('status') == 'ok' and volumes_present(row) and type(row.get('ratio')) in (int, float) and abs(
         row['ratio'] - row['first15Volume'] / row['dailyVolume'] * 100) <= 1e-5
 
 
-def quotes_present(row):
+def quotes_present(row, day=None):
     """A quote snapshot was applied, including an explicitly unavailable value."""
     if row.get('status') == 'suspended':
-        return ('pctChange' in row and 'amplitude' in row and
-                row.get('pctChange') is None and row.get('amplitude') is None)
-    return all(key in row and (row[key] is None or
+        metrics = ('pctChange' in row and 'amplitude' in row and
+                   row.get('pctChange') is None and row.get('amplitude') is None)
+    else:
+        metrics = all(key in row and (row[key] is None or
                (type(row[key]) in (int, float) and math.isfinite(row[key])))
                for key in ('pctChange', 'amplitude'))
+    if not metrics or not day or day < PRICE_REQUIRED_FROM:
+        return metrics
+    return validate_price_row(row) in ('available', 'not_traded')
 
 
 def retry_due(attempt, now):
@@ -50,9 +57,12 @@ def retry_due(attempt, now):
     return not attempt.get('nextRetryAt') or datetime.fromisoformat(attempt['nextRetryAt']) <= now
 
 
-def ready(code, day, phase, attempt, now):
+def ready(code, day, phase, attempt, now, status_evidence=None):
     from .no_trade_evidence import evidence
-    return (phase != 'opening' and evidence(code, day) is not None) or retry_due(attempt, now)
+    from .exchange_status import valid_exchange_evidence
+    confirmed = (evidence(code, day) is not None or
+                 valid_exchange_evidence(status_evidence, code))
+    return (phase != 'opening' and confirmed) or retry_due(attempt, now)
 
 
 def commit_attempt(previous, now, success):
@@ -97,7 +107,9 @@ def select_target(phase, explicit, calendar, cache, legacy, now):
     if explicit or phase != 'catchup' or not selected:
         return selected
     targets = cache.get('targets', {})
-    if targets.get(selected, {}).get('summary', {}).get('dataComplete') is not True:
+    selected_summary = targets.get(selected, {}).get('summary', {})
+    if (selected_summary.get('dataComplete') is not True or
+            selected >= PRICE_REQUIRED_FROM and selected_summary.get('priceDataComplete') is not True):
         return selected
     pending = {day for values in legacy.get('pending', {}).values() for day in values}
     pending |= {day for day, value in targets.items() if value.get('summary', {}).get('pendingCount', 0)}
@@ -111,15 +123,24 @@ def fetch(task):
     import pandas as pd
     from .sina_daily import daily_unadjusted
     item, day, opening, previous, phase = task[:5]
-    snapshot_supplied = len(task) == 6
-    snapshot = task[5] if snapshot_supplied else None
+    # Keep the established 5/6-item task contract. A seventh item is used only
+    # when the parent has exact-day exchange evidence for this stock.
+    snapshot = task[5] if len(task) >= 6 else None
+    status_evidence = task[6] if len(task) >= 7 else None
+    snapshot_supplied = len(task) == 6 or (len(task) >= 7 and snapshot is not None)
     code = item['code']; symbol = collect.market(code).lower() + code
     from .no_trade_evidence import evidence
+    from .exchange_status import valid_exchange_evidence
     notice = evidence(code, day)
+    if not notice and valid_exchange_evidence(status_evidence, code):
+        notice = status_evidence
     if phase != 'opening' and notice:
         row = collect.pending_record(item, [day])['days'][day]
         row.update(status='suspended', calculationPolicy='download_only', ratio=None,
                    reason='公司公告确认目标日停牌，无交易', noTradeEvidence=notice)
+        row.update(missing_prices('not_traded'))
+        if notice.get('specialStatus'):
+            row['specialStatus'] = notice['specialStatus']
         return dict(code=code,row=row,opening=None,errors=[],speedDegraded=False,firstDataRequestAt=None)
     errors = []; degraded = False; request_started = None
     first = opening if volume(opening) else previous.get('first15Volume')
@@ -155,13 +176,17 @@ def fetch(task):
             errors.append('daily:'+type(exc).__name__)
     row = evaluate_downloaded(code, item['name'], day, minute, daily, collect.market)
     if snapshot:
-        for key in ('pctChange', 'amplitude', 'dailyAdapter', 'quoteTime'):
+        for key in ('pctChange', 'amplitude', *PRICE_FIELDS, 'priceStatus',
+                    'priceSourceProvider', 'dailyAdapter', 'quoteTime'):
             if key in snapshot:
                 row[key] = snapshot[key]
     if row.get('dailyVolume') == 0:
         row.update(status='suspended', ratio=None, noTradeEvidence=dict(kind='explicit_zero_daily_volume',
             provider='sina', date=day, symbol=symbol, volume=0))
+        row.update(missing_prices('not_traded'))
     elif not complete(row):
         row.update(status='missing', ratio=None, reason='；'.join(errors) or '新浪未提供目标日期的开盘量或日成交量；等待补采')
+        if row.get('priceStatus') == 'not_traded':
+            row.update(missing_prices())
     return dict(code=code, row=row, opening=row.get('first15Volume'), errors=errors, speedDegraded=degraded,
                 firstDataRequestAt=request_started)

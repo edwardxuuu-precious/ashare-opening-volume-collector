@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Import verified supplemental checkpoints only; never publish or control services."""
 from __future__ import annotations
-import argparse, fcntl, hashlib, json, math, os, re, tarfile, tempfile
+import argparse, fcntl, hashlib, json, math, os, re, sys, tarfile, tempfile
 from contextlib import ExitStack
 from datetime import date, datetime
 from pathlib import Path
@@ -10,13 +10,15 @@ try:
     from .cloud_worker import validate_day
 except ImportError:
     from cloud_worker import validate_day
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
+from reconciliation import VERIFICATION_VERSION
 
 NAME = re.compile(r'checkpoint/([0-9]{6})\.json')
 ISO_DAY = re.compile(r'[0-9]{4}-[0-9]{2}-[0-9]{2}')
 MAX_MEMBER = 8 * 1024 * 1024
 MAX_TOTAL = 2 * 1024 * 1024 * 1024
 MAX_RECORDS = 10000
-REQUIRED_VERSION = 2
+REQUIRED_VERSION = VERIFICATION_VERSION
 
 
 def strict_json(raw):
