@@ -78,20 +78,35 @@ def valid_listing_record(value, code):
             and _iso_date(value.get('listingDate')) == value.get('listingDate'))
 
 
-def load_listing_catalog(ak=None):
+def load_listing_catalog(ak=None, *, retries=2, sleep=None):
     """Load one bounded current listing catalog from each official exchange."""
     if ak is None:
         import akshare as ak
+    if type(retries) is not int or not 0 <= retries <= 4:
+        raise ValueError('Invalid exchange listing retry count')
+    if sleep is None:
+        from time import sleep
     specs = (
-        ('szse', ak.stock_info_sz_name_code('A股列表'), 'A股代码', 'A股上市日期'),
-        ('sse', ak.stock_info_sh_name_code('主板A股'), '证券代码', '上市日期'),
-        ('sse', ak.stock_info_sh_name_code('科创板'), '证券代码', '上市日期'),
-        ('bse', ak.stock_info_bj_name_code(), '证券代码', '上市日期'),
+        ('szse', 'A股列表', lambda: ak.stock_info_sz_name_code('A股列表'), 'A股代码', 'A股上市日期'),
+        ('sse', '主板A股', lambda: ak.stock_info_sh_name_code('主板A股'), '证券代码', '上市日期'),
+        ('sse', '科创板', lambda: ak.stock_info_sh_name_code('科创板'), '证券代码', '上市日期'),
+        ('bse', '上市公司', ak.stock_info_bj_name_code, '证券代码', '上市日期'),
     )
     result = {}
-    for provider, frame, code_key, date_key in specs:
-        parsed = parse_listing_records(frame.to_dict('records'), code_key=code_key,
-            date_key=date_key, provider=provider, source_url=LISTING_SOURCES[provider])
+    for provider, label, loader, code_key, date_key in specs:
+        failure = None
+        for attempt in range(retries + 1):
+            try:
+                frame = loader()
+                parsed = parse_listing_records(frame.to_dict('records'), code_key=code_key,
+                    date_key=date_key, provider=provider, source_url=LISTING_SOURCES[provider])
+                break
+            except (Exception, SystemExit) as exc:
+                failure = exc
+                if attempt < retries:
+                    sleep(2 ** attempt)
+        else:
+            raise RuntimeError(f'Official listing source unavailable: {provider} {label}') from failure
         for code, evidence in parsed.items():
             if code in result and result[code] != evidence:
                 raise ValueError('Conflicting exchange listing catalogs')

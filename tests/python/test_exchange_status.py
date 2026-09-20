@@ -4,10 +4,44 @@ from unittest.mock import Mock
 
 from scripts.exchange_status import (listing_evidence, parse_listing_records,
                                      parse_market_suspensions,
-                                     load_sse_suspensions, parse_sse_suspensions)
+                                     load_listing_catalog, load_sse_suspensions,
+                                     parse_sse_suspensions)
 
 
 class ExchangeStatusTests(unittest.TestCase):
+    def test_listing_catalog_retries_each_official_source_before_accepting_it(self):
+        class Frame:
+            def __init__(self, rows):
+                self.rows = rows
+
+            def to_dict(self, orient):
+                self.assert_orient = orient
+                return self.rows
+
+        sz_rows = [
+            {'A股代码':str(300000 + index), 'A股上市日期':'2020-01-01'}
+            for index in range(1000)
+        ] + [{'A股代码':'301688', 'A股上市日期':'2026-09-02'}]
+        sh_frames = {
+            '主板A股':Frame([{'证券代码':'601123', '上市日期':'2026-09-01'}]),
+            '科创板':Frame([{'证券代码':'688835', '上市日期':'2026-08-25'}]),
+        }
+        provider = Mock()
+        provider.stock_info_sz_name_code.side_effect = [OSError('temporary TLS failure'), Frame(sz_rows)]
+        provider.stock_info_sh_name_code.side_effect = lambda board: sh_frames[board]
+        provider.stock_info_bj_name_code.return_value = Frame([
+            {'证券代码':'920289', '上市日期':'2026-09-04'},
+        ])
+        sleep = Mock()
+
+        catalog = load_listing_catalog(provider, retries=1, sleep=sleep)
+
+        self.assertEqual(catalog['301688']['listingDate'], '2026-09-02')
+        self.assertEqual(catalog['601123']['provider'], 'sse')
+        self.assertEqual(catalog['920289']['provider'], 'bse')
+        self.assertEqual(provider.stock_info_sz_name_code.call_count, 2)
+        sleep.assert_called_once_with(1)
+
     def test_exchange_listing_catalog_proves_exact_prelisting_days(self):
         catalog = parse_listing_records(
             [{'A股代码':'301688','A股上市日期':'2026-09-02'}],
@@ -94,4 +128,3 @@ class ExchangeStatusTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
-
