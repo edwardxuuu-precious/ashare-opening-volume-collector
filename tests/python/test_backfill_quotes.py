@@ -109,8 +109,12 @@ class PriceBackfillTests(unittest.TestCase):
                            'source':'交易所公告'})
         stopped['verificationVersion'] = 2
         self.write_day(day, [normal, stopped])
+        day_path = self.out / (day + '.json')
+        day_payload = json.loads(day_path.read_text())
+        day_payload['universeTotal'] = 2
+        day_path.write_text(json.dumps(day_payload))
         (self.out/'manifest.json').write_text(json.dumps(dict(
-            generatedAt='old', methodology='fixture',
+            generatedAt='old', methodology='fixture', universeTotal=1,
             dates=[dict(date=day,file=day+'.json',generatedAt='old')])) )
         before = {key: normal[key] for key in ('first15Volume','dailyVolume','ratio','status')}
         quote = dict(open=9.8, high=10.3, low=9.7, close=10.0,
@@ -140,7 +144,9 @@ class PriceBackfillTests(unittest.TestCase):
         self.assertEqual(payload['priceNoTrade'],1)
         self.assertEqual(payload['priceMissing'],0)
         self.assertTrue(payload['priceDataComplete'])
-        entry=json.loads((self.out/'manifest.json').read_text())['dates'][0]
+        manifest=json.loads((self.out/'manifest.json').read_text())
+        self.assertEqual(manifest['universeTotal'], 2)
+        entry=manifest['dates'][0]
         self.assertTrue(entry['priceDataComplete'])
 
     def test_historical_status_evidence_completes_price_without_mutating_core_status(self):

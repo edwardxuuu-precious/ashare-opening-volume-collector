@@ -355,6 +355,17 @@ def touch_manifest(out, changed_generated_at, selected_dates=None):
             for key in ('priceSchemaVersion','priceAvailable','priceNoTrade','priceMissing','priceDataComplete',
                         'specialStatusExplained','specialStatusUnexplained','statusExplanationComplete'):
                 entry[key] = payload[key]
+    latest = max((entry for entry in entries if isinstance(entry.get('date'), str)),
+                 key=lambda entry: entry['date'], default=None)
+    if latest:
+        file = latest.get('file')
+        payload = load_json(out / file) if file and re.fullmatch(r'^\d{4}-\d{2}-\d{2}\.json$', file) else None
+        if payload:
+            latest_total = payload.get('universeTotal', payload.get('total'))
+            rows = payload.get('rows')
+            if (isinstance(latest_total, int) and latest_total > 0 and
+                    isinstance(rows, list) and len(rows) == latest_total):
+                manifest['universeTotal'] = latest_total
     if '涨跌幅' not in manifest.get('methodology', ''):
         manifest['methodology'] = (manifest.get('methodology', '') + QUOTE_METHOD).strip()
     manifest['generatedAt'] = changed_generated_at
