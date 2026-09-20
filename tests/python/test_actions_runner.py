@@ -259,6 +259,10 @@ class ActionsExecutionTests(unittest.TestCase):
         self.assertEqual([call.args[1] for call in kill.call_args_list],[signal.SIGTERM,signal.SIGKILL])
         self.assertTrue(popen.call_args.kwargs['start_new_session'])
         self.assertNotIn('systemctl',popen.call_args.args[0])
+    def test_price_backfill_import_uses_the_runtime_scripts_path(self):
+        source=Path(runner.__file__).read_text()
+        self.assertIn('import backfill_quotes',source)
+        self.assertNotIn('from scripts import backfill_quotes',source)
     def test_price_backfill_hard_failure_preserves_daily_status_and_reports_safe_stage(self):
         self.args.mode='price_backfill';self.args.max_minutes=20
         self.args.backfill_id='ohlc-v1-20260920';self.args.backfill_from='2026-03-06'

@@ -580,7 +580,7 @@ def execute_worker(args, client):
         from refresh_worker import run as refresh_run
         return refresh_run(args, publisher)
     if args.mode == 'price_backfill':
-        from scripts import backfill_quotes
+        import backfill_quotes
         out = Path(args.root)/'data'
         entries = strict_json((out/'manifest.json').read_bytes()).get('dates', [])
         publisher.allowed_review_dates = {entry['date'] for entry in entries}
