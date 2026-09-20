@@ -168,6 +168,16 @@ class PriceBackfillTests(unittest.TestCase):
         self.assertEqual(actual['noTradeEvidence'],evidence[day]['301390'])
         self.assertTrue(all(actual[key] is None for key in ('open','high','low','close')))
 
+    def test_official_disclosure_evidence_is_added_to_already_cached_status_day(self):
+        day='2026-08-07'
+        cached={day:{}}
+
+        actual=backfill_quotes.merge_official_disclosure_evidence(cached,[day])
+
+        self.assertIs(actual,cached)
+        self.assertEqual(actual[day]['300862']['kind'],'official_disclosure_suspension')
+        self.assertEqual(actual[day]['300862']['validatedDates'],[day])
+
     def test_quote_and_no_trade_evidence_conflict_stops_before_file_write(self):
         day='2026-09-15';self.write_day(day,[traded()])
         original=(self.out/(day+'.json')).read_bytes()

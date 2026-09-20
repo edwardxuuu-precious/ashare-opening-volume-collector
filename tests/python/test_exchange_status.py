@@ -5,10 +5,25 @@ from unittest.mock import Mock
 from scripts.exchange_status import (listing_evidence, parse_listing_records,
                                      parse_market_suspensions,
                                      load_listing_catalog, load_sse_suspensions,
-                                     parse_sse_suspensions)
+                                     official_disclosure_suspensions,
+                                     parse_sse_suspensions,
+                                     valid_historical_no_trade)
 
 
 class ExchangeStatusTests(unittest.TestCase):
+    def test_official_szse_disclosures_prove_exact_suspension_interval(self):
+        during = official_disclosure_suspensions('2026-08-07')
+
+        evidence = during['300862']
+        self.assertEqual(evidence['kind'], 'official_disclosure_suspension')
+        self.assertEqual(evidence['provider'], 'szse')
+        self.assertEqual(evidence['startDate'], '2026-07-27')
+        self.assertEqual(evidence['endDate'], '2026-08-07')
+        self.assertEqual(evidence['specialStatus']['type'], 'major_restructuring')
+        self.assertTrue(valid_historical_no_trade(evidence, '300862', '2026-08-07'))
+        self.assertNotIn('300862', official_disclosure_suspensions('2026-07-24'))
+        self.assertNotIn('300862', official_disclosure_suspensions('2026-08-10'))
+
     def test_listing_catalog_retries_each_official_source_before_accepting_it(self):
         class Frame:
             def __init__(self, rows):

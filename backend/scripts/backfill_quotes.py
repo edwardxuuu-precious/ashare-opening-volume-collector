@@ -338,6 +338,17 @@ def historical_evidence(out, selected_dates, listing_catalog, status_catalog):
     return result
 
 
+def merge_official_disclosure_evidence(status_catalog, selected_dates):
+    """Add exact official disclosure intervals even when provider days were cached."""
+    from scripts.exchange_status import official_disclosure_suspensions
+    for day in selected_dates:
+        records = status_catalog.setdefault(day, {})
+        if not isinstance(records, dict):
+            raise ValueError('Invalid cached status evidence day')
+        records.update(official_disclosure_suspensions(day))
+    return status_catalog
+
+
 def touch_manifest(out, changed_generated_at, selected_dates=None):
     manifest_path = Path(out) / 'manifest.json'
     manifest = load_json(manifest_path)
@@ -444,6 +455,7 @@ def run(args):
             pass
         if loaded:
             cache['statusEvidence'][day] = records
+    merge_official_disclosure_evidence(cache['statusEvidence'], selected_dates)
     selected_evidence = historical_evidence(
         out, selected_dates, cache['listingEvidence'], cache['statusEvidence'])
 

@@ -12,6 +12,20 @@ LISTING_SOURCES = {
     'sse': 'https://www.sse.com.cn/assortment/stock/list/share/',
     'bse': 'https://www.bse.cn/nq/listedcompany.html',
 }
+OFFICIAL_DISCLOSURE_SUSPENSIONS = (
+    dict(
+        code='300862',
+        startDate='2026-07-27',
+        endDate='2026-08-07',
+        resumeDate='2026-08-10',
+        reason='筹划发行股份及支付现金购买资产并募集配套资金事项',
+        announcementTitle='关于筹划发行股份及支付现金购买资产并募集配套资金事项的停牌公告',
+        sourceUrl=('https://disc.static.szse.cn/download/disc/disk03/finalpage/'
+                   '2026-07-28/79003dec-c51b-41c5-808a-2d9973a3b513.PDF'),
+        resumeUrl=('https://disc.static.szse.cn/download/disc/disk03/finalpage/'
+                   '2026-08-08/39dda0e8-ce15-4746-8355-a31a04a9a828.PDF'),
+    ),
+)
 
 
 def _date(value):
@@ -68,6 +82,34 @@ def listing_evidence(catalog, code, day):
     return dict(kind='not_yet_listed', provider=record['provider'], code=code, date=target,
                 listingDate=record['listingDate'], sourceUrl=record['sourceUrl'],
                 validatedDates=[target])
+
+
+def official_disclosure_suspensions(day):
+    """Return frozen exact-day evidence backed by official exchange disclosures."""
+    target = _iso_date(day)
+    if not target:
+        raise ValueError('Invalid official disclosure target date')
+    result = {}
+    for record in OFFICIAL_DISCLOSURE_SUSPENSIONS:
+        if not record['startDate'] <= target <= record['endDate']:
+            continue
+        code = record['code']
+        result[code] = dict(
+            kind='official_disclosure_suspension', provider='szse', code=code,
+            date=target, startDate=record['startDate'], endDate=record['endDate'],
+            resumeDate=record['resumeDate'], reason=record['reason'], sourceUrl=record['sourceUrl'],
+            resumeUrl=record['resumeUrl'], validatedDates=[target],
+            specialStatus=dict(
+                type='major_restructuring', label='重大资产重组停牌',
+                description=(f"深交所公告显示该股自{record['startDate']}起因"
+                             f"「{record['reason']}」停牌，并于{record['resumeDate']}开市起复牌；"
+                             '目标交易日无交易。'),
+                startedAt=record['startDate'], source='深圳证券交易所公司公告',
+                announcementTitle=record['announcementTitle'],
+                announcementUrl=record['sourceUrl'],
+            ),
+        )
+    return result
 
 
 def valid_listing_record(value, code):
@@ -168,6 +210,11 @@ def valid_historical_no_trade(value, code, day):
                '停牌截止时间':value.get('endDate'), '停牌期限':value.get('duration'),
                '停牌原因':value.get('reason'), '所属市场':value.get('market')}
         return parse_market_suspensions([row], day).get(code) == value
+    if value.get('kind') == 'official_disclosure_suspension':
+        try:
+            return official_disclosure_suspensions(day).get(code) == value
+        except ValueError:
+            return False
     return valid_exchange_evidence(value, code)
 
 
