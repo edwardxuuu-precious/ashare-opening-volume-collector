@@ -41,6 +41,20 @@ OFFICIAL_DISCLOSURE_SUSPENSIONS = (
         resumeUrl=('https://disc.static.szse.cn/download/disc/disk03/finalpage/'
                    '2026-07-06/2ff408da-fb79-4c86-a18a-bd07ad1be299.PDF'),
     ),
+    dict(
+        code='000793',
+        startDate='2026-06-18',
+        endDate='2026-06-18',
+        resumeDate='2026-06-22',
+        statusType='suspension',
+        label='重整转增股本停牌',
+        reason='实施重整计划资本公积金转增股本事项',
+        announcementTitle='关于公司股票停牌的提示性公告',
+        sourceUrl=('https://disc.static.szse.cn/download/disc/disk03/finalpage/'
+                   '2026-06-18/c60e9d37-4b29-43fc-bcf5-364a61fc7cb7.PDF'),
+        resumeUrl=('https://disc.static.szse.cn/download/disc/disk03/finalpage/'
+                   '2026-06-22/23950a07-eefd-4f01-834e-0d139ebd3eb2.PDF'),
+    ),
 )
 
 

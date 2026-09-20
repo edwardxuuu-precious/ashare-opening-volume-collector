@@ -33,6 +33,15 @@ class ExchangeStatusTests(unittest.TestCase):
         self.assertNotIn('002731', official_disclosure_suspensions('2026-05-05'))
         self.assertNotIn('002731', official_disclosure_suspensions('2026-07-07'))
 
+        capital_increase = official_disclosure_suspensions('2026-06-18')['000793']
+        self.assertEqual(capital_increase['startDate'], '2026-06-18')
+        self.assertEqual(capital_increase['endDate'], '2026-06-18')
+        self.assertEqual(capital_increase['resumeDate'], '2026-06-22')
+        self.assertEqual(capital_increase['specialStatus']['label'], '重整转增股本停牌')
+        self.assertTrue(valid_historical_no_trade(capital_increase, '000793', '2026-06-18'))
+        self.assertNotIn('000793', official_disclosure_suspensions('2026-06-17'))
+        self.assertNotIn('000793', official_disclosure_suspensions('2026-06-22'))
+
     def test_listing_catalog_retries_each_official_source_before_accepting_it(self):
         class Frame:
             def __init__(self, rows):
