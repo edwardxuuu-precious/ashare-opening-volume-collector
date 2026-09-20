@@ -57,6 +57,33 @@ class ExchangeStatusTests(unittest.TestCase):
                 self.assertEqual(evidence['specialStatus']['label'], label)
                 self.assertTrue(valid_historical_no_trade(evidence, code, day))
 
+        risk_warning = official_disclosure_suspensions('2026-03-25')['000908']
+        self.assertEqual(risk_warning['startDate'], '2026-03-25')
+        self.assertEqual(risk_warning['endDate'], '2026-03-25')
+        self.assertEqual(risk_warning['resumeDate'], '2026-03-26')
+        self.assertEqual(risk_warning['specialStatus']['label'], '风险警示变更停牌')
+        self.assertTrue(valid_historical_no_trade(risk_warning, '000908', '2026-03-25'))
+        self.assertNotIn('000908', official_disclosure_suspensions('2026-03-24'))
+        self.assertNotIn('000908', official_disclosure_suspensions('2026-03-26'))
+
+        pre_restructuring = official_disclosure_suspensions('2026-03-20')['300385']
+        self.assertEqual(pre_restructuring['startDate'], '2026-03-17')
+        self.assertEqual(pre_restructuring['endDate'], '2026-03-20')
+        self.assertEqual(pre_restructuring['resumeDate'], '2026-03-23')
+        self.assertEqual(pre_restructuring['specialStatus']['label'], '预重整投资人遴选停牌')
+        self.assertTrue(valid_historical_no_trade(pre_restructuring, '300385', '2026-03-20'))
+        self.assertNotIn('300385', official_disclosure_suspensions('2026-03-16'))
+        self.assertNotIn('300385', official_disclosure_suspensions('2026-03-23'))
+
+        volatility_review = official_disclosure_suspensions('2026-03-19')['000711']
+        self.assertEqual(volatility_review['startDate'], '2026-03-13')
+        self.assertEqual(volatility_review['endDate'], '2026-03-19')
+        self.assertEqual(volatility_review['resumeDate'], '2026-03-20')
+        self.assertEqual(volatility_review['specialStatus']['label'], '交易异常波动核查停牌')
+        self.assertTrue(valid_historical_no_trade(volatility_review, '000711', '2026-03-19'))
+        self.assertNotIn('000711', official_disclosure_suspensions('2026-03-12'))
+        self.assertNotIn('000711', official_disclosure_suspensions('2026-03-20'))
+
     def test_listing_catalog_retries_each_official_source_before_accepting_it(self):
         class Frame:
             def __init__(self, rows):
