@@ -24,6 +24,15 @@ class ExchangeStatusTests(unittest.TestCase):
         self.assertNotIn('300862', official_disclosure_suspensions('2026-07-24'))
         self.assertNotIn('300862', official_disclosure_suspensions('2026-08-10'))
 
+        report_delay = official_disclosure_suspensions('2026-06-29')['002731']
+        self.assertEqual(report_delay['startDate'], '2026-05-06')
+        self.assertEqual(report_delay['endDate'], '2026-07-06')
+        self.assertEqual(report_delay['resumeDate'], '2026-07-07')
+        self.assertEqual(report_delay['specialStatus']['label'], '定期报告未披露停牌')
+        self.assertTrue(valid_historical_no_trade(report_delay, '002731', '2026-06-29'))
+        self.assertNotIn('002731', official_disclosure_suspensions('2026-05-05'))
+        self.assertNotIn('002731', official_disclosure_suspensions('2026-07-07'))
+
     def test_listing_catalog_retries_each_official_source_before_accepting_it(self):
         class Frame:
             def __init__(self, rows):

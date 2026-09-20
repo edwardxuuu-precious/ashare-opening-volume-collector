@@ -18,12 +18,28 @@ OFFICIAL_DISCLOSURE_SUSPENSIONS = (
         startDate='2026-07-27',
         endDate='2026-08-07',
         resumeDate='2026-08-10',
+        statusType='major_restructuring',
+        label='重大资产重组停牌',
         reason='筹划发行股份及支付现金购买资产并募集配套资金事项',
         announcementTitle='关于筹划发行股份及支付现金购买资产并募集配套资金事项的停牌公告',
         sourceUrl=('https://disc.static.szse.cn/download/disc/disk03/finalpage/'
                    '2026-07-28/79003dec-c51b-41c5-808a-2d9973a3b513.PDF'),
         resumeUrl=('https://disc.static.szse.cn/download/disc/disk03/finalpage/'
                    '2026-08-08/39dda0e8-ce15-4746-8355-a31a04a9a828.PDF'),
+    ),
+    dict(
+        code='002731',
+        startDate='2026-05-06',
+        endDate='2026-07-06',
+        resumeDate='2026-07-07',
+        statusType='suspension',
+        label='定期报告未披露停牌',
+        reason='未在法定期限内披露2025年年度报告',
+        announcementTitle='关于股票交易被实施退市风险警示暨停复牌安排的公告',
+        sourceUrl=('https://disc.static.szse.cn/download/disc/disk03/finalpage/'
+                   '2026-07-06/2ff408da-fb79-4c86-a18a-bd07ad1be299.PDF'),
+        resumeUrl=('https://disc.static.szse.cn/download/disc/disk03/finalpage/'
+                   '2026-07-06/2ff408da-fb79-4c86-a18a-bd07ad1be299.PDF'),
     ),
 )
 
@@ -100,7 +116,7 @@ def official_disclosure_suspensions(day):
             resumeDate=record['resumeDate'], reason=record['reason'], sourceUrl=record['sourceUrl'],
             resumeUrl=record['resumeUrl'], validatedDates=[target],
             specialStatus=dict(
-                type='major_restructuring', label='重大资产重组停牌',
+                type=record['statusType'], label=record['label'],
                 description=(f"深交所公告显示该股自{record['startDate']}起因"
                              f"「{record['reason']}」停牌，并于{record['resumeDate']}开市起复牌；"
                              '目标交易日无交易。'),
