@@ -31,6 +31,7 @@ if __package__ in (None, ''):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from scripts.reconciliation import (PRICE_FIELDS, PRICE_SCHEMA_VERSION, QUOTE_METHOD,
+                                    VERIFICATION_VERSION,
                                     missing_prices, price_counts, quote_observation,
                                     special_status_counts, validate_price_row,
                                     window_start)  # noqa: E402
@@ -233,6 +234,7 @@ def patch_files(out, quotes, changed_generated_at, selected_dates=None):
             continue
         original = json.dumps(payload, ensure_ascii=False, sort_keys=True)
         for row in payload['rows']:
+            row['verificationVersion'] = VERIFICATION_VERSION
             code = row.get('code')
             table = quotes.get(code, {}).get('days', {}) if code else {}
             if confirmed_no_trade(row):

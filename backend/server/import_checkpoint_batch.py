@@ -42,7 +42,8 @@ def finite_nonnegative(value):
     return type(value) in (int, float) and math.isfinite(value) and value >= 0 and int(value) == value
 
 
-def record_disposition(record, code, universe, requested):
+def record_disposition(record, code, universe, requested, *, allowed_versions=None):
+    allowed_versions = {REQUIRED_VERSION} if allowed_versions is None else set(allowed_versions)
     if not isinstance(record, dict) or record.get('code') != code:
         raise ValueError('Checkpoint code differs from filename')
     if code not in universe: return 'unknown'
@@ -57,7 +58,7 @@ def record_disposition(record, code, universe, requested):
         valid_date(day)
         if not isinstance(row, dict) or row.get('code') != code:
             raise ValueError('Stock-day identity mismatch')
-        if row.get('verificationVersion') != REQUIRED_VERSION:
+        if row.get('verificationVersion') not in allowed_versions:
             raise ValueError('Unsupported verification version')
         if row.get('status') not in ('ok', 'unverified', 'missing', 'suspended'):
             raise ValueError('Invalid stock-day status')

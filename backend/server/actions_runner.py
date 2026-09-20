@@ -33,7 +33,7 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(HERE.parent / 'scripts'))
 import cloud_worker as worker
-from reconciliation import PRICE_REQUIRED_FROM
+from reconciliation import PRICE_REQUIRED_FROM, VERIFICATION_VERSION
 from import_checkpoint_batch import strict_json, valid_date, record_disposition
 from publisher_state import canonical, file_digest
 from universe_cache import validate_universe
@@ -215,6 +215,7 @@ def validate_tree(out, minimum_universe=1000):
     calendar = strict_json((out/'calendar.json').read_bytes())
     valid_date(calendar.get('calendarAsOf'))
     dates = validate_dates(calendar.get('tradingDates', []))
+    legacy_rows = 0
     for path in sorted((out/'checkpoint').glob('*.json')):
         record = strict_json(path.read_bytes())
         code = path.stem
@@ -224,7 +225,16 @@ def validate_tree(out, minimum_universe=1000):
             raise RestoreError('Checkpoint status/days are invalid')
         # Unlike a supplementary import, restoring a backup preserves real failed attempts.
         candidate = dict(record, fetchStatus='ok', fetchedOn=record.get('fetchedOn', calendar['calendarAsOf']))
-        record_disposition(candidate, code, universe, [])
+        record_disposition(candidate, code, universe, [],
+                           allowed_versions={2, VERIFICATION_VERSION})
+        changed = 0
+        for row in record['days'].values():
+            if row.get('verificationVersion') == 2:
+                row['verificationVersion'] = VERIFICATION_VERSION
+                changed += 1
+        if changed:
+            private_json(path, record)
+            legacy_rows += changed
     for name in ('run-status.json', 'daily-state.json'):
         path = out/name
         if not path.exists():
@@ -268,7 +278,20 @@ def validate_tree(out, minimum_universe=1000):
     if price_state.exists():
         from scripts.backfill_quotes import validate_state
         validate_state(strict_json(price_state.read_bytes()))
-    return catalog, calendar
+    return catalog, calendar, legacy_rows
+
+
+def upgrade_restored_payload(payload):
+    """Upgrade only the validated v2 core marker for an actively collected date."""
+    changed = 0
+    for row in payload['rows']:
+        version = row.get('verificationVersion')
+        if version == 2:
+            row['verificationVersion'] = VERIFICATION_VERSION
+            changed += 1
+        elif version != VERIFICATION_VERSION:
+            raise RestoreError('Unsupported saved verification version')
+    return changed
 
 
 def validate_worker_state(value):
@@ -295,7 +318,7 @@ def restore(client, bucket, root, expected_sha=None, *, minimum_universe=1000, r
         archive = stage/'checkpoint.tar.gz'
         source = download_archive(client, bucket, archive, expected_sha)
         report = unpack_archive(archive, data)
-        catalog, calendar = validate_tree(data, minimum_universe)
+        catalog, calendar, legacy_rows = validate_tree(data, minimum_universe)
         target_set = None
         if phase:
             from refresh_worker import validate_cache
@@ -339,6 +362,11 @@ def restore(client, bucket, root, expected_sha=None, *, minimum_universe=1000, r
             if claimed and hashlib.sha256(payload_raw).hexdigest() != claimed:
                 raise RestoreError('Private date hash mismatch')
             payload = worker.validate_day(strict_json(payload_raw), day)
+            if target_set is not None:
+                upgraded = upgrade_restored_payload(payload)
+                legacy_rows += upgraded
+                if upgraded:
+                    payload_raw = canonical(payload)
             if payload.get('generatedAt') != entry.get('generatedAt'):
                 raise RestoreError('Private date generation differs from manifest')
             (data/entry['file']).write_bytes(payload_raw); os.chmod(data/entry['file'], 0o600)
@@ -364,6 +392,7 @@ def restore(client, bucket, root, expected_sha=None, *, minimum_universe=1000, r
         private_json(stage/'worker-state.json', current)
         report.update(archiveSha256=source['sha256'], archiveVersionId=source['versionId'], compressedBytes=source['bytes'],
                       restoredDates=len(entries), archivedDates=len(seen)-len(entries), snapshotBytes=snapshot_bytes, universeTotal=catalog['total'], boundRunnerState=bound)
+        report['legacyVerificationRows'] = legacy_rows
         private_json(stage/'restore-report.json', report)
         installed = []
         try:
