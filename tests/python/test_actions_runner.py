@@ -263,6 +263,30 @@ class ActionsExecutionTests(unittest.TestCase):
         source=Path(runner.__file__).read_text()
         self.assertIn('import backfill_quotes',source)
         self.assertNotIn('from scripts import backfill_quotes',source)
+        self.assertNotIn('from scripts.backfill_quotes import',source)
+
+    def test_price_backfill_checkpoint_keeps_daily_state_and_public_banner_unchanged(self):
+        self.args.mode='price_backfill';self.args.max_minutes=20
+        self.args.backfill_id='ohlc-v1-20260920';self.args.backfill_from='2026-03-06'
+        self.args.backfill_to='2026-09-18';self.args.backfill_batch_size=20
+        def execute(options,log):
+            runner.private_json(Path(options.root)/'data/price-backfill-state.json',dict(
+                version=1,backfillId='ohlc-v1-20260920',fromDate='2026-03-06',
+                toDate='2026-09-18',batchSize=20,selectedDates=[DAY],remainingDates=[DAY],
+                completed=False,updatedAt='2026-09-20T12:00:00+08:00',exitReason='source_incomplete'))
+            return 1,False
+        transfer=SimpleNamespace(TransferConfig=lambda **kwargs:kwargs)
+
+        with patch.dict('sys.modules',{'boto3.s3.transfer':transfer}):
+            result=runner.run(self.args,self.client,executor=execute,minimum_universe=1)
+
+        self.assertEqual(result['outcome'],'incomplete_checkpointed')
+        self.assertEqual(result['phase'],'price_backfill')
+        written_keys=[item['Key'] for item in self.client.writes]
+        self.assertNotIn('data/collection-status.json',written_keys)
+        actions=json.loads(self.client.objects[runner.STATE_KEY])
+        self.assertNotEqual(actions['workerState'].get('phase'),'price_backfill')
+        self.assertNotIn('priceBackfillId',actions['workerState'])
     def test_price_backfill_hard_failure_preserves_daily_status_and_reports_safe_stage(self):
         self.args.mode='price_backfill';self.args.max_minutes=20
         self.args.backfill_id='ohlc-v1-20260920';self.args.backfill_from='2026-03-06'

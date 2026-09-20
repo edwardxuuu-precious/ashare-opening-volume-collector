@@ -333,11 +333,11 @@ def validate_tree(out, minimum_universe=1000):
     price_cache = out/'price-backfill-cache.json'
     price_state = out/'price-backfill-state.json'
     if price_cache.exists():
-        from scripts.backfill_quotes import validate_cache
-        validate_cache(strict_json(price_cache.read_bytes()))
+        import backfill_quotes
+        backfill_quotes.validate_cache(strict_json(price_cache.read_bytes()))
     if price_state.exists():
-        from scripts.backfill_quotes import validate_state
-        validate_state(strict_json(price_state.read_bytes()))
+        import backfill_quotes
+        backfill_quotes.validate_state(strict_json(price_state.read_bytes()))
     return catalog, calendar, legacy_rows
 
 
@@ -604,17 +604,7 @@ def execute_worker(args, client):
                 signal.signal(sig, handler)
         publisher.publish(all_dates=True)
         publisher.save_checkpoint()
-        state = backfill_quotes.validate_state(strict_json((out/'price-backfill-state.json').read_bytes()))
-        previous_path = Path(args.root)/'worker-state.json'
-        previous = strict_json(previous_path.read_bytes()) if previous_path.exists() else {}
-        previous.update(status='completed' if result == 0 else 'paused', state='completed' if result == 0 else 'paused',
-                        outcome='completed' if result == 0 else 'incomplete_checkpointed',
-                        phase='price_backfill', exitCode=result, exitReason=state['exitReason'],
-                        priceBackfillId=state['backfillId'], priceBackfillCompleted=state['completed'],
-                        priceBackfillSelectedDates=state['selectedDates'],
-                        priceBackfillRemainingDates=len(state['remainingDates']),
-                        updatedAt=state['updatedAt'])
-        private_json(previous_path, previous)
+        backfill_quotes.validate_state(strict_json((out/'price-backfill-state.json').read_bytes()))
         return result
     previous = validate_worker_state(strict_json((Path(args.root)/'worker-state.json').read_bytes()))
     if args.mode == 'daily' and not previous.get('historyTraversalCompleted'):
@@ -735,9 +725,12 @@ def run(args, client, *, executor=spawn_worker, minimum_universe=1000):
             log_path = root/'worker-private.log'
             with log_path.open('w') as log:
                 os.chmod(log_path,0o600)
+                backfill_state = root/'data/price-backfill-state.json'
+                backfill_before = (file_digest(backfill_state)
+                                   if args.mode == 'price_backfill' and backfill_state.exists() else None)
                 exit_code,timed_out = executor(options,log)
-            backfill_state = root/'data/price-backfill-state.json'
-            if args.mode == 'price_backfill' and exit_code != 0 and not backfill_state.exists():
+            if (args.mode == 'price_backfill' and exit_code != 0 and not timed_out
+                    and (not backfill_state.exists() or file_digest(backfill_state) == backfill_before)):
                 # A hard failure before the first recoverable backfill state must not
                 # republish the restored daily-collector status or mask the real stage
                 # with a later FileNotFoundError.
@@ -745,6 +738,27 @@ def run(args, client, *, executor=spawn_worker, minimum_universe=1000):
                 raise WorkerFailure(public_type, public_stage, exit_code)
             guarded = LeasedClient(client,lease)
             publisher = worker.Publisher(guarded,args.bucket,root/'data')
+            if args.mode == 'price_backfill':
+                # Historical quote backfill has its own state file. It must never replace
+                # the daily collector state or the public collection-status banner.
+                import backfill_quotes
+                state = backfill_quotes.validate_state(strict_json(backfill_state.read_bytes()))
+                if timed_out:
+                    publisher.save_checkpoint()
+                receipts = (strict_json((root/'publisher-state.json').read_bytes()).get('receipts', {})
+                            if (root/'publisher-state.json').exists() else {})
+                if ARCHIVE_KEY not in receipts:
+                    publisher.save_checkpoint()
+                save_actions_state(guarded,args.bucket,root)
+                completed = bool(state.get('completed') and exit_code == 0 and not timed_out)
+                return dict(result,status='completed' if completed else 'paused',
+                    outcome='completed' if completed else 'incomplete_checkpointed',
+                    phase='price_backfill',checkpointSaved=True,exitReason=state.get('exitReason'),
+                    publishedAt=state.get('updatedAt'),priceBackfillId=state.get('backfillId'),
+                    priceBackfillCompleted=state.get('completed'),
+                    priceBackfillSelectedDates=state.get('selectedDates'),
+                    priceBackfillRemainingDates=len(state.get('remainingDates',[])),
+                    workerExitCode=exit_code,budgetExhausted=timed_out)
             current = validate_worker_state(strict_json((root/'worker-state.json').read_bytes()))
             expected_pause = bool(timed_out or (exit_code != 0 and not current.get('error')
                 and current.get('exitReason') in ('interrupted','cutoff','runner_budget_exhausted')))
@@ -765,15 +779,6 @@ def run(args, client, *, executor=spawn_worker, minimum_universe=1000):
             if ARCHIVE_KEY not in receipts:
                 publisher.save_checkpoint()
             save_actions_state(guarded,args.bucket,root)
-            if args.mode == 'price_backfill':
-                state = strict_json((root/'data/price-backfill-state.json').read_bytes())
-                return dict(result,status=current.get('status','paused'),outcome=current.get('outcome','incomplete_checkpointed'),
-                    phase='price_backfill',checkpointSaved=True,exitReason=state.get('exitReason'),
-                    publishedAt=state.get('updatedAt'),priceBackfillId=state.get('backfillId'),
-                    priceBackfillCompleted=state.get('completed'),
-                    priceBackfillSelectedDates=state.get('selectedDates'),
-                    priceBackfillRemainingDates=len(state.get('remainingDates',[])),
-                    workerExitCode=exit_code,budgetExhausted=timed_out)
             phase = current.get('phase', getattr(args, 'phase', None))
             data_complete = current.get('dataComplete')
             price_data_complete = current.get('priceDataComplete')
