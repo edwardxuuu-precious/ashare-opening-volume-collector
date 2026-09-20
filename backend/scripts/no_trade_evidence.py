@@ -36,6 +36,24 @@ NOTICES = {
         'https://static.cninfo.com.cn/finalpage/2026-09-05/1225548997.PDF'),
     ('688432', '2026-09-07'): ('2026-038', '2026-09-05',
         'https://static.cninfo.com.cn/finalpage/2026-09-05/1225549389.PDF'),
+    ('000016', '2026-09-18'): dict(
+        noticeId='2026-69', disclosedAt='2026-09-04',
+        url='https://static.cninfo.com.cn/finalpage/2026-09-01/1225537108.PDF',
+        specialStatus=_special(
+            'pending_delisting', '主动终止上市事项停牌',
+            '公司拟以股东会决议方式主动终止A股和B股上市，股票自2026-09-04起停牌，并按主动终止上市程序继续办理后续事项。',
+            '2026-09-04', '巨潮资讯公司公告',
+            '关于公司股票后续停牌及现金选择权相关事宜的说明公告',
+            'https://static.cninfo.com.cn/finalpage/2026-09-01/1225537108.PDF')),
+    ('002731', '2026-09-18'): dict(
+        noticeId='2026-105', disclosedAt='2026-08-31',
+        url='https://disc.static.szse.cn/download/disc/disk03/finalpage/2026-08-31/e4c4271e-3afc-4387-aac4-c2aeb145c32d.PDF',
+        specialStatus=_special(
+            'pending_delisting', '规范类退市程序停牌',
+            '公司未能在规定期限内披露定期报告并触及规范类退市情形，股票自2026-09-07起继续停牌，等待深交所作出是否终止上市的决定。',
+            '2026-09-07', '深圳证券交易所信息披露公司公告',
+            '关于预计无法在法定期限内披露定期报告暨公司股票停牌暨可能被终止上市的风险提示公告',
+            'https://disc.static.szse.cn/download/disc/disk03/finalpage/2026-08-31/e4c4271e-3afc-4387-aac4-c2aeb145c32d.PDF')),
     ('301139', '2026-09-18'): dict(
         noticeId='1225533921', disclosedAt='2026-08-29',
         url='https://static.cninfo.com.cn/finalpage/2026-08-29/1225533921.PDF',
