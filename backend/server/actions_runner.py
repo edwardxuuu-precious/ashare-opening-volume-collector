@@ -69,6 +69,53 @@ class LeaseLost(RuntimeError):
     pass
 
 
+class WorkerFailure(RuntimeError):
+    """A child-process failure with only non-sensitive diagnostics exposed."""
+    def __init__(self, public_type='WorkerProcessError', public_stage='unknown'):
+        super().__init__(public_type)
+        self.public_type = public_type
+        self.public_stage = public_stage
+
+
+TRACE_FRAME = re.compile(r'^\s*File "[^"]*/([^/"]+)", line (\d+), in ([A-Za-z_][A-Za-z0-9_]*)\s*$')
+TRACE_ERROR = re.compile(r'^([A-Za-z_][A-Za-z0-9_]*(?:Error|Exception))(?::|$)')
+
+
+def worker_failure_summary(root):
+    """Reduce a private traceback to exception type and source location only."""
+    root = Path(root)
+    public_type = 'WorkerProcessError'
+    public_stage = 'unknown'
+    private_log = root/'runner-private-error.log'
+    if private_log.is_file() and not private_log.is_symlink():
+        with private_log.open('rb') as stream:
+            if private_log.stat().st_size > 1024*1024:
+                stream.seek(-1024*1024, os.SEEK_END)
+            lines = stream.read(1024*1024).decode('utf-8', errors='replace').splitlines()
+        for line in lines:
+            match = TRACE_FRAME.match(line)
+            if match:
+                public_stage = ':'.join(match.groups())
+            match = TRACE_ERROR.match(line)
+            if match:
+                public_type = match.group(1)
+    worker_log = root/'worker-private.log'
+    if public_type == 'WorkerProcessError' and worker_log.is_file() and not worker_log.is_symlink():
+        with worker_log.open('rb') as stream:
+            if worker_log.stat().st_size > 128*1024:
+                stream.seek(-128*1024, os.SEEK_END)
+            for line in reversed(stream.read(128*1024).decode('utf-8', errors='replace').splitlines()):
+                try:
+                    value = json.loads(line)
+                except ValueError:
+                    continue
+                candidate = value.get('errorType') if isinstance(value, dict) else None
+                if isinstance(candidate, str) and re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]{0,63}', candidate):
+                    public_type = candidate
+                    break
+    return public_type, public_stage
+
+
 def missing(exc):
     return (type(exc).__name__ == 'NoSuchKey' or
             getattr(exc, 'response', {}).get('Error', {}).get('Code') in ('NoSuchKey', '404', 'NotFound'))
@@ -676,6 +723,13 @@ def run(args, client, *, executor=spawn_worker, minimum_universe=1000):
             with log_path.open('w') as log:
                 os.chmod(log_path,0o600)
                 exit_code,timed_out = executor(options,log)
+            backfill_state = root/'data/price-backfill-state.json'
+            if args.mode == 'price_backfill' and exit_code != 0 and not backfill_state.exists():
+                # A hard failure before the first recoverable backfill state must not
+                # republish the restored daily-collector status or mask the real stage
+                # with a later FileNotFoundError.
+                public_type, public_stage = worker_failure_summary(root)
+                raise WorkerFailure(public_type, public_stage)
             guarded = LeasedClient(client,lease)
             publisher = worker.Publisher(guarded,args.bucket,root/'data')
             current = validate_worker_state(strict_json((root/'worker-state.json').read_bytes()))
@@ -805,7 +859,12 @@ def main():
         if root.is_dir() and not root.is_symlink() and not root.resolve().is_relative_to(HERE.parents[1]):
             with (root/'runner-private-error.log').open('a') as log:
                 os.chmod(log.name,0o600);traceback.print_exc(file=log)
-        print(json.dumps(dict(status='failed',outcome='failed',errorType=type(exc).__name__),separators=(',',':')))
+        error_type = getattr(exc, 'public_type', type(exc).__name__)
+        error_stage = getattr(exc, 'public_stage', None)
+        public = dict(status='failed', outcome='failed', errorType=error_type)
+        if error_stage:
+            public['errorStage'] = error_stage
+        print(json.dumps(public,separators=(',',':')))
         return 1
 
 

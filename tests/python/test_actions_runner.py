@@ -259,6 +259,27 @@ class ActionsExecutionTests(unittest.TestCase):
         self.assertEqual([call.args[1] for call in kill.call_args_list],[signal.SIGTERM,signal.SIGKILL])
         self.assertTrue(popen.call_args.kwargs['start_new_session'])
         self.assertNotIn('systemctl',popen.call_args.args[0])
+    def test_price_backfill_hard_failure_preserves_daily_status_and_reports_safe_stage(self):
+        self.args.mode='price_backfill';self.args.max_minutes=20
+        self.args.backfill_id='ohlc-v1-20260920';self.args.backfill_from='2026-03-06'
+        self.args.backfill_to='2026-09-18';self.args.backfill_batch_size=20
+        def execute(options,log):
+            (Path(options.root)/'runner-private-error.log').write_text(
+                'Traceback (most recent call last):\n'
+                '  File "/home/runner/work/repo/backend/scripts/backfill_quotes.py", line 333, in run\n'
+                '    import akshare as ak\n'
+                "FileNotFoundError: private source detail\n")
+            return 1,False
+
+        with self.assertRaises(runner.WorkerFailure) as caught:
+            runner.run(self.args,self.client,executor=execute,minimum_universe=1)
+
+        self.assertEqual(caught.exception.public_type,'FileNotFoundError')
+        self.assertEqual(caught.exception.public_stage,'backfill_quotes.py:333:run')
+        written_keys=[item['Key'] for item in self.client.writes]
+        self.assertNotIn('data/collection-status.json',written_keys)
+        self.assertNotIn(runner.STATE_KEY,written_keys)
+        self.assertFalse((self.root/'data/price-backfill-state.json').exists())
     def test_worker_reuses_history_resume_and_follows_latest_with_remaining_budget(self):
         self.root.mkdir();(self.root/'data').mkdir()
         runner.private_json(self.root/'worker-state.json',dict(historyTraversalCompleted=False,dates=[DAY]))
