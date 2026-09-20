@@ -139,6 +139,10 @@ def publish(results,dates,out,scope,universe_total,attempted_count=None,reconcil
             merged.extend(old_rows.values());rows=merged
             if old_rows:
                 payload.update(scope=previous['scope'],universeTotal=previous['universeTotal'],attemptedCount=max(attempted_count,previous.get('attemptedCount',0)))
+        for row in rows:
+            if row.get('priceStatus') not in ('available', 'not_traded', 'missing'):
+                row.update(missing_prices('missing'))
+                row.pop('priceSourceProvider', None)
         coverage=price_counts(rows)
         explanation_coverage=special_status_counts(rows)
         payload.update(rows=rows,total=len(rows),retainedCount=retained,

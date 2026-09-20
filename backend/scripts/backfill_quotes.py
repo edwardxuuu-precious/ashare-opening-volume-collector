@@ -244,6 +244,9 @@ def patch_files(out, quotes, changed_generated_at, selected_dates=None):
                 continue
             quote = table.get(day)
             if not isinstance(quote, dict) or quote.get('priceStatus') != 'available':
+                row.update(missing_prices('missing'))
+                row.pop('priceSourceProvider', None)
+                unfilled += 1
                 continue
             for key in (*PRICE_FIELDS, 'priceStatus', 'priceSourceProvider',
                         'dailyAdapter', 'pctChange', 'amplitude'):
