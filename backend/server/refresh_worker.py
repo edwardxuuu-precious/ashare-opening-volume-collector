@@ -17,11 +17,14 @@ from scripts.no_trade_evidence import evidence as reviewed_no_trade_evidence
 from scripts.reconciliation import (PRICE_FIELDS, PRICE_REQUIRED_FROM,
                                     STATUS_EXPLANATION_REQUIRED_FROM,
                                     price_counts, special_status_counts,
-                                    special_status_explained)
+                                    special_status_explained,
+                                    validate_price_row)
 
 ZONE = ZoneInfo('Asia/Shanghai')
 SOURCE_HTTP_FAILURE_LIMIT = 20
 SOURCE_COOLDOWN_SECONDS = (5, 15, 30, 60, 120)
+QUOTE_FRAME_FIELDS = ('pctChange', 'amplitude', *PRICE_FIELDS, 'priceStatus',
+                      'priceSourceProvider', 'dailyAdapter', 'quoteTime')
 
 
 def now():
@@ -46,6 +49,32 @@ def validate_cache(value):
                     raise ValueError('Invalid refresh attempt')
                 if attempt.get('nextRetryAt'): datetime.fromisoformat(attempt['nextRetryAt'])
     return value
+
+
+def preserve_published_quote_frame(checkpoint_row, published_row):
+    """Keep one already-published atomic quote when the core checkpoint predates it."""
+    try:
+        checkpoint_price = validate_price_row(checkpoint_row)
+        published_price = validate_price_row(published_row)
+    except ValueError:
+        raise
+    if published_price not in ('available', 'not_traded') or checkpoint_price in ('available', 'not_traded'):
+        return checkpoint_row
+    if ((published_price == 'available' and checkpoint_row.get('status') != 'ok') or
+            (published_price == 'not_traded' and checkpoint_row.get('status') != 'suspended')):
+        return checkpoint_row
+    merged = dict(checkpoint_row)
+    for key in QUOTE_FRAME_FIELDS:
+        if key in published_row:
+            merged[key] = published_row[key]
+        else:
+            merged.pop(key, None)
+    if published_price == 'not_traded':
+        merged['noTradeEvidence'] = published_row['noTradeEvidence']
+    else:
+        merged.pop('noTradeEvidence', None)
+    validate_price_row(merged, allow_legacy=False)
+    return merged
 
 
 def metrics(items, rows, target, phase):
@@ -229,7 +258,7 @@ def run(args, publisher):
         saved_record = read_json(checkpoint_path)
         row = saved_record.get('days', {}).get(day)
         if row and (not refresh.complete(rows.get(code, {}), day) or refresh.complete(row, day)):
-            rows[code] = row
+            rows[code] = preserve_published_quote_frame(row, rows.get(code, {}))
         if refresh.volume(rows.get(code, {}).get('first15Volume')):
             openings.setdefault(code, rows[code]['first15Volume'])
         if phase != 'opening' and code in rows:
@@ -238,7 +267,8 @@ def run(args, publisher):
             # A hosted runner may die after the target snapshot/cache is durable
             # but before the large archive upload. Rebuild only this exact day
             # from its already published valid rows, without another source call.
-            if refresh.complete(rows[code], day) and not refresh.complete(row or {}, day):
+            if refresh.complete(rows[code], day) and (
+                    not refresh.complete(row or {}, day) or rows[code] != row):
                 if not saved_record:
                     saved_record = dict(code=code, days={})
                 saved_record = dict(saved_record, days=dict(saved_record.get('days', {}), **{day:rows[code]}))

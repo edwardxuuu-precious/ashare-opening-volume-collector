@@ -49,6 +49,19 @@ def manifest(**overrides):
 
 
 class CompletionContractTests(unittest.TestCase):
+    def test_core_checkpoint_keeps_a_complete_published_quote_frame(self):
+        checkpoint = complete_row()
+        published = dict(checkpoint, open=9.8, high=10.3, low=9.7, close=10.0,
+                         priceStatus='available', priceSourceProvider='tencent',
+                         pctChange=1.1, amplitude=6.0,
+                         dailyAdapter='tencent_daily_quote_backfill')
+
+        merged = refresh_worker.preserve_published_quote_frame(checkpoint, published)
+
+        for key in ('open', 'high', 'low', 'close', 'priceStatus',
+                    'priceSourceProvider', 'pctChange', 'amplitude', 'dailyAdapter'):
+            self.assertEqual(merged.get(key), published[key], key)
+
     def test_legacy_schedule_switch_does_not_block_dispatcher_or_recovery(self):
         workflow = (Path(__file__).resolve().parents[2] / '.github/workflows/collector.yml').read_text()
         self.assertIn("github.event_name == 'workflow_dispatch'", workflow)
