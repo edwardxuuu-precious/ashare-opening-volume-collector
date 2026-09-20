@@ -193,7 +193,7 @@ def scan_needs(out, cache_quotes, force, start=DEFAULT_FROM, end=DEFAULT_TO, bat
     """Return per-code dates for the newest bounded set of incomplete saved days."""
     needs = {}
     rows_seen = 0
-    candidates = []
+    candidate_dates = []
     for path in sorted(Path(out).glob('*.json'), reverse=True):
         if not DATE_FILE.match(path.name):
             continue
@@ -202,9 +202,10 @@ def scan_needs(out, cache_quotes, force, start=DEFAULT_FROM, end=DEFAULT_TO, bat
         if day != path.stem or not start <= day <= end or not isinstance(payload.get('rows'), list):
             continue
         if any(not complete_price(row) for row in payload['rows']):
-            candidates.append((day, payload))
-    selected = candidates[:batch_size]
-    for day, payload in selected:
+            candidate_dates.append(day)
+    selected_dates = candidate_dates[:batch_size]
+    for day in selected_dates:
+        payload = load_json(Path(out)/(day+'.json'))
         for row in payload['rows']:
             code = row.get('code')
             if not isinstance(code, str) or not re.fullmatch(r'\d{6}', code):
@@ -216,7 +217,7 @@ def scan_needs(out, cache_quotes, force, start=DEFAULT_FROM, end=DEFAULT_TO, bat
             if not complete_price(row) and not confirmed_no_trade(row) and not covered:
                 needs.setdefault(code, set()).add(day)
     return ({code: sorted(days) for code, days in needs.items()}, rows_seen,
-            [day for day, _ in selected], [day for day, _ in candidates])
+            selected_dates, candidate_dates)
 
 
 def patch_files(out, quotes, changed_generated_at, selected_dates=None):
@@ -226,11 +227,11 @@ def patch_files(out, quotes, changed_generated_at, selected_dates=None):
     for path in sorted(Path(out).glob('*.json')):
         if not DATE_FILE.match(path.name):
             continue
+        if selected_dates and path.stem not in selected_dates:
+            continue
         payload = load_json(path)
         day = payload.get('date')
         if day != path.stem or not isinstance(payload.get('rows'), list):
-            continue
-        if selected_dates and day not in selected_dates:
             continue
         original = json.dumps(payload, ensure_ascii=False, sort_keys=True)
         for row in payload['rows']:
@@ -281,8 +282,10 @@ def touch_manifest(out, changed_generated_at, selected_dates=None):
     entries = manifest.get('dates') or []
     for entry in entries:
         file = entry.get('file')
+        if selected_dates and entry.get('date') not in selected_dates:
+            continue
         payload = load_json(out / file) if file and re.fullmatch(r'^\d{4}-\d{2}-\d{2}\.json$', file) else None
-        if payload and payload.get('quoteFields') and (not selected_dates or entry['date'] in selected_dates):
+        if payload and payload.get('quoteFields'):
             entry['generatedAt'] = payload.get('generatedAt', changed_generated_at)
             for key in ('priceSchemaVersion','priceAvailable','priceNoTrade','priceMissing','priceDataComplete',
                         'specialStatusExplained','specialStatusUnexplained','statusExplanationComplete'):
