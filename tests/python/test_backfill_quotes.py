@@ -130,6 +130,9 @@ class PriceBackfillTests(unittest.TestCase):
         self.assertEqual(rows['600519']['priceStatus'],'not_traded')
         self.assertEqual(rows['600519']['verificationVersion'],3)
         self.assertTrue(all(rows['600519'][key] is None for key in ('open','high','low','close')))
+        self.assertIsNone(rows['600519']['pctChange'])
+        self.assertIsNone(rows['600519']['amplitude'])
+        self.assertNotIn('dailyAdapter',rows['600519'])
         self.assertEqual(rows['600519']['specialStatus'], stopped['specialStatus'])
         self.assertEqual(rows['600519']['noTradeEvidence'], stopped['noTradeEvidence'])
         self.assertEqual(result['filesChanged'],1)
@@ -192,6 +195,8 @@ class PriceBackfillTests(unittest.TestCase):
         self.assertEqual(actual['priceStatus'],'missing')
         self.assertTrue(all(key in actual and actual[key] is None
                             for key in ('open','high','low','close')))
+        self.assertIsNone(actual['pctChange'])
+        self.assertIsNone(actual['amplitude'])
         self.assertEqual(payload['priceMissing'],1)
         self.assertFalse(payload['priceDataComplete'])
 
@@ -221,4 +226,3 @@ class PriceBackfillTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
-

@@ -197,6 +197,12 @@ def confirmed_no_trade(row):
     return row.get('status') == 'suspended' and isinstance(evidence, dict) and bool(evidence)
 
 
+def clear_quote_frame(row, status):
+    row.update(missing_prices(status), pctChange=None, amplitude=None)
+    for key in ('priceSourceProvider', 'dailyAdapter', 'quoteTime'):
+        row.pop(key, None)
+
+
 def complete_price(row):
     try:
         return validate_price_row(row) in ('available', 'not_traded')
@@ -256,7 +262,7 @@ def patch_files(out, quotes, changed_generated_at, selected_dates=None, status_e
             quote = quotes.get(code, {}).get('days', {}).get(day) if code else None
             evidence = status_evidence.get(day, {}).get(code) if code else None
             if isinstance(quote, dict) and quote.get('priceStatus') == 'available' and (
-                    evidence or confirmed_no_trade(row)):
+                    evidence or isinstance(row.get('noTradeEvidence'), dict) and row['noTradeEvidence']):
                 raise ValueError('Quote conflicts with no-trade evidence')
     for path in sorted(Path(out).glob('*.json')):
         if not DATE_FILE.match(path.name):
@@ -273,21 +279,18 @@ def patch_files(out, quotes, changed_generated_at, selected_dates=None, status_e
             code = row.get('code')
             table = quotes.get(code, {}).get('days', {}) if code else {}
             if confirmed_no_trade(row):
-                row.update(missing_prices('not_traded'))
-                row.pop('priceSourceProvider', None)
+                clear_quote_frame(row, 'not_traded')
                 filled += 1
                 continue
             quote = table.get(day)
             evidence = status_evidence.get(day, {}).get(code) if code else None
             if evidence and (not isinstance(quote, dict) or quote.get('priceStatus') != 'available'):
-                row.update(missing_prices('not_traded'))
+                clear_quote_frame(row, 'not_traded')
                 row['noTradeEvidence'] = evidence
-                row.pop('priceSourceProvider', None)
                 filled += 1
                 continue
             if not isinstance(quote, dict) or quote.get('priceStatus') != 'available':
-                row.update(missing_prices('missing'))
-                row.pop('priceSourceProvider', None)
+                clear_quote_frame(row, 'missing')
                 unfilled += 1
                 continue
             for key in (*PRICE_FIELDS, 'priceStatus', 'priceSourceProvider',
