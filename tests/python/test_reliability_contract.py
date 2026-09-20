@@ -62,6 +62,34 @@ class CompletionContractTests(unittest.TestCase):
                     'priceSourceProvider', 'pctChange', 'amplitude', 'dailyAdapter'):
             self.assertEqual(merged.get(key), published[key], key)
 
+    def test_core_retry_keeps_published_no_trade_evidence(self):
+        checkpoint = dict(complete_row(), status='missing', open=None, high=None,
+                          low=None, close=None, priceStatus='missing', pctChange=None,
+                          amplitude=None)
+        checkpoint.pop('priceSourceProvider', None)
+        evidence = dict(kind='official_disclosure_suspension', code='000001',
+                        date=DAY, validatedDates=[DAY])
+        published = dict(checkpoint, priceStatus='not_traded', noTradeEvidence=evidence)
+
+        merged = refresh_worker.preserve_published_quote_frame(checkpoint, published)
+
+        self.assertEqual(merged['priceStatus'], 'not_traded')
+        self.assertEqual(merged['noTradeEvidence'], evidence)
+        self.assertTrue(all(merged[field] is None for field in ('open','high','low','close')))
+
+    def test_core_success_wins_over_stale_published_no_trade_evidence(self):
+        checkpoint = complete_row()
+        published = dict(checkpoint, open=None, high=None, low=None, close=None,
+                         priceStatus='not_traded', pctChange=None, amplitude=None,
+                         noTradeEvidence=dict(kind='official_disclosure_suspension',
+                                              code='000001', date=DAY,
+                                              validatedDates=[DAY]))
+        published.pop('priceSourceProvider', None)
+
+        merged = refresh_worker.preserve_published_quote_frame(checkpoint, published)
+
+        self.assertEqual(merged, checkpoint)
+
     def test_legacy_schedule_switch_does_not_block_dispatcher_or_recovery(self):
         workflow = (Path(__file__).resolve().parents[2] / '.github/workflows/collector.yml').read_text()
         self.assertIn("github.event_name == 'workflow_dispatch'", workflow)

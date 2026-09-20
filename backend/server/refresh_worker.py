@@ -61,7 +61,7 @@ def preserve_published_quote_frame(checkpoint_row, published_row):
     if published_price not in ('available', 'not_traded') or checkpoint_price in ('available', 'not_traded'):
         return checkpoint_row
     if ((published_price == 'available' and checkpoint_row.get('status') != 'ok') or
-            (published_price == 'not_traded' and checkpoint_row.get('status') != 'suspended')):
+            (published_price == 'not_traded' and checkpoint_row.get('status') == 'ok')):
         return checkpoint_row
     merged = dict(checkpoint_row)
     for key in QUOTE_FRAME_FIELDS:
