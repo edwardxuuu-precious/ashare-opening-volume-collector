@@ -18,6 +18,10 @@ def _special(status_type, label, description, started_at, source,
 
 
 NOTICES = {
+    **{('000016', day): dict(
+        noticeId='2026-55', disclosedAt='2026-08-22',
+        url='https://static.cninfo.com.cn/finalpage/2026-08-22/1225490821.PDF')
+       for day in ('2026-08-24','2026-08-25','2026-08-26','2026-08-27')},
     ('000016', '2026-09-07'): ('2026-69', '2026-09-04',
         'https://epaper.cs.com.cn/zgzqb/html/2026-09/04/nw.D110000zgzqb_20260904_6-B015.htm'),
     ('002731', '2026-09-07'): ('2026-109', '2026-09-07',

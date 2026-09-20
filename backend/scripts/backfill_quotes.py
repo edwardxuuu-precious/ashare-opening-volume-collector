@@ -115,6 +115,21 @@ def validate_cache(value):
                 raise ValueError('Invalid price backfill cache day')
             validate_price_row(dict(quote, status='ok' if quote.get('priceStatus') == 'available' else 'missing'),
                                allow_legacy=False)
+    from scripts.exchange_status import valid_listing_record, valid_historical_no_trade
+    listings = value.get('listingEvidence', {})
+    statuses = value.get('statusEvidence', {})
+    if not isinstance(listings, dict) or len(listings) > 6000:
+        raise ValueError('Invalid price backfill listing evidence')
+    if any(not valid_listing_record(record, code) for code, record in listings.items()):
+        raise ValueError('Invalid price backfill listing evidence')
+    if not isinstance(statuses, dict) or len(statuses) > 186:
+        raise ValueError('Invalid price backfill status evidence')
+    for day, records in statuses.items():
+        if not isinstance(records, dict) or len(records) > 6000:
+            raise ValueError('Invalid price backfill status evidence')
+        if any(not valid_historical_no_trade(record, code, day)
+               for code, record in records.items()):
+            raise ValueError('Invalid price backfill status evidence')
     return value
 
 
@@ -222,10 +237,27 @@ def scan_needs(out, cache_quotes, force, start=DEFAULT_FROM, end=DEFAULT_TO, bat
             selected_dates, candidate_dates)
 
 
-def patch_files(out, quotes, changed_generated_at, selected_dates=None):
+def patch_files(out, quotes, changed_generated_at, selected_dates=None, status_evidence=None):
     """Apply cached quote tables to saved rows; write only files that changed."""
     filled = unfilled = files_changed = 0
     selected_dates = set(selected_dates or [])
+    status_evidence = status_evidence or {}
+    # Fail the complete batch before the first write if a source says both traded
+    # and no-trade for the same stock-day.
+    for path in sorted(Path(out).glob('*.json')):
+        if not DATE_FILE.match(path.name) or selected_dates and path.stem not in selected_dates:
+            continue
+        payload = load_json(path)
+        day = payload.get('date')
+        if day != path.stem or not isinstance(payload.get('rows'), list):
+            continue
+        for row in payload['rows']:
+            code = row.get('code')
+            quote = quotes.get(code, {}).get('days', {}).get(day) if code else None
+            evidence = status_evidence.get(day, {}).get(code) if code else None
+            if isinstance(quote, dict) and quote.get('priceStatus') == 'available' and (
+                    evidence or confirmed_no_trade(row)):
+                raise ValueError('Quote conflicts with no-trade evidence')
     for path in sorted(Path(out).glob('*.json')):
         if not DATE_FILE.match(path.name):
             continue
@@ -246,6 +278,13 @@ def patch_files(out, quotes, changed_generated_at, selected_dates=None):
                 filled += 1
                 continue
             quote = table.get(day)
+            evidence = status_evidence.get(day, {}).get(code) if code else None
+            if evidence and (not isinstance(quote, dict) or quote.get('priceStatus') != 'available'):
+                row.update(missing_prices('not_traded'))
+                row['noTradeEvidence'] = evidence
+                row.pop('priceSourceProvider', None)
+                filled += 1
+                continue
             if not isinstance(quote, dict) or quote.get('priceStatus') != 'available':
                 row.update(missing_prices('missing'))
                 row.pop('priceSourceProvider', None)
@@ -273,6 +312,27 @@ def patch_files(out, quotes, changed_generated_at, selected_dates=None):
         else:
             unfilled += sum(not complete_price(row) for row in payload['rows'])
     return dict(filledRows=filled, unfilledRows=unfilled, filesChanged=files_changed)
+
+
+def historical_evidence(out, selected_dates, listing_catalog, status_catalog):
+    """Resolve exact stock-day evidence without changing core or special status."""
+    from scripts.exchange_status import listing_evidence
+    from scripts.no_trade_evidence import evidence as reviewed_evidence
+    result = {}
+    for day in selected_dates:
+        payload = load_json(Path(out)/(day+'.json'))
+        records = {}
+        for row in payload.get('rows', []):
+            code = row.get('code')
+            if not isinstance(code, str):
+                continue
+            proof = (reviewed_evidence(code, day) or
+                     status_catalog.get(day, {}).get(code) or
+                     listing_evidence(listing_catalog, code, day))
+            if proof:
+                records[code] = proof
+        result[day] = records
+    return result
 
 
 def touch_manifest(out, changed_generated_at, selected_dates=None):
@@ -346,6 +406,32 @@ def run(args):
     budget = SharedHTTPBudget(args.interval, deadline_for(started, args.cutoff))
     budget.install()
     import akshare as ak
+    from scripts.exchange_status import (load_listing_catalog, load_market_suspensions,
+                                         load_sse_suspensions)
+    cache.setdefault('listingEvidence', {})
+    cache.setdefault('statusEvidence', {})
+    if not cache['listingEvidence']:
+        try:
+            cache['listingEvidence'] = load_listing_catalog(ak)
+        except (Exception, SystemExit):
+            cache['listingEvidence'] = {}
+    for day in selected_dates:
+        if day in cache['statusEvidence']:
+            continue
+        records = {}; loaded = False
+        try:
+            records.update(load_market_suspensions(day, ak)); loaded = True
+        except (Exception, SystemExit):
+            pass
+        try:
+            official = load_sse_suspensions(day)
+            records.update(official); loaded = True
+        except (Exception, SystemExit):
+            pass
+        if loaded:
+            cache['statusEvidence'][day] = records
+    selected_evidence = historical_evidence(
+        out, selected_dates, cache['listingEvidence'], cache['statusEvidence'])
 
     def fetch(task):
         code, needed = task
@@ -426,7 +512,7 @@ def run(args):
         cache['updatedAt'] = local_now().isoformat(timespec='seconds')
         write_json(cache_path, cache)
     changed_at = local_now().isoformat(timespec='seconds')
-    summary = patch_files(out, cache['quotes'], changed_at, selected_dates)
+    summary = patch_files(out, cache['quotes'], changed_at, selected_dates, selected_evidence)
     touch_manifest(out, changed_at, selected_dates)
     remaining_after = scan_needs(out, cache['quotes'], False, args.from_date, args.to_date,
                                  max(1, len(incomplete_dates)))[3]

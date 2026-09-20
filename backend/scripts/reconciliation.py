@@ -62,8 +62,6 @@ def validate_price_row(row, allow_legacy=True):
     else:
         if any(row[field] is not None for field in PRICE_FIELDS):
             raise ValueError('Unavailable OHLC must be entirely null')
-        if status == 'not_traded' and row.get('status') != 'suspended':
-            raise ValueError('Only confirmed no-trade rows may use not_traded')
         if status == 'not_traded' and (not isinstance(row.get('noTradeEvidence'), dict)
                                        or not row['noTradeEvidence']):
             raise ValueError('No-trade OHLC requires evidence')
