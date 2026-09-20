@@ -55,6 +55,47 @@ OFFICIAL_DISCLOSURE_SUSPENSIONS = (
         resumeUrl=('https://disc.static.szse.cn/download/disc/disk03/finalpage/'
                    '2026-06-22/23950a07-eefd-4f01-834e-0d139ebd3eb2.PDF'),
     ),
+    dict(
+        code='301139', startDate='2026-05-11', endDate='2026-05-11',
+        resumeDate='2026-05-12', statusType='suspension',
+        label='重大违法退市风险警示停牌',
+        reason='可能触及重大违法强制退市情形，实施退市风险警示',
+        announcementTitle='关于公司股票交易将被实施退市风险警示暨停复牌的公告',
+        sourceUrl=('https://disc.static.szse.cn/download/disc/disk03/finalpage/'
+                   '2026-05-09/593c8b8f-30f6-4be8-abbd-5289fafbbb15.PDF'),
+        resumeUrl=('https://disc.static.szse.cn/download/disc/disk03/finalpage/'
+                   '2026-05-09/593c8b8f-30f6-4be8-abbd-5289fafbbb15.PDF'),
+    ),
+    dict(
+        code='000016', startDate='2026-04-29', endDate='2026-04-29',
+        resumeDate='2026-04-30', statusType='suspension',
+        label='退市及其他风险警示停牌', reason='实施退市风险警示及其他风险警示',
+        announcementTitle='关于公司股票被实施退市风险警示及其他风险警示暨股票停复牌的提示性公告',
+        sourceUrl=('https://disc.static.szse.cn/disc/disk03/finalpage/'
+                   '2026-04-29/33994a43-0f3a-4776-8857-ed8163a15ce6.PDF'),
+        resumeUrl=('https://disc.static.szse.cn/disc/disk03/finalpage/'
+                   '2026-04-29/33994a43-0f3a-4776-8857-ed8163a15ce6.PDF'),
+    ),
+    dict(
+        code='002175', startDate='2026-04-29', endDate='2026-04-29',
+        resumeDate='2026-04-30', statusType='suspension',
+        label='退市风险警示停牌', reason='实施退市风险警示',
+        announcementTitle='关于公司股票交易被实施退市风险警示暨股票停牌的公告',
+        sourceUrl=('https://disc.static.szse.cn/disc/disk03/finalpage/'
+                   '2026-04-29/01cd3652-6986-4e3d-beb3-7c702124695b.PDF'),
+        resumeUrl=('https://disc.static.szse.cn/disc/disk03/finalpage/'
+                   '2026-04-29/01cd3652-6986-4e3d-beb3-7c702124695b.PDF'),
+    ),
+    dict(
+        code='000838', startDate='2026-04-24', endDate='2026-04-24',
+        resumeDate='2026-04-27', statusType='suspension',
+        label='退市及其他风险警示停牌', reason='实施退市风险警示及其他风险警示',
+        announcementTitle='关于公司股票交易被实施退市风险警示、其他风险警示暨股票停复牌的公告',
+        sourceUrl=('https://disc.static.szse.cn/disc/disk03/finalpage/'
+                   '2026-04-24/5bcda419-ad92-4d75-9258-ff3a4642c802.PDF'),
+        resumeUrl=('https://disc.static.szse.cn/disc/disk03/finalpage/'
+                   '2026-04-24/5bcda419-ad92-4d75-9258-ff3a4642c802.PDF'),
+    ),
 )
 
 

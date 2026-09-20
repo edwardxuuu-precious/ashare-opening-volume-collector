@@ -42,6 +42,21 @@ class ExchangeStatusTests(unittest.TestCase):
         self.assertNotIn('000793', official_disclosure_suspensions('2026-06-17'))
         self.assertNotIn('000793', official_disclosure_suspensions('2026-06-22'))
 
+        warning_days = {
+            ('301139','2026-05-11'):('2026-05-12','重大违法退市风险警示停牌'),
+            ('000016','2026-04-29'):('2026-04-30','退市及其他风险警示停牌'),
+            ('002175','2026-04-29'):('2026-04-30','退市风险警示停牌'),
+            ('000838','2026-04-24'):('2026-04-27','退市及其他风险警示停牌'),
+        }
+        for (code, day), (resume, label) in warning_days.items():
+            with self.subTest(code=code, day=day):
+                evidence = official_disclosure_suspensions(day)[code]
+                self.assertEqual(evidence['startDate'], day)
+                self.assertEqual(evidence['endDate'], day)
+                self.assertEqual(evidence['resumeDate'], resume)
+                self.assertEqual(evidence['specialStatus']['label'], label)
+                self.assertTrue(valid_historical_no_trade(evidence, code, day))
+
     def test_listing_catalog_retries_each_official_source_before_accepting_it(self):
         class Frame:
             def __init__(self, rows):
