@@ -281,6 +281,16 @@ class ActionsExecutionTests(unittest.TestCase):
         self.assertNotIn('data/collection-status.json',written_keys)
         self.assertNotIn(runner.STATE_KEY,written_keys)
         self.assertFalse((self.root/'data/price-backfill-state.json').exists())
+    def test_worker_failure_summary_reads_only_safe_traceback_coordinates(self):
+        self.root.mkdir()
+        (self.root/'worker-private.log').write_text(
+            'Traceback (most recent call last):\n'
+            '  File "/tmp/private/backend/server/actions_runner.py", line 525, in execute_worker\n'
+            '    private runtime detail\n'
+            'FileNotFoundError: /tmp/private/data/manifest.json\n')
+        error_type,error_stage=runner.worker_failure_summary(self.root)
+        self.assertEqual(error_type,'FileNotFoundError')
+        self.assertEqual(error_stage,'actions_runner.py:525:execute_worker')
     def test_worker_reuses_history_resume_and_follows_latest_with_remaining_budget(self):
         self.root.mkdir();(self.root/'data').mkdir()
         runner.private_json(self.root/'worker-state.json',dict(historyTraversalCompleted=False,dates=[DAY]))

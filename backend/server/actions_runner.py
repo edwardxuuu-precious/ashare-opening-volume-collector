@@ -101,11 +101,19 @@ def worker_failure_summary(root):
             if match:
                 public_type = match.group(1)
     worker_log = root/'worker-private.log'
-    if public_type == 'WorkerProcessError' and worker_log.is_file() and not worker_log.is_symlink():
+    if worker_log.is_file() and not worker_log.is_symlink():
         with worker_log.open('rb') as stream:
             if worker_log.stat().st_size > 128*1024:
                 stream.seek(-128*1024, os.SEEK_END)
-            for line in reversed(stream.read(128*1024).decode('utf-8', errors='replace').splitlines()):
+            lines = stream.read(128*1024).decode('utf-8', errors='replace').splitlines()
+            for line in lines:
+                match = TRACE_FRAME.match(line)
+                if match:
+                    public_stage = ':'.join(match.groups())
+                match = TRACE_ERROR.match(line)
+                if match:
+                    public_type = match.group(1)
+            for line in reversed(lines):
                 try:
                     value = json.loads(line)
                 except ValueError:
