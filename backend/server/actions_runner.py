@@ -71,10 +71,11 @@ class LeaseLost(RuntimeError):
 
 class WorkerFailure(RuntimeError):
     """A child-process failure with only non-sensitive diagnostics exposed."""
-    def __init__(self, public_type='WorkerProcessError', public_stage='unknown'):
+    def __init__(self, public_type='WorkerProcessError', public_stage='unknown', exit_code=None):
         super().__init__(public_type)
         self.public_type = public_type
         self.public_stage = public_stage
+        self.exit_code = exit_code
 
 
 TRACE_FRAME = re.compile(r'^\s*File "[^"]*/([^/"]+)", line (\d+), in ([A-Za-z_][A-Za-z0-9_]*)\s*$')
@@ -729,7 +730,7 @@ def run(args, client, *, executor=spawn_worker, minimum_universe=1000):
                 # republish the restored daily-collector status or mask the real stage
                 # with a later FileNotFoundError.
                 public_type, public_stage = worker_failure_summary(root)
-                raise WorkerFailure(public_type, public_stage)
+                raise WorkerFailure(public_type, public_stage, exit_code)
             guarded = LeasedClient(client,lease)
             publisher = worker.Publisher(guarded,args.bucket,root/'data')
             current = validate_worker_state(strict_json((root/'worker-state.json').read_bytes()))
@@ -864,6 +865,8 @@ def main():
         public = dict(status='failed', outcome='failed', errorType=error_type)
         if error_stage:
             public['errorStage'] = error_stage
+        if isinstance(getattr(exc, 'exit_code', None), int):
+            public['workerExitCode'] = exc.exit_code
         print(json.dumps(public,separators=(',',':')))
         return 1
 

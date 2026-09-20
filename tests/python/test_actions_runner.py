@@ -276,6 +276,7 @@ class ActionsExecutionTests(unittest.TestCase):
 
         self.assertEqual(caught.exception.public_type,'FileNotFoundError')
         self.assertEqual(caught.exception.public_stage,'backfill_quotes.py:333:run')
+        self.assertEqual(caught.exception.exit_code,1)
         written_keys=[item['Key'] for item in self.client.writes]
         self.assertNotIn('data/collection-status.json',written_keys)
         self.assertNotIn(runner.STATE_KEY,written_keys)
