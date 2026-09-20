@@ -84,6 +84,24 @@ class ExchangeStatusTests(unittest.TestCase):
         self.assertNotIn('000711', official_disclosure_suspensions('2026-03-12'))
         self.assertNotIn('000711', official_disclosure_suspensions('2026-03-20'))
 
+        restructuring = official_disclosure_suspensions('2026-03-06')['002445']
+        self.assertEqual(restructuring['startDate'], '2026-02-13')
+        self.assertEqual(restructuring['endDate'], '2026-03-06')
+        self.assertEqual(restructuring['resumeDate'], '2026-03-09')
+        self.assertEqual(restructuring['specialStatus']['label'], '重大资产重组停牌')
+        self.assertTrue(valid_historical_no_trade(restructuring, '002445', '2026-03-06'))
+        self.assertNotIn('002445', official_disclosure_suspensions('2026-02-12'))
+        self.assertNotIn('002445', official_disclosure_suspensions('2026-03-09'))
+
+        capital_increase = official_disclosure_suspensions('2026-03-10')['000908']
+        self.assertEqual(capital_increase['startDate'], '2026-03-10')
+        self.assertEqual(capital_increase['endDate'], '2026-03-10')
+        self.assertEqual(capital_increase['resumeDate'], '2026-03-11')
+        self.assertEqual(capital_increase['specialStatus']['label'], '重整转增股本停牌')
+        self.assertTrue(valid_historical_no_trade(capital_increase, '000908', '2026-03-10'))
+        self.assertNotIn('000908', official_disclosure_suspensions('2026-03-09'))
+        self.assertNotIn('000908', official_disclosure_suspensions('2026-03-11'))
+
     def test_listing_catalog_retries_each_official_source_before_accepting_it(self):
         class Frame:
             def __init__(self, rows):

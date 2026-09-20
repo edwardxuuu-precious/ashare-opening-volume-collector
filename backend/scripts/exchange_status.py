@@ -126,6 +126,26 @@ OFFICIAL_DISCLOSURE_SUSPENSIONS = (
         resumeUrl=('https://disc.static.szse.cn/download/disc/disk03/finalpage/'
                    '2026-03-20/f7a51b7c-eb07-41bd-bd94-90f4031f08b8.PDF'),
     ),
+    dict(
+        code='000908', startDate='2026-03-10', endDate='2026-03-10',
+        resumeDate='2026-03-11', statusType='suspension',
+        label='重整转增股本停牌', reason='实施重整计划资本公积金转增股本事项',
+        announcementTitle='关于公司股票停牌的提示性公告',
+        sourceUrl=('https://disc.static.szse.cn/download/disc/disk03/finalpage/'
+                   '2026-03-10/88a34429-8f96-49d0-9994-4f84c662c421.PDF'),
+        resumeUrl=('https://disc.static.szse.cn/disc/disk03/finalpage/'
+                   '2026-03-11/ac1585aa-e128-47df-a6af-91f6b22c5870.PDF'),
+    ),
+    dict(
+        code='002445', startDate='2026-02-13', endDate='2026-03-06',
+        resumeDate='2026-03-09', statusType='major_restructuring',
+        label='重大资产重组停牌', reason='筹划发行股份及支付现金购买资产并募集配套资金事项',
+        announcementTitle='关于筹划重大资产重组事项的停牌公告',
+        sourceUrl=('https://disc.static.szse.cn/download/disc/disk03/finalpage/'
+                   '2026-02-13/18a3ebf3-215f-4822-9dcc-51a24d6b9bd9.PDF'),
+        resumeUrl=('https://static.cninfo.com.cn/finalpage/'
+                   '2026-03-09/1224999965.PDF'),
+    ),
 )
 
 
