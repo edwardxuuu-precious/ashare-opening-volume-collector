@@ -37,13 +37,15 @@ def status(**overrides):
 
 
 def payload(**overrides):
-    value = dict(date=DAY, rows=[complete_row()], universeTotal=1, generatedAt='2026-09-08T16:00:00+08:00')
+    value = dict(date=DAY, rows=[complete_row()], universeTotal=1,
+                 generatedAt='2026-09-08T16:00:00+08:00')
     value.update(overrides)
     return value
 
 
 def manifest(**overrides):
-    value = dict(dates=[dict(date=DAY, valid=1, suspended=0, generatedAt='2026-09-08T16:00:00+08:00')])
+    value = dict(dates=[dict(date=DAY, valid=1, suspended=0,
+                             generatedAt='2026-09-08T16:00:00+08:00')])
     value.update(overrides)
     return value
 
@@ -91,7 +93,11 @@ class CompletionContractTests(unittest.TestCase):
         self.assertEqual(merged, checkpoint)
 
     def test_legacy_schedule_switch_does_not_block_dispatcher_or_recovery(self):
-        workflow = (Path(__file__).resolve().parents[2] / '.github/workflows/collector.yml').read_text()
+        root = Path(__file__).resolve().parents[2]
+        workflow_path = root / 'deploy/actions/workflows/collector.yml'
+        if not workflow_path.exists():
+            workflow_path = root / '.github/workflows/collector.yml'
+        workflow = workflow_path.read_text()
         self.assertIn("github.event_name == 'workflow_dispatch'", workflow)
         self.assertNotIn('Production writer is explicitly disabled.', workflow)
 
@@ -110,6 +116,15 @@ class CompletionContractTests(unittest.TestCase):
             self.assertTrue(actions_runner.successful_exit(dict(outcome=outcome)))
         for outcome in ('incomplete_checkpointed', 'failed', 'running'):
             self.assertFalse(actions_runner.successful_exit(dict(outcome=outcome)))
+
+    def test_new_contract_date_cannot_succeed_without_complete_prices(self):
+        result = dict(outcome='completed', targetDate='2026-09-21',
+                      dataComplete=True, priceDataComplete=False)
+        self.assertFalse(actions_runner.successful_exit(result))
+        self.assertTrue(actions_runner.successful_exit(dict(result, priceDataComplete=True)))
+        self.assertTrue(actions_runner.successful_exit(dict(
+            outcome='completed', targetDate='2026-09-18',
+            dataComplete=True, priceDataComplete=False)))
 
     def test_no_work_cannot_mask_an_incomplete_opening_or_close(self):
         self.assertFalse(actions_runner.successful_exit(dict(
@@ -146,6 +161,32 @@ class HealthAuditTests(unittest.TestCase):
         self.assertEqual(result['health'], 'healthy')
         self.assertTrue(result['dataComplete'])
         self.assertEqual(result['expectedClosedDate'], DAY)
+
+    def test_price_schema_readback_requires_matching_atomic_coverage(self):
+        day = '2026-09-21'
+        priced = dict(complete_row(), open=9.8, high=10.3, low=9.7, close=10.0,
+                      priceStatus='available', priceSourceProvider='sina')
+        body = dict(date=day, rows=[priced], universeTotal=1, generatedAt='v1',
+                    priceSchemaVersion=1, priceFields=['open','high','low','close'],
+                    priceAvailable=1, priceNoTrade=0, priceMissing=0, priceDataComplete=True,
+                    specialStatusExplained=0, specialStatusUnexplained=0,
+                    statusExplanationComplete=True)
+        directory = dict(dates=[dict(date=day, valid=1, suspended=0, generatedAt='v1',
+                                    priceSchemaVersion=1, priceAvailable=1, priceNoTrade=0,
+                                    priceMissing=0, priceDataComplete=True,
+                                    specialStatusExplained=0, specialStatusUnexplained=0,
+                                    statusExplanationComplete=True)])
+        run = status(targetDate=day, calendarDates=[day], calendarValidThrough=day, dataComplete=True,
+                     priceDataComplete=True, priceAvailable=1, priceNoTrade=0, priceMissing=0,
+                     specialStatusExplained=0, specialStatusUnexplained=0,
+                     statusExplanationComplete=True)
+        result = audit(run, body, directory,
+                       datetime.fromisoformat(day+'T16:00:00+08:00'))
+        self.assertEqual(result['health'],'healthy')
+        self.assertTrue(result['priceDataComplete'])
+        broken = audit(dict(run, priceDataComplete=False), body, directory,
+                       datetime.fromisoformat(day+'T16:00:00+08:00'))
+        self.assertIn('price_status_incomplete',broken['publicationErrors'])
 
     def test_incomplete_checkpoint_never_becomes_healthy(self):
         result = audit(

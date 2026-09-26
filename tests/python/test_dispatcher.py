@@ -3,7 +3,7 @@ import io
 import json
 import sys
 import unittest
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 
@@ -66,6 +66,11 @@ class FakeGitHub:
 
 
 class DispatcherDecisionTests(unittest.TestCase):
+    def test_price_boundary_matches_collector_contract(self):
+        from deploy.actions.dispatcher import PRICE_REQUIRED_FROM
+        from backend.scripts.reconciliation import PRICE_REQUIRED_FROM as collector_boundary
+        self.assertEqual(PRICE_REQUIRED_FROM, collector_boundary)
+
     def test_1530_boundary_and_target_inputs(self):
         self.assertEqual(choose_work(status(), "close", at("15:29"))[1], "before_close_refresh")
         work, reason = choose_work(status(), "close", at())
@@ -101,6 +106,42 @@ class DispatcherDecisionTests(unittest.TestCase):
         self.assertEqual(choose_work(status(), "watchdog", at("07:00"))[1], "no_known_backlog")
         self.assertEqual(choose_work(status(), "catchup", at("07:00"))[0]["target_date"], "2026-09-07")
 
+    def test_automatic_backlog_excludes_dates_before_six_month_window(self):
+        saved = status(calendarDates=["2026-03-06", "2026-09-24", "2026-09-28"],
+                       calendarValidThrough="2026-09-28", targets={
+                           "2026-03-06": {"dataComplete": False},
+                           "2026-09-24": {"dataComplete": True, "priceDataComplete": True},
+                       })
+        for phase in ("catchup", "watchdog"):
+            with self.subTest(phase=phase):
+                self.assertEqual(choose_work(saved, phase, at("07:00", "2026-09-27")),
+                                 (None, "no_known_backlog"))
+
+    def test_bootstrap_does_not_select_unknown_dates_outside_six_month_window(self):
+        saved = status(calendarDates=["2026-03-06", "2026-09-28"],
+                       calendarValidThrough="2026-09-28")
+        self.assertEqual(choose_work(saved, "catchup", at("07:00", "2026-09-27")),
+                         (None, "no_known_backlog"))
+
+    def test_automatic_window_matches_runner_at_month_ends_and_shanghai_date(self):
+        from backend.scripts.retention import six_month_start
+        for today in ("2026-09-27", "2026-08-31", "2024-08-31", "2026-03-31", "2026-01-31"):
+            start = six_month_start(today)
+            before = (datetime.fromisoformat(start) - timedelta(days=1)).date().isoformat()
+            # UTC is still the previous date at Shanghai's 07:00 trigger.
+            now = datetime.fromisoformat(today + "T07:00:00+08:00").astimezone(timezone.utc)
+            for phase in ("catchup", "watchdog"):
+                for candidate in (before, start):
+                    with self.subTest(today=today, phase=phase, candidate=candidate):
+                        saved = status(calendarDates=[candidate, today], calendarValidThrough=today,
+                                       targets={candidate: {"dataComplete": False}})
+                        work, reason = choose_work(saved, phase, now)
+                        if candidate == start:
+                            self.assertEqual(reason, "due")
+                            self.assertEqual(work["target_date"], start)
+                        else:
+                            self.assertEqual((work, reason), (None, "no_known_backlog"))
+
     def test_next_source_retry_blocks_even_with_unprocessed_rows(self):
         target = {"retryableCount": 5, "unprocessedCount": 0, "nextRetryAt": "2026-09-08T08:00:00Z"}
         saved = status(targets={"2026-09-08": target})
@@ -119,6 +160,65 @@ class DispatcherDecisionTests(unittest.TestCase):
         self.assertEqual(work["target_date"], "2026-09-07")
         self.assertEqual(choose_work(saved, "opening", at("10:00"))[1], "source_retry_not_due")
 
+    def test_deferred_newer_history_does_not_hide_due_older_history(self):
+        saved = status(targets={
+            "2026-09-08": {"dataComplete": True},
+            "2026-09-07": {"dataComplete": False, "nextRetryAt": "2026-09-08T10:00:00Z"},
+            "2026-09-04": {"dataComplete": False, "nextRetryAt": "2026-09-08T07:00:00Z"},
+        })
+        for phase in ("watchdog", "catchup"):
+            with self.subTest(phase=phase):
+                work, reason = choose_work(saved, phase, at())
+                self.assertEqual(reason, "due")
+                self.assertEqual(work["target_date"], "2026-09-04")
+        saved["targets"]["2026-09-08"] = {"dataComplete": False,
+            "nextRetryAt": "2026-09-08T10:00:00Z"}
+        self.assertEqual(choose_work(saved, "close", at())[1], "source_retry_not_due")
+
+    def test_all_history_deferred_reports_source_retry(self):
+        saved = status(targets={
+            "2026-09-08": {"dataComplete": True},
+            "2026-09-07": {"dataComplete": False, "nextRetryAt": "2026-09-08T10:00:00Z"},
+        })
+        for phase in ("watchdog", "catchup"):
+            with self.subTest(phase=phase):
+                self.assertEqual(choose_work(saved, phase, at())[1], "source_retry_not_due")
+
+    def test_due_latest_retry_does_not_starve_unattempted_history(self):
+        saved = status(targets={
+            "2026-09-08": {"dataComplete": False, "firstPassComplete": True,
+                           "lastAttemptedAt": "2026-09-08T07:00:00Z"},
+            "2026-09-07": {"dataComplete": False, "unprocessedCount": 0,
+                           "lastAttemptedAt": "2026-09-08T06:00:00Z"},
+            "2026-09-04": {"dataComplete": False, "unprocessedCount": 2000},
+        })
+        work, reason = choose_work(saved, "watchdog", at())
+        self.assertEqual(reason, "due")
+        self.assertEqual(work["target_date"], "2026-09-04")
+        self.assertEqual(choose_work(saved, "close", at())[0]["target_date"], "2026-09-08")
+        saved["targets"]["2026-09-04"]["lastAttemptedAt"] = "2026-09-08T07:10:00Z"
+        self.assertEqual(choose_work(saved, "watchdog", at())[0]["target_date"], "2026-09-07")
+
+    def test_first_pass_keeps_current_day_priority(self):
+        saved = status(targets={
+            "2026-09-08": {"dataComplete": False, "firstPassComplete": False,
+                           "unprocessedCount": 1, "lastAttemptedAt": "2026-09-08T07:00:00Z"},
+            "2026-09-07": {"dataComplete": False},
+        })
+        self.assertEqual(choose_work(saved, "watchdog", at())[0]["target_date"], "2026-09-08")
+
+    def test_catchup_rotates_due_history_oldest_attempt_first(self):
+        saved = status(targets={
+            "2026-09-07": {"dataComplete": False, "unprocessedCount": 0,
+                           "lastAttemptedAt": "2026-09-08T06:00:00Z"},
+            "2026-09-04": {"dataComplete": False},
+        })
+        work, reason = choose_work(saved, "catchup", at("07:00"))
+        self.assertEqual(reason, "due")
+        self.assertEqual(work["target_date"], "2026-09-04")
+        saved["targets"]["2026-09-04"]["lastAttemptedAt"] = "2026-09-08T06:00:00Z"
+        self.assertEqual(choose_work(saved, "catchup", at("07:00"))[0]["target_date"], "2026-09-07")
+
     def test_green_first_pass_does_not_mean_complete(self):
         saved = status(targets={"2026-09-08": {"firstPassCompletedAt": "2026-09-08T08:00:00Z",
                        "unprocessedCount": 0, "retryableCount": 6, "dataComplete": False}})
@@ -126,11 +226,50 @@ class DispatcherDecisionTests(unittest.TestCase):
         saved["targets"]["2026-09-08"]["dataComplete"] = True
         self.assertEqual(choose_work(saved, "close", at("17:00"))[1], "data_complete")
 
+    def test_current_day_requires_prices_from_contract_start(self):
+        day = "2026-09-21"
+        for price_complete in (False, None):
+            with self.subTest(price_complete=price_complete):
+                target = {"dataComplete": True, "priceDataComplete": price_complete}
+                saved = status(calendarDates=[day], calendarValidThrough=day,
+                               targets={day: target})
+                work, reason = choose_work(saved, "close", at(day=day))
+                self.assertEqual(reason, "due")
+                self.assertEqual(work["target_date"], day)
+
+    def test_price_only_history_is_resumed_but_legacy_prices_are_not(self):
+        today, day, legacy = "2026-09-22", "2026-09-21", "2026-09-18"
+        targets = {
+            today: {"dataComplete": True, "priceDataComplete": True},
+            day: {"dataComplete": True, "priceDataComplete": False},
+            legacy: {"dataComplete": True, "priceDataComplete": False},
+        }
+        saved = status(calendarDates=[legacy, day, today], calendarValidThrough=today,
+                       targets=targets)
+        work, reason = choose_work(saved, "watchdog", at(day=today))
+        self.assertEqual(reason, "due")
+        self.assertEqual(work["target_date"], day)
+        targets[day]["priceDataComplete"] = True
+        self.assertEqual(choose_work(saved, "watchdog", at(day=today))[1], "no_known_backlog")
+
     def test_disabled_writer_is_never_dispatched(self):
         self.assertEqual(choose_work(status(writerDisabled=True), "close", at())[1], "writer_disabled")
 
 
 class DispatcherExecutionTests(unittest.TestCase):
+    def test_expired_backlog_does_not_mint_token_write_ledger_or_dispatch(self):
+        s3 = MemoryS3(status(calendarDates=["2026-03-06", "2026-09-24", "2026-09-28"],
+                             calendarValidThrough="2026-09-28", targets={
+                                 "2026-03-06": {"dataComplete": False},
+                                 "2026-09-24": {"dataComplete": True, "priceDataComplete": True},
+                             }))
+        def forbidden():
+            self.fail("Automatic expired backlog must not request a GitHub token")
+        result = dispatch_once({"phase": "catchup"}, s3, "bucket", forbidden,
+                               at("07:00", "2026-09-27"))
+        self.assertEqual(result, {"dispatched": False, "reason": "no_known_backlog"})
+        self.assertFalse(s3.writes)
+
     def test_duplicate_event_only_posts_once_and_writes_own_state(self):
         s3, github = MemoryS3(status()), FakeGitHub()
         first = dispatch_once({"phase": "close"}, s3, "bucket", lambda: github, at())

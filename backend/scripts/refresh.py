@@ -108,14 +108,31 @@ def select_target(phase, explicit, calendar, cache, legacy, now):
         return selected
     targets = cache.get('targets', {})
     selected_summary = targets.get(selected, {}).get('summary', {})
-    if (selected_summary.get('dataComplete') is not True or
-            selected >= PRICE_REQUIRED_FROM and selected_summary.get('priceDataComplete') is not True):
+    def incomplete(day):
+        summary = targets.get(day, {}).get('summary', {})
+        return (summary.get('dataComplete') is not True or
+                day >= PRICE_REQUIRED_FROM and summary.get('priceDataComplete') is not True)
+
+    def due(day):
+        retry_at = targets.get(day, {}).get('summary', {}).get('nextRetryAt')
+        return not retry_at or datetime.fromisoformat(retry_at) <= now
+
+    first_pass_complete = (selected_summary.get('firstPassComplete') is True or
+                           selected_summary.get('dataComplete') is True or
+                           type(selected_summary.get('unprocessedCount')) is int and
+                           selected_summary['unprocessedCount'] == 0)
+    if incomplete(selected) and due(selected) and not first_pass_complete:
         return selected
     pending = {day for values in legacy.get('pending', {}).values() for day in values}
-    pending |= {day for day, value in targets.items() if value.get('summary', {}).get('pendingCount', 0)}
-    eligible = [day for day in pending if day <= selected and day in calendar
-                and targets.get(day, {}).get('summary', {}).get('dataComplete') is not True]
-    return max(eligible) if eligible else None
+    pending |= {day for day in targets if incomplete(day)}
+    if incomplete(selected):
+        pending.add(selected)
+    eligible = sorted((day for day in pending if day <= selected and day in calendar
+                       and incomplete(day) and due(day)), reverse=True)
+    def last_attempt(day):
+        value = targets.get(day, {}).get('summary', {}).get('lastAttemptedAt')
+        return datetime.fromisoformat(value) if value else datetime.min.replace(tzinfo=now.tzinfo)
+    return min(eligible, key=last_attempt) if eligible else None
 
 
 def fetch(task):
@@ -143,13 +160,49 @@ def fetch(task):
             row['specialStatus'] = notice['specialStatus']
         return dict(code=code,row=row,opening=None,errors=[],speedDegraded=False,firstDataRequestAt=None)
     errors = []; degraded = False; request_started = None
+    retained_quote = {}
+    saved_daily = volume(previous.get('dailyVolume')) and previous['dailyVolume'] > 0
+    # Retaining a completed daily volume must not discard an independently
+    # captured OHLC frame while the opening volume is still missing.
+    if saved_daily and day >= PRICE_REQUIRED_FROM and validate_price_row(previous) == 'available':
+        retained_quote = {key: previous[key] for key in
+            (*PRICE_FIELDS, 'priceStatus', 'priceSourceProvider', 'pctChange', 'amplitude',
+             'dailyAdapter', 'quoteTime') if key in previous}
+    # Fetch exact-day prices independently of a saved daily volume. Even when
+    # the opening is still missing, a provider's revised volume cannot replace
+    # the saved core observation during this price repair.
+    if (phase != 'opening' and day >= PRICE_REQUIRED_FROM and not snapshot_supplied and
+            (saved_daily or complete(previous, day)) and not quotes_present(previous, day)):
+        row = dict(previous)
+        if previous.get('status') == 'suspended':
+            row.update(missing_prices('not_traded'), pctChange=None, amplitude=None)
+        else:
+            from .reconciliation import quote_observation
+            try:
+                request_started = datetime.now(timezone.utc).isoformat()
+                daily = daily_unadjusted(AK, symbol, day.replace('-', ''), day.replace('-', ''))
+                degraded = bool(daily.attrs.get('speedDegraded'))
+                quote = quote_observation(daily, day)
+                if quote['priceStatus'] == 'available':
+                    row.update(quote, priceSourceProvider='sina',
+                               dailyAdapter=daily.attrs.get('dailyAdapter', 'sina_daily_price_repair'))
+                    row.pop('quoteTime', None)
+                    retained_quote = dict(quote, priceSourceProvider='sina',
+                        dailyAdapter=row['dailyAdapter'])
+                else:
+                    errors.append('price:missing')
+            except Exception as exc:
+                errors.append('price:'+type(exc).__name__)
+        if complete(previous, day):
+            return dict(code=code, row=row, opening=row.get('first15Volume'), errors=errors,
+                        speedDegraded=degraded, firstDataRequestAt=request_started)
     first = opening if volume(opening) else previous.get('first15Volume')
     minute = pd.DataFrame()
     if volume(first):
         minute = pd.DataFrame([dict(day=day+' 09:45:00', volume=first)])
     else:
         try:
-            request_started = datetime.now(timezone.utc).isoformat()
+            request_started = request_started or datetime.now(timezone.utc).isoformat()
             minute = collect.minute_unadjusted(AK, symbol)
         except Exception as exc:
             errors.append('opening:'+type(exc).__name__)
@@ -175,6 +228,8 @@ def fetch(task):
         except Exception as exc:
             errors.append('daily:'+type(exc).__name__)
     row = evaluate_downloaded(code, item['name'], day, minute, daily, collect.market)
+    if retained_quote:
+        row.update(retained_quote)
     if snapshot:
         for key in ('pctChange', 'amplitude', *PRICE_FIELDS, 'priceStatus',
                     'priceSourceProvider', 'dailyAdapter', 'quoteTime'):

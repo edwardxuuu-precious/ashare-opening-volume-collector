@@ -33,7 +33,7 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(HERE.parent / 'scripts'))
 import cloud_worker as worker
-from reconciliation import PRICE_REQUIRED_FROM, VERIFICATION_VERSION
+from reconciliation import PRICE_REQUIRED_FROM, STATUS_EXPLANATION_REQUIRED_FROM, VERIFICATION_VERSION
 from import_checkpoint_batch import strict_json, valid_date, record_disposition
 from publisher_state import canonical, file_digest
 from universe_cache import validate_universe
@@ -366,6 +366,54 @@ def validate_worker_state(value):
     return value
 
 
+def merge_manifest_summaries(cache, entries, eligible_dates):
+    """Discover saved gaps before selecting a snapshot; metadata never proves a suspension."""
+    targets = cache.setdefault('targets', {})
+    counts = ('total', 'universeTotal', 'valid', 'missing', 'unverified', 'suspended',
+              'priceAvailable', 'priceNoTrade', 'priceMissing',
+              'specialStatusExplained', 'specialStatusUnexplained')
+    coverage = ('priceAvailable', 'priceNoTrade', 'priceMissing', 'priceDataComplete',
+                'specialStatusExplained', 'specialStatusUnexplained', 'statusExplanationComplete')
+    for entry in entries:
+        day = entry['date']
+        if day not in eligible_dates:
+            continue
+        for key in counts:
+            if key in entry and (type(entry[key]) is not int or entry[key] < 0):
+                raise RestoreError('Invalid manifest coverage count')
+        for key in ('priceDataComplete', 'statusExplanationComplete'):
+            if key in entry and type(entry[key]) is not bool:
+                raise RestoreError('Invalid manifest coverage marker')
+        summary = targets.setdefault(day, {}).setdefault('summary', {})
+        # Preserve scheduling/attempt evidence that the published manifest does not contain.
+        summary.update({key: entry[key] for key in coverage if key in entry})
+        if 'total' not in entry:
+            if entry.get('status') == 'partial':
+                summary['dataComplete'] = False
+            continue
+        total = entry['total']
+        universe = entry.get('universeTotal', total)
+        if universe < total:
+            raise RestoreError('Manifest universe is smaller than saved rows')
+        missing = entry.get('missing', 0) + entry.get('unverified', 0) + universe - total
+        suspended = entry.get('suspended', 0)
+        explanation_gap = (entry.get('specialStatusUnexplained', 0)
+                           if day >= STATUS_EXPLANATION_REQUIRED_FROM else 0)
+        gap = missing + explanation_gap
+        if gap:
+            summary.update(dataComplete=False, pendingCount=max(gap, summary.get('pendingCount', 0)))
+        elif (all(key in entry for key in ('valid', 'missing', 'unverified', 'suspended')) and
+              entry['valid'] + suspended == universe):
+            # A cache may carry a stricter unresolved finding than the manifest.
+            # Suspensions require exact-day row evidence in the selected worker.
+            if summary.get('dataComplete') is not False and (not suspended or summary.get('dataComplete') is True):
+                summary.update(dataComplete=True, pendingCount=0)
+            elif suspended and 'dataComplete' not in summary:
+                summary['dataComplete'] = False
+        elif entry.get('status') == 'partial':
+            summary['dataComplete'] = False
+
+
 def restore(client, bucket, root, expected_sha=None, *, minimum_universe=1000, review_dates=None,
             phase=None, target_date=None, backfill_range=None):
     """Validate the entire private staging tree before installing into an empty temporary root."""
@@ -379,7 +427,19 @@ def restore(client, bucket, root, expected_sha=None, *, minimum_universe=1000, r
         source = download_archive(client, bucket, archive, expected_sha)
         report = unpack_archive(archive, data)
         catalog, calendar, legacy_rows = validate_tree(data, minimum_universe)
+        raw, _ = get_bytes(client, bucket, 'data/manifest.json', 4*1024*1024)
+        manifest = strict_json(raw)
+        if not isinstance(manifest, dict) or not isinstance(manifest.get('dates'), list) or len(manifest['dates']) > 10000:
+            raise RestoreError('Invalid private manifest')
+        seen = set()
+        for entry in manifest['dates']:
+            day = valid_date(entry.get('date'))
+            if day in seen or entry.get('file') != day+'.json':
+                raise RestoreError('Duplicate or unsafe manifest date')
+            seen.add(day)
+        start = worker.six_month_start(worker.now()[:10])
         target_set = None
+        selected = None
         if phase:
             from refresh_worker import validate_cache
             from scripts.refresh import select_target
@@ -390,29 +450,27 @@ def restore(client, bucket, root, expected_sha=None, *, minimum_universe=1000, r
                 local = strict_json((data/'refresh-state.json').read_bytes()) if (data/'refresh-state.json').exists() else {}
                 if value.get('updatedAt', '') >= local.get('updatedAt', ''):
                     private_json(data/'refresh-state.json', value)
-            current_cache = strict_json((data/'refresh-state.json').read_bytes()) if (data/'refresh-state.json').exists() else {}
+            current_cache = (strict_json((data/'refresh-state.json').read_bytes())
+                             if (data/'refresh-state.json').exists() else dict(version=1, targets={}))
             legacy = strict_json((data/'daily-state.json').read_bytes()) if (data/'daily-state.json').exists() else {}
-            selected = select_target(phase, target_date, calendar.get('calendarDates', calendar['tradingDates']),
+            available_dates = calendar.get('calendarDates', calendar['tradingDates'])
+            eligible_dates = {day for day in available_dates if day >= start or day == target_date}
+            merge_manifest_summaries(current_cache, manifest['dates'], eligible_dates)
+            validate_cache(current_cache)
+            private_json(data/'refresh-state.json', current_cache)
+            selected = select_target(phase, target_date, eligible_dates,
                                      current_cache, legacy, datetime.now(ZoneInfo('Asia/Shanghai')))
             target_set = {selected} if selected else set()
-        raw, _ = get_bytes(client, bucket, 'data/manifest.json', 4*1024*1024)
-        manifest = strict_json(raw)
-        if not isinstance(manifest, dict) or not isinstance(manifest.get('dates'), list) or len(manifest['dates']) > 10000:
-            raise RestoreError('Invalid private manifest')
-        seen = set(); entries = []; snapshot_bytes = 0
+        entries = []; snapshot_bytes = 0
         review_set = set(validate_dates(review_dates,allow_empty=False)) if review_dates is not None else None
-        start = worker.six_month_start(worker.now()[:10])
         for entry in manifest['dates']:
-            day = valid_date(entry.get('date'))
-            if day in seen or entry.get('file') != day+'.json':
-                raise RestoreError('Duplicate or unsafe manifest date')
-            seen.add(day)
+            day = entry['date']
             if target_set is not None and day not in target_set:
                 continue
             if backfill_range is not None:
                 if not backfill_range[0] <= day <= backfill_range[1]:
                     continue
-            elif (day not in review_set) if review_set is not None else (day < start):
+            elif target_set is None and ((day not in review_set) if review_set is not None else (day < start)):
                 continue
             payload_raw, response = get_bytes(client, bucket, 'data/'+entry['file'], MAX_DATE_BYTES)
             snapshot_bytes += len(payload_raw)
@@ -451,7 +509,8 @@ def restore(client, bucket, root, expected_sha=None, *, minimum_universe=1000, r
             current = validate_worker_state(strict_json(status_raw)) if status_raw else dict(historyTraversalCompleted=False, dates=dates_from_report(data, calendar))
         private_json(stage/'worker-state.json', current)
         report.update(archiveSha256=source['sha256'], archiveVersionId=source['versionId'], compressedBytes=source['bytes'],
-                      restoredDates=len(entries), archivedDates=len(seen)-len(entries), snapshotBytes=snapshot_bytes, universeTotal=catalog['total'], boundRunnerState=bound)
+                      restoredDates=len(entries), archivedDates=len(seen)-len(entries), snapshotBytes=snapshot_bytes, universeTotal=catalog['total'], boundRunnerState=bound,
+                      sourceManifestDates=len(seen), selectedTargetDate=selected)
         report['legacyVerificationRows'] = legacy_rows
         private_json(stage/'restore-report.json', report)
         installed = []
@@ -706,6 +765,13 @@ def run(args, client, *, executor=spawn_worker, minimum_universe=1000):
             result = dict(mode=args.mode,restoredCheckpoints=report['checkpointCount'],restoredDates=report['restoredDates'])
             if args.mode == 'probe':
                 return dict(result,status='validated',outcome='validated',upstreamRequests=0,productionWrites=0)
+            if getattr(args, 'phase', None) and report['selectedTargetDate'] is None:
+                # No snapshot was selected. Do not let a later worker select an
+                # out-of-window or newly due date that was never restored.
+                # Leave the published incomplete-data status untouched.
+                return dict(result, status='no_work', outcome='no_work', noOp=True,
+                            phase=args.phase, targetDate=None, exitReason='no_due_target',
+                            workStarted=False)
             if args.mode == 'review':
                 originals=root/'review-originals'
                 originals.mkdir(mode=0o700)
@@ -722,6 +788,9 @@ def run(args, client, *, executor=spawn_worker, minimum_universe=1000):
                             phase=getattr(args, 'phase', None),targetDate=getattr(args, 'target_date', None),
                             budgetExhausted=True,checkpointSaved=True,expectedPause=True,workStarted=False)
             options = SimpleNamespace(**dict(vars(args),lease_owner=lease.owner,max_minutes=remaining))
+            if getattr(args, 'phase', None) and report.get('selectedTargetDate'):
+                # Bind the worker to the single snapshot selected from the full catalog.
+                options.target_date = report['selectedTargetDate']
             log_path = root/'worker-private.log'
             with log_path.open('w') as log:
                 os.chmod(log_path,0o600)

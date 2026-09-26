@@ -9,6 +9,9 @@ from zoneinfo import ZoneInfo
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / 'backend'))
 from scripts.refresh import complete
+from scripts.reconciliation import (PRICE_FIELDS, PRICE_REQUIRED_FROM, PRICE_SCHEMA_VERSION,
+                                    STATUS_EXPLANATION_REQUIRED_FROM, price_counts,
+                                    special_status_counts)
 
 ZONE = ZoneInfo('Asia/Shanghai')
 BUCKET = 'stock-private-access-databucket-bmzud610gtex'
@@ -30,10 +33,25 @@ def target_state(status, day):
     return summary if isinstance(summary, dict) else {}
 
 
-def latest_closed_day(status, checked_at):
+def calendar_error(status, checked_at):
     dates = status.get('calendarDates')
-    if not isinstance(dates, list) or not dates:
+    valid_through = status.get('calendarValidThrough')
+    if not isinstance(dates, list) or not dates or not isinstance(valid_through, str):
+        return 'calendar_unavailable'
+    try:
+        for day in [valid_through, *dates]:
+            if not isinstance(day, str) or datetime.strptime(day, '%Y-%m-%d').date().isoformat() != day:
+                return 'calendar_unavailable'
+    except ValueError:
+        return 'calendar_unavailable'
+    today = checked_at.astimezone(ZONE).date().isoformat()
+    return 'calendar_expired' if valid_through < today else None
+
+
+def latest_closed_day(status, checked_at):
+    if calendar_error(status, checked_at):
         return None
+    dates = status['calendarDates']
     today = checked_at.astimezone(ZONE).date().isoformat()
     clock = checked_at.astimezone(ZONE).strftime('%H:%M')
     closed = [day for day in dates if isinstance(day, str) and (
@@ -59,10 +77,43 @@ def audit(status, payload, manifest, checked_at=None):
         errors.append('manifest_generation')
     if entry.get('valid') != ok or entry.get('suspended') != no_trade:
         errors.append('manifest_coverage')
-    if status.get('targetDate') == day:
+    if target:
         if target.get('calculableCount') != ok or target.get('noTradeCount') != no_trade:
             errors.append('status_coverage')
     unresolved = len(rows) - ok - no_trade
+    explanation_coverage = special_status_counts(rows)
+    if day >= STATUS_EXPLANATION_REQUIRED_FROM:
+        for key, value in explanation_coverage.items():
+            if payload.get(key) != value or entry.get(key) != value:
+                errors.append('special_status_manifest_coverage')
+                break
+        if not explanation_coverage['statusExplanationComplete']:
+            errors.append('special_status_unexplained')
+        if target and any(target.get(key) != explanation_coverage[key]
+                for key in ('specialStatusExplained', 'specialStatusUnexplained',
+                            'statusExplanationComplete')):
+            errors.append('special_status_status_coverage')
+    price_required = day >= PRICE_REQUIRED_FROM or payload.get('priceSchemaVersion') is not None
+    price_coverage = dict(priceAvailable=0, priceNoTrade=0, priceMissing=len(rows), priceDataComplete=False)
+    if price_required:
+        if (payload.get('priceSchemaVersion') != PRICE_SCHEMA_VERSION or
+                payload.get('priceFields') != list(PRICE_FIELDS)):
+            errors.append('price_schema_missing_or_invalid')
+        try:
+            price_coverage = price_counts(rows)
+        except ValueError:
+            errors.append('price_payload_invalid')
+        for key, value in price_coverage.items():
+            if payload.get(key) != value or entry.get(key) != value:
+                errors.append('price_manifest_coverage')
+                break
+        if target.get('priceDataComplete') is not True:
+            errors.append('price_status_incomplete')
+        if any(target.get(key) != price_coverage[key]
+               for key in ('priceAvailable', 'priceNoTrade', 'priceMissing')):
+            errors.append('price_status_coverage')
+        if not price_coverage['priceDataComplete']:
+            errors.append('price_incomplete')
     declared = target.get('dataComplete')
     if declared is not True:
         errors.append('status_incomplete')
@@ -70,7 +121,7 @@ def audit(status, payload, manifest, checked_at=None):
         errors.append('false_completion')
     expected = latest_closed_day(status, checked_at)
     if expected is None:
-        errors.append('calendar_unavailable')
+        errors.append(calendar_error(status, checked_at) or 'calendar_unavailable')
     elif day != expected:
         errors.append('target_not_latest_closed_day')
     outcome = target.get('outcome')
@@ -86,16 +137,23 @@ def audit(status, payload, manifest, checked_at=None):
         total=total,
         calculable=ok,
         confirmedNoTrade=no_trade,
+        specialStatusExplained=explanation_coverage['specialStatusExplained'],
+        specialStatusUnexplained=explanation_coverage['specialStatusUnexplained'],
+        statusExplanationComplete=explanation_coverage['statusExplanationComplete'],
         unresolved=unresolved,
         dataComplete=healthy,
+        priceDataComplete=price_coverage['priceDataComplete'] if price_required else None,
+        priceAvailable=price_coverage['priceAvailable'] if price_required else None,
+        priceNoTrade=price_coverage['priceNoTrade'] if price_required else None,
+        priceMissing=price_coverage['priceMissing'] if price_required else None,
         publicationErrors=errors,
         latestPublicationAt=payload.get('generatedAt'),
-        phase=target.get('phase', status.get('phase')),
+        phase=target.get('phase'),
         outcome=outcome,
         unprocessedCount=target.get('unprocessedCount'),
         retryableCount=target.get('retryableCount'),
         nextRetryAt=target.get('nextRetryAt'),
-        exitReason=target.get('exitReason', status.get('exitReason')),
+        exitReason=target.get('exitReason'),
         publishedAt=target.get('publishedAt', target.get('fullyPublishedAt')),
         firstPassCompletedAt=target.get('firstPassCompletedAt'),
         fullyPublishedAt=target.get('fullyPublishedAt'),
@@ -123,7 +181,7 @@ def missing_payload_report(status, day, checked_at=None):
     else:
         errors.append('false_completion')
     if expected is None:
-        errors.append('calendar_unavailable')
+        errors.append(calendar_error(status, checked_at) or 'calendar_unavailable')
     elif day != expected:
         errors.append('target_not_latest_closed_day')
     outcome = target.get('outcome')
@@ -141,12 +199,12 @@ def missing_payload_report(status, day, checked_at=None):
         dataComplete=False,
         publicationErrors=sorted(set(errors)),
         latestPublicationAt=None,
-        phase=target.get('phase', status.get('phase')),
+        phase=target.get('phase'),
         outcome=outcome,
         unprocessedCount=target.get('unprocessedCount'),
         retryableCount=target.get('retryableCount'),
         nextRetryAt=target.get('nextRetryAt'),
-        exitReason=target.get('exitReason', status.get('exitReason')),
+        exitReason=target.get('exitReason'),
         publishedAt=target.get('publishedAt', target.get('fullyPublishedAt')),
         firstPassCompletedAt=target.get('firstPassCompletedAt'),
         fullyPublishedAt=target.get('fullyPublishedAt'),
@@ -189,19 +247,24 @@ def observe(profile='dev', target=None):
     publication_status = read('data/collection-status.json')
     status = refresh_status or publication_status
     source = 'collector/refresh-status.json' if refresh_status else 'data/collection-status.json'
-    day = target or status.get('targetDate') or status.get('latestDate')
-    datetime.strptime(day, '%Y-%m-%d')
     # A publication can advance during the audit. A bounded retry refuses to call
     # a moving snapshot healthy until the manifest, payload, and status agree.
     for _ in range(3):
+        checked_at = datetime.now(ZONE)
+        # A catchup writer may be processing an older day. Default health is
+        # about the latest closed publication, not that writer's current task.
+        # With no authoritative calendar, inspect the saved target but retain
+        # the calendar failure instead of guessing a newer trading date.
+        day = target or latest_closed_day(status, checked_at) or status.get('targetDate') or status.get('latestDate')
+        datetime.strptime(day, '%Y-%m-%d')
         manifest = read('data/manifest.json')
         payload = read('data/' + day + '.json', optional=True)
         refresh_status = read('collector/refresh-status.json', optional=True)
         publication_status = read('data/collection-status.json')
         status = refresh_status or publication_status
         source = 'collector/refresh-status.json' if refresh_status else 'data/collection-status.json'
-        result = (audit(status, payload, manifest) if payload
-                  else missing_payload_report(status, day))
+        result = (audit(status, payload, manifest, checked_at) if payload
+                  else missing_payload_report(status, day, checked_at))
         if result['health'] == 'healthy':
             break
     result['statusSource'] = source

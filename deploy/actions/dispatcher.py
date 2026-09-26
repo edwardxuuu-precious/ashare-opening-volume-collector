@@ -6,9 +6,10 @@ only read collection status and write its own dispatch/retry ledger.
 from __future__ import annotations
 
 import base64
+import calendar
 import json
 import os
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 from zoneinfo import ZoneInfo
@@ -19,6 +20,9 @@ SHANGHAI = ZoneInfo("Asia/Shanghai")
 STATE_KEY = "collector/dispatcher-state.json"
 BACKOFF_MINUTES = (5, 15, 30)
 ACTIVE_STATUSES = ("in_progress", "queued", "waiting", "pending", "requested")
+# This Lambda ships without the collector package. Keep the rollout boundary
+# aligned with scripts.reconciliation.PRICE_REQUIRED_FROM (contract-tested).
+PRICE_REQUIRED_FROM = "2026-09-21"
 
 
 def iso(value):
@@ -38,13 +42,34 @@ def count(value):
     return value if type(value) is int and value >= 0 else 0
 
 
-def pending(target):
+def target_complete(target, day=None):
+    return (target.get("dataComplete") is True and
+            (not day or day < PRICE_REQUIRED_FROM or target.get("priceDataComplete") is True))
+
+
+def pending(target, day=None):
     if target.get("dataComplete") is True:
-        return False
+        return not target_complete(target, day)
     if target.get("dataComplete") is False:
+        return True
+    if day and day >= PRICE_REQUIRED_FROM and target.get("priceDataComplete") is False:
         return True
     return any(count(target.get(key)) for key in (
         "unprocessedCount", "retryableCount", "pendingCount", "latestPendingStocks"))
+
+
+def first_pass_complete(target):
+    return (target.get("dataComplete") is True or target.get("firstPassComplete") is True or
+            type(target.get("unprocessedCount")) is int and target["unprocessedCount"] == 0)
+
+
+def six_month_start(today):
+    # The standalone Lambda cannot import the collector. Keep this calendar-month
+    # boundary aligned with scripts.retention.six_month_start (contract-tested).
+    current = date.fromisoformat(today)
+    year, month = divmod(current.year * 12 + current.month - 1 - 6, 12)
+    month += 1
+    return date(year, month, min(current.day, calendar.monthrange(year, month)[1])).isoformat()
 
 
 def choose_work(status, phase, now):
@@ -89,7 +114,7 @@ def choose_work(status, phase, now):
             selected = None
     elif is_trading and clock >= "15:30" and phase in ("close", "watchdog"):
         target = targets.get(today, {})
-        if target.get("dataComplete") is not True:
+        if not target_complete(target, today) and not (phase == "watchdog" and first_pass_complete(target)):
             selected = ("close", today, target, "23:55")
         elif phase == "close":
             return None, "data_complete"
@@ -98,10 +123,9 @@ def choose_work(status, phase, now):
     else:
         selected = None
 
-    # A throttled current-day run must not make the watchdog idle when an older
-    # checkpoint is already due.  Explicit opening/close schedules retain
-    # their strict current-day behavior; only the watchdog may use an idle
-    # single-writer window to continue historical recovery.
+    # A throttled current-day run must not keep the watchdog idle when an
+    # older checkpoint is already due. Explicit opening/close schedules keep
+    # their strict current-day behavior; only the watchdog can use the window.
     priority_retry_deferred = bool(selected and phase == "watchdog" and
                                    (retry_at := instant(selected[2].get("nextRetryAt"))) and now < retry_at)
     if priority_retry_deferred:
@@ -112,8 +136,14 @@ def choose_work(status, phase, now):
             return None, "priority_yield_window"
         if phase not in ("catchup", "watchdog"):
             return None, "phase_complete"
-        closed = sorted((day for day in dates if day < today), reverse=True)
-        candidates = [day for day in closed if pending(targets.get(day, {}))]
+        # Automatic dispatch passes an explicit target to the runner, which also
+        # supports separately authorized older dates. Bound every automatic
+        # candidate here, including bootstrap, before it can use that exception.
+        start = six_month_start(today)
+        closed = sorted((day for day in dates if day >= start and
+                         (day < today or (day == today and clock >= "15:30"))),
+                        reverse=True)
+        candidates = [day for day in closed if pending(targets.get(day, {}), day)]
         # The explicit 07:00 trigger may bootstrap yesterday after a broken run.
         # Watchdog does not repeatedly dispatch unknown historical days.
         if not candidates and phase == "catchup" and closed and closed[0] not in targets:
@@ -122,16 +152,23 @@ def choose_work(status, phase, now):
             if priority_retry_deferred:
                 return None, "source_retry_not_due"
             return None, "no_known_backlog"
-        day = candidates[0]
+        candidates = [day for day in candidates if not
+                      ((retry_at := instant(targets.get(day, {}).get("nextRetryAt"))) and now < retry_at)]
+        if not candidates:
+            return None, "source_retry_not_due"
+        # A latest-day provider hole must not consume every run forever. Rotate
+        # due targets by their last real attempt; missing attempts come first,
+        # with the newest date breaking ties in the already-sorted candidates.
+        day = min(candidates, key=lambda day: instant(targets.get(day, {}).get("lastAttemptedAt"))
+                  or datetime.min.replace(tzinfo=timezone.utc))
         deadline = "09:40" if clock < "09:40" else ("15:20" if clock < "15:20" else "23:55")
         selected = ("catchup", day, targets.get(day, {}), deadline)
 
     selected_phase, day, target, deadline = selected
     next_retry = instant(target.get("nextRetryAt"))
-    # The worker publishes an explicit source backoff after throttling.  It
-    # applies even while the first pass still has unprocessed rows: otherwise
-    # watchdog would create a new GitHub runner every five minutes and hammer
-    # the same throttled source.
+    # Source backoff also applies while first-pass rows remain unprocessed;
+    # otherwise every watchdog tick would launch another runner into the same
+    # throttled endpoint.
     if next_retry and now < next_retry:
         return None, "source_retry_not_due"
     until = now.replace(hour=int(deadline[:2]), minute=int(deadline[3:]), second=0, microsecond=0)

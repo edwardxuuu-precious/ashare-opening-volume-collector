@@ -9,7 +9,7 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from scripts import collect, refresh, sina_spot
-from scripts.exchange_status import load_sse_suspensions
+from scripts.exchange_status import load_sse_suspensions, load_szse_suspensions, SZSE_MAX_CODES
 from scripts.daily_collector import SharedHTTPBudget, deadline_for, publish_changes
 from scripts.daily_state import load_calendar, read_json, merge_checkpoint
 from scripts.universe_cache import load_universe, validate_universe
@@ -89,9 +89,12 @@ def metrics(items, rows, target, phase):
     missing = len(codes - ok)
     attempts = target.get('openingAttempts' if phase == 'opening' else 'attempts', {})
     checked_at = now()
+    quote_pending = {code for code in codes if day and day >= PRICE_REQUIRED_FROM
+                     and not refresh.quotes_present(rows.get(code, {}), day)}
     due = [(datetime.fromisoformat(a['nextRetryAt']), a['nextRetryAt'])
            for code, a in attempts.items() if a.get('nextRetryAt') and
-           (code not in target.get('openings', {}) if phase == 'opening' else code not in ok)
+           (code not in target.get('openings', {}) if phase == 'opening' else
+            code not in ok or code in quote_pending)
            and datetime.fromisoformat(a['nextRetryAt']) > checked_at]
     result_rows = [rows.get(code, {}) for code in codes]
     coverage = price_counts(result_rows)
@@ -226,6 +229,11 @@ def run(args, publisher):
     for historical_day, gap in legacy_backlog.items():
         if historical_day in days and historical_day not in manifest_complete:
             summary = cache['targets'].setdefault(historical_day, {}).setdefault('summary', {})
+            # A selective restore omits other completed snapshots. Their current
+            # summaries outrank a stale legacy retry; real manifest gaps above
+            # have already set dataComplete=False and still take precedence.
+            if summary.get('dataComplete') is True:
+                continue
             known = max(gap, summary.get('pendingCount', 0))
             summary.update(pendingCount=known, retryableCount=max(known, summary.get('retryableCount', 0)),
                            dataComplete=False)
@@ -287,7 +295,10 @@ def run(args, publisher):
         message='上午预采开盘量，未发布未收盘指标' if phase=='opening' else '正在补齐目标交易日数据')
     # Do not inherit a previous run's terminal/error flags. In particular,
     # ``noOp`` only describes this invocation's explicit no-work paths.
-    for key in ('error','exitCode','exitReason','noOp','fullyPublishedAt','firstPassCompletedAt','publishedAt'):
+    for key in ('error','errorDetail','exchangeStatusError','exchangeStatusAvailable',
+                'exchangeStatusSource','exchangeStatusMatchCount','exchangeStatusSources',
+                'exchangeStatusErrors','exitCode','exitReason',
+                'noOp','fullyPublishedAt','firstPassCompletedAt','publishedAt'):
         status.pop(key, None)
     exchange_status_evidence = {}
     unresolved_sh = [code for code in names if code.startswith('6') and (
@@ -310,6 +321,19 @@ def run(args, publisher):
             status.update(exchangeStatusSource='sse', exchangeStatusAvailable=False,
                           exchangeStatusMatchCount=0,
                           exchangeStatusError=type(exc).__name__)
+    # Only known zero-volume/no-trade rows need a reason lookup. Never turn a
+    # large historical quote gap into thousands of per-stock disclosure calls.
+    unexplained_sz = sorted(code for code in names if code.startswith(('00', '30'))
+        and rows.get(code, {}).get('status') == 'suspended'
+        and not special_status_explained(rows[code]))
+    if phase != 'opening' and unexplained_sz:
+        try:
+            szse_evidence = load_szse_suspensions(day, unexplained_sz[:SZSE_MAX_CODES])
+            exchange_status_evidence.update(szse_evidence)
+            status['exchangeStatusSources'] = ['sse', 'szse'] if unresolved_sh else ['szse']
+            status['exchangeStatusMatchCount'] = len(exchange_status_evidence)
+        except Exception as exc:
+            status['exchangeStatusErrors'] = {'szse': type(exc).__name__}
     active = {}; pool = None; changed_count = 0; published = False; last_sync = 0
     source_http_failure_streak = 0; source_throttled = False
     source_cooldown_until = 0.0
@@ -348,7 +372,8 @@ def run(args, publisher):
         status['firstDataRequestAt'] = target.get(phase+'FirstDataRequestAt')
         if target.get('fullyPublishedAt'): status['lastSuccessfulUpdate'] = target['fullyPublishedAt']
         target['summary'] = dict(summary, firstPassCompletedAt=target.get('firstPassCompletedAt'),
-            fullyPublishedAt=target.get('fullyPublishedAt'), publishedAt=target.get('fullyPublishedAt'))
+            fullyPublishedAt=target.get('fullyPublishedAt'), publishedAt=target.get('fullyPublishedAt'),
+            lastAttemptedAt=began.isoformat())
         persist()
         # The small cache is durable every 50 completions without uploading the full archive.
         publisher.put_json('collector/refresh-state.json', cache)
@@ -378,6 +403,8 @@ def run(args, publisher):
                     key = phase+'FirstDataRequestAt'
                     target[key] = min(target.get(key, result['firstDataRequestAt']), result['firstDataRequestAt'])
                 success = refresh.volume(result.get('opening')) if phase == 'opening' else refresh.complete(result['row'], day)
+                if phase != 'opening' and day >= PRICE_REQUIRED_FROM and code in quote_attempted:
+                    success = success and refresh.quotes_present(result['row'], day)
                 if not success and any(error.endswith(':HTTPError') for error in result.get('errors', [])):
                     source_http_failure_streak += 1
                     status['sourceHTTPFailureStreak'] = source_http_failure_streak
@@ -421,10 +448,11 @@ def run(args, publisher):
                 break
             def quote_repairable(code):
                 row = rows.get(code, {})
-                return (phase != 'opening' and day == today and
+                return (phase != 'opening' and
                         not refresh.quotes_present(row, day) and
-                        (row.get('status') == 'suspended' or
-                         close_snapshot is not None and code in close_snapshot['rows']))
+                        ((day == today and (row.get('status') == 'suspended' or
+                          close_snapshot is not None and code in close_snapshot['rows'])) or
+                         day >= PRICE_REQUIRED_FROM and refresh.complete(row, day)))
 
             def status_repairable(code):
                 row = rows.get(code, {})
@@ -444,7 +472,8 @@ def run(args, publisher):
                 max(0, source_cooldown_until-time.monotonic()), 2)
             pending = [] if source_cooling else [code for code in unresolved if code not in active and (
                 status_repairable(code) and code not in status_attempted or
-                quote_repairable(code) and code not in quote_attempted or
+                quote_repairable(code) and code not in quote_attempted and
+                refresh.retry_due(attempts.get(code, {}), now()) or
                 not refresh.complete(rows.get(code, {}), day) and
                 refresh.ready(code, day, phase, attempts.get(code, {}), now(),
                               exchange_status_evidence.get(code))

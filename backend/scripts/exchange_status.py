@@ -1,11 +1,17 @@
 """Bounded, fail-closed readers for exchange status and listing records."""
 from datetime import datetime, timedelta
+import re
 
 
 SSE_URL = 'https://query.sse.com.cn/commonSoaQuery.do'
 SSE_PAGE = 'https://www.sse.com.cn/disclosure/dealinstruc/suspension/'
 SSE_SQL_ID = 'GW_PL_JYTS_TFPXX'
 SSE_MAX_ROWS = 2000
+SZSE_URL = 'https://www.szse.cn/api/report/ShowReport/data'
+SZSE_PAGE = 'https://www.szse.cn/disclosure/memo/index.html'
+SZSE_CATALOG = '1798'
+SZSE_MAX_CODES = 20
+SZSE_MAX_PAGES = 3
 MARKET_SUSPENSION_PAGE = 'https://data.eastmoney.com/tfpxx/'
 LISTING_SOURCES = {
     'szse': 'https://www.szse.cn/market/product/stock/list/index.html',
@@ -398,6 +404,12 @@ def parse_sse_suspensions(rows, day):
 def valid_exchange_evidence(value, code):
     if not isinstance(value, dict) or value.get('kind') != 'exchange_suspension_record':
         return False
+    if value.get('provider') == 'szse':
+        try:
+            expected = parse_szse_suspensions(value.get('queryRecords'), value.get('date'), code=code).get(code)
+        except (ValueError, TypeError):
+            return False
+        return expected is not None and value == expected
     record = dict(productCode=value.get('code'), controlType=value.get('controlType'),
                   startStopDate=str(value.get('startDate', '')).replace('-', ''),
                   endStopDate=str(value.get('endDate') or '').replace('-', ''),
@@ -433,3 +445,138 @@ def load_sse_suspensions(day, get=None):
     if not isinstance(rows, list) or len(rows) >= SSE_MAX_ROWS:
         raise ValueError('Invalid or truncated SSE suspension result')
     return parse_sse_suspensions(rows, day)
+
+
+def _szse_target(day, code):
+    if not isinstance(day, str) or _iso_date(day) != day or not re_full_code(code) or not code.startswith(('00', '30')):
+        raise ValueError('Invalid SZSE equity/date identity')
+    return (datetime.fromisoformat(day) - timedelta(days=366)).date().isoformat()
+
+
+def _szse_instant(value):
+    if value == '':
+        return None
+    if not isinstance(value, str) or not re.fullmatch(r'\d{4}-\d{2}-\d{2} (开市|\d{2}:\d{2}:\d{2})', value):
+        raise ValueError('Invalid SZSE suspension time')
+    return datetime.strptime(value.replace('开市', '09:30:00'), '%Y-%m-%d %H:%M:%S')
+
+
+def parse_szse_suspensions(rows, day, *, code):
+    """Resolve complete, code-filtered official event history for one exact day.
+
+    A later resumption closes a former open-ended stop. Only the most recent
+    suspension can apply; intraday stops and the resumption date are excluded.
+    The provider's reason is preserved without inferring a corporate event.
+    """
+    query_start = _szse_target(day, code)
+    if not isinstance(rows, list) or len(rows) > SZSE_MAX_PAGES * 10:
+        raise ValueError('Invalid or unbounded SZSE history')
+    starts, resumptions, saved, seen = {}, [], [], set()
+    fields = ('zqdm', 'zqjc', 'tpkssj', 'fpkssj', 'tpsj', 'tpyy')
+    for raw in rows:
+        if (not isinstance(raw, dict) or raw.get('zqdm') != code or
+                any(not isinstance(raw.get(key), str) for key in fields) or
+                not raw['zqjc'].strip() or not raw['tpyy'].strip()):
+            raise ValueError('SZSE response identity or explanation mismatch')
+        row = {key: raw[key] for key in fields}
+        fingerprint = tuple(row[key] for key in fields)
+        if fingerprint in seen:
+            raise ValueError('Duplicate SZSE event')
+        seen.add(fingerprint)
+        saved.append(row)
+        start, resume = _szse_instant(row['tpkssj']), _szse_instant(row['fpkssj'])
+        if start and not query_start <= start.date().isoformat() <= day:
+            raise ValueError('SZSE query date filter mismatch')
+        if start is None:
+            if row['tpsj'] != '取消停牌' or resume is None:
+                raise ValueError('Invalid SZSE resumption event')
+            resumptions.append(resume)
+            continue
+        if resume and resume <= start:
+            raise ValueError('Conflicting SZSE suspension interval')
+        if start in starts:
+            raise ValueError('Conflicting SZSE suspension identity')
+        starts[start] = (row, resume)
+        if resume:
+            resumptions.append(resume)
+    if not starts:
+        return {}
+    start = max(starts)
+    row, resume = starts[start]
+    subsequent = [value for value in resumptions if value > start]
+    resume = min(subsequent) if subsequent else None
+    target_open = datetime.fromisoformat(day + 'T09:30:00')
+    target_close = datetime.fromisoformat(day + 'T15:00:00')
+    if start > target_open or resume and resume <= target_close:
+        return {}
+    if row['tpsj'] not in ('停牌', '连续停牌') and not re.fullmatch(r'[1-9]\d*天', row['tpsj']):
+        return {}
+    if row['tpsj'] not in ('停牌', '连续停牌') and resume is None:
+        raise ValueError('Finite SZSE suspension has no resumption time')
+    start_day = start.date().isoformat()
+    resume_day = resume.date().isoformat() if resume else None
+    reason = row['tpyy'].strip()
+    description = f'深交所停复牌记录显示该股自{start_day}起因「{reason}」停牌，目标交易日{day}全天无交易。'
+    if resume_day:
+        description += f'交易所登记的复牌时间为{resume.strftime("%Y-%m-%d %H:%M:%S")}。'
+    return {code: dict(
+        kind='exchange_suspension_record', provider='szse', code=code, date=day,
+        startDate=start_day, resumeDate=resume_day, reason=reason,
+        sourceUrl=SZSE_PAGE, validatedDates=[day], queryStart=query_start, queryEnd=day,
+        queryRecords=saved,
+        specialStatus=dict(type='suspension', label='交易所公告停牌', description=description,
+                           startedAt=start_day, source='深圳证券交易所停复牌提示',
+                           announcementTitle=f'深交所停复牌提示：{reason}', announcementUrl=SZSE_PAGE),
+    )}
+
+
+def load_szse_suspensions(day, codes, get=None):
+    """Read at most 20 known equities and three complete pages per equity.
+
+    No quote requests, guessed reasons, silent truncation, or unbounded retries.
+    A source outage or conflicting identity rejects the batch without new facts.
+    """
+    if not isinstance(codes, (list, tuple)) or len(codes) > SZSE_MAX_CODES:
+        raise ValueError('Unbounded SZSE suspension request')
+    if not isinstance(day, str) or _iso_date(day) != day:
+        raise ValueError('Invalid SZSE target date')
+    for code in codes:
+        _szse_target(day, code)
+    if get is None:
+        import requests
+        get = requests.get
+    result = {}
+    for code in sorted(set(codes)):
+        rows, expected, page = [], None, 1
+        while True:
+            response = get(SZSE_URL, params=dict(
+                SHOWTYPE='JSON', CATALOGID=SZSE_CATALOG, TABKEY='tab1',
+                txtDmorjc=code, txtKsrq=_szse_target(day, code), txtZzrq=day, PAGENO=str(page)),
+                headers={'Referer': SZSE_PAGE, 'User-Agent': 'Stock-opening-observer/1.0'}, timeout=15)
+            response.raise_for_status()
+            payload = response.json()
+            if not isinstance(payload, list) or len(payload) != 1 or not isinstance(payload[0], dict):
+                raise ValueError('Invalid SZSE report envelope')
+            report = payload[0]
+            meta, data = report.get('metadata'), report.get('data')
+            if (report.get('error') or not isinstance(meta, dict) or not isinstance(data, list) or
+                    meta.get('catalogid') != SZSE_CATALOG or meta.get('tabkey') != 'tab1' or
+                    any(type(meta.get(key)) is not int for key in ('pageno', 'pagecount', 'recordcount', 'pagesize'))):
+                raise ValueError('Invalid SZSE report metadata')
+            pages, total, size = meta['pagecount'], meta['recordcount'], meta['pagesize']
+            if (meta['pageno'] != page or not 0 <= pages <= SZSE_MAX_PAGES or size != 10 or
+                    not 0 <= total <= SZSE_MAX_PAGES * size or pages != (total + size - 1) // size or
+                    len(data) != min(size, max(0, total - (page - 1) * size))):
+                raise ValueError('Incomplete or unbounded SZSE response')
+            signature = (pages, total, size)
+            if expected is not None and expected != signature:
+                raise ValueError('SZSE pagination changed during read')
+            expected = signature
+            rows.extend(data)
+            if page >= pages:
+                break
+            page += 1
+        if len(rows) != total:
+            raise ValueError('Incomplete SZSE event history')
+        result.update(parse_szse_suspensions(rows, day, code=code))
+    return result

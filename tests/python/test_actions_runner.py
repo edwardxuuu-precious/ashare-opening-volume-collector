@@ -10,10 +10,12 @@ import tarfile
 import tempfile
 import time
 import unittest
+from datetime import datetime
 from contextlib import redirect_stdout
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
+from zoneinfo import ZoneInfo
 
 import actions_runner as runner
 from import_checkpoint_batch import REQUIRED_VERSION
@@ -113,6 +115,90 @@ class ActionsRestoreTests(unittest.TestCase):
         self.assertEqual(json.loads((self.root/'data/checkpoint'/f'{CODE}.json').read_text())['days'][DAY]['ratio'],6.25)
         self.assertFalse(self.client.writes)
         self.assertEqual((self.root/'data/checkpoint'/f'{CODE}.json').stat().st_mode & 0o777,0o600)
+    def test_legacy_v2_restore_is_validated_then_migrated_without_remote_writes(self):
+        members=base_members()
+        members[-1][1]['days'][DAY]['verificationVersion']=2
+        fixture(self.client,members)
+        old_day=valid_row();old_day['verificationVersion']=2
+        self.client.set('data/'+DAY+'.json',dict(date=DAY,generatedAt='v1',rows=[old_day]))
+
+        report=self.restore(phase='catchup',target_date=DAY)
+
+        checkpoint=json.loads((self.root/'data/checkpoint'/f'{CODE}.json').read_text())
+        payload=json.loads((self.root/'data'/f'{DAY}.json').read_text())
+        self.assertEqual(checkpoint['days'][DAY]['verificationVersion'],REQUIRED_VERSION)
+        self.assertEqual(payload['rows'][0]['verificationVersion'],REQUIRED_VERSION)
+        self.assertEqual(report['legacyVerificationRows'],2)
+        self.assertFalse(self.client.writes)
+
+    def test_catchup_discovers_manifest_only_gap_before_selective_restore(self):
+        old = '2026-09-03'
+        members = base_members()
+        members[1][1]['tradingDates'] = [old, DAY]
+        members.append(('refresh-state.json', dict(version=1, targets={
+            DAY: dict(summary=dict(dataComplete=True, priceDataComplete=True, pendingCount=0))})))
+        fixture(self.client, members)
+        missing = dict(valid_row(), status='missing', ratio=None, first15Volume=None)
+        self.client.set('data/'+old+'.json', dict(date=old, generatedAt='v1', rows=[missing]))
+        self.client.set('data/manifest.json', dict(dates=[
+            dict(date=old, file=old+'.json', generatedAt='v1', total=1,
+                 valid=0, missing=1, unverified=0, suspended=0),
+            dict(date=DAY, file=DAY+'.json', generatedAt='v1', total=1,
+                 valid=1, missing=0, unverified=0, suspended=0)]))
+        remote_manifest = self.client.objects['data/manifest.json']
+        with patch.object(runner, 'datetime') as clock:
+            clock.now.return_value = datetime(2026, 9, 27, 7, tzinfo=ZoneInfo('Asia/Shanghai'))
+            report = self.restore(phase='catchup')
+
+        self.assertTrue((self.root/'data'/f'{old}.json').exists())
+        self.assertFalse((self.root/'data'/f'{DAY}.json').exists())
+        self.assertEqual(report['selectedTargetDate'], old)
+        self.assertEqual(report['restoredDates'], 1)
+        summary = json.loads((self.root/'data/refresh-state.json').read_text())['targets'][old]['summary']
+        self.assertEqual(summary['pendingCount'], 1)
+        self.assertFalse(summary['dataComplete'])
+        self.assertEqual(self.client.objects['data/manifest.json'], remote_manifest)
+        self.assertFalse(self.client.writes)
+
+    def test_restore_preserves_remote_gap_price_and_status_evidence_in_queue(self):
+        old = '2026-09-21'
+        latest = '2026-09-24'
+        attempted = '2026-09-25T07:00:00+08:00'
+        members = base_members()
+        members[1][1]['tradingDates'] += [old, latest]
+        members.append(('refresh-state.json', dict(version=1, targets={
+            latest: dict(summary=dict(dataComplete=True, priceDataComplete=True, pendingCount=0)),
+            old: dict(summary=dict(dataComplete=True, pendingCount=0, lastAttemptedAt=attempted))})))
+        fixture(self.client, members)
+        self.client.set('data/'+old+'.json', dict(date=old, generatedAt='v2', rows=[valid_row()]))
+        self.client.set('data/manifest.json', dict(dates=[
+            dict(date=DAY, file=DAY+'.json', generatedAt='v1', total=1,
+                 valid=1, missing=0, unverified=0, suspended=0),
+            dict(date=old, file=old+'.json', generatedAt='v2', total=3, universeTotal=4,
+                 valid=1, missing=1, unverified=0, suspended=1, priceAvailable=1,
+                 priceNoTrade=1, priceMissing=1, priceDataComplete=False,
+                 specialStatusExplained=0, specialStatusUnexplained=1,
+                 statusExplanationComplete=False),
+            dict(date=latest, file=latest+'.json', generatedAt='v1', total=1,
+                 valid=1, missing=0, unverified=0, suspended=0, priceDataComplete=True)]))
+        remote_manifest = self.client.objects['data/manifest.json']
+        with patch.object(runner, 'datetime') as clock:
+            clock.now.return_value = datetime(2026, 9, 27, 7, tzinfo=ZoneInfo('Asia/Shanghai'))
+            report = self.restore(phase='catchup')
+
+        self.assertEqual(report['selectedTargetDate'], old)
+        summary = json.loads((self.root/'data/refresh-state.json').read_text())['targets'][old]['summary']
+        self.assertFalse(summary['dataComplete'])
+        self.assertEqual(summary['pendingCount'], 3)
+        self.assertEqual(summary['lastAttemptedAt'], attempted)
+        for key, value in dict(priceMissing=1, priceNoTrade=1, priceAvailable=1,
+                               priceDataComplete=False, specialStatusUnexplained=1,
+                               specialStatusExplained=0, statusExplanationComplete=False).items():
+            self.assertEqual(summary[key], value)
+        self.assertEqual(report['restoredDates'], 1)
+        self.assertEqual(report['sourceManifestDates'], 3)
+        self.assertEqual(self.client.objects['data/manifest.json'], remote_manifest)
+        self.assertFalse(self.client.writes)
     def test_large_archived_catalog_restores_only_recent_workspace(self):
         from datetime import date,timedelta
         archived=[dict(date=(date(2020,1,1)+timedelta(days=i)).isoformat(),
@@ -127,6 +213,22 @@ class ActionsRestoreTests(unittest.TestCase):
         self.assertFalse(self.client.deletes)
         self.assertEqual(len(json.loads(self.client.objects['data/manifest.json'])['dates']),201)
 
+    def test_explicit_target_restores_saved_date_outside_automatic_working_window(self):
+        old = '2026-03-06'
+        members = base_members()
+        members[1][1]['tradingDates'].append(old)
+        fixture(self.client, members)
+        self.client.set('data/'+old+'.json', dict(date=old, generatedAt='v1', rows=[valid_row()]))
+        self.client.set('data/manifest.json', dict(dates=[
+            dict(date=old, file=old+'.json', generatedAt='v1'),
+            dict(date=DAY, file=DAY+'.json', generatedAt='v1')]))
+        with patch.object(runner.worker, 'now', return_value='2026-09-27T07:00:00+08:00'):
+            report = self.restore(phase='catchup', target_date=old)
+        self.assertEqual(report['selectedTargetDate'], old)
+        self.assertTrue((self.root/'data'/f'{old}.json').exists())
+        self.assertFalse((self.root/'data'/f'{DAY}.json').exists())
+        self.assertFalse(self.client.writes)
+
     def test_review_restore_includes_frozen_old_saved_date_and_excludes_other_dates(self):
         old='2026-03-06'
         self.client.set('data/'+old+'.json',dict(date=old,generatedAt='v1',rows=[valid_row()]))
@@ -139,6 +241,41 @@ class ActionsRestoreTests(unittest.TestCase):
     def test_review_refuses_unpublished_date_before_installing(self):
         with self.assertRaises(runner.RestoreError):self.restore(review_dates=['2026-01-02'])
         self.assertFalse((self.root/'data').exists())
+
+    def test_price_backfill_restore_includes_the_frozen_old_range(self):
+        old='2026-03-06'
+        self.client.set('data/'+old+'.json',dict(date=old,generatedAt='v1',rows=[valid_row()]))
+        self.client.set('data/manifest.json',dict(dates=[
+            dict(date=old,file=old+'.json',generatedAt='v1'),
+            dict(date=DAY,file=DAY+'.json',generatedAt='v1')]))
+        with patch.object(runner.worker,'now',return_value='2027-01-15T09:00:00+08:00'):
+            report=self.restore(backfill_range=('2026-03-06','2026-09-18'))
+        self.assertEqual(report['restoredDates'],2)
+        self.assertTrue((self.root/'data'/f'{old}.json').exists())
+        self.assertTrue((self.root/'data'/f'{DAY}.json').exists())
+
+    def test_price_backfill_checkpoint_cache_and_state_are_strictly_validated(self):
+        quote=dict(open=10.0,high=10.5,low=9.8,close=10.2,
+                   priceStatus='available',priceSourceProvider='tencent')
+        state=dict(version=1,backfillId='ohlc-v1-20260920',fromDate='2026-03-06',
+                   toDate='2026-09-18',batchSize=20,selectedDates=[DAY],
+                   remainingDates=[DAY],completed=False,
+                   updatedAt='2026-09-20T12:00:00+08:00',exitReason='completed')
+        members=base_members()+[
+            ('price-backfill-cache.json',dict(version=2,quotes={CODE:dict(days={DAY:quote})})),
+            ('price-backfill-state.json',state),
+        ]
+        fixture(self.client,members)
+        self.restore()
+        self.assertTrue((self.root/'data/price-backfill-cache.json').exists())
+        self.root.parent.joinpath('second').mkdir()
+        bad_members=base_members()+[
+            ('price-backfill-cache.json',dict(version=1,quotes={})),
+            ('price-backfill-state.json',state),
+        ]
+        fixture(self.client,bad_members)
+        with self.assertRaises(ValueError):
+            runner.restore(self.client,BUCKET,self.root.parent/'second'/'runner',minimum_universe=1)
 
     def test_explicit_hash_supports_legacy_metadata_without_trusting_unhashed_input(self):
         sha=self.client.metadata[runner.ARCHIVE_KEY]['sha256'];self.client.metadata[runner.ARCHIVE_KEY]={}
@@ -247,6 +384,44 @@ class ActionsExecutionTests(unittest.TestCase):
         self.folder=tempfile.TemporaryDirectory();self.addCleanup(self.folder.cleanup)
         self.root=Path(self.folder.name)/'runner';self.client=FakeS3();fixture(self.client)
         self.args=SimpleNamespace(root=str(self.root),bucket=BUCKET,mode='auto',max_minutes=12,region='us-east-1')
+
+    def test_no_due_target_does_not_spawn_or_claim_old_gaps_complete(self):
+        old = '2026-03-06'
+        members = base_members()
+        members[1][1]['tradingDates'].append(old)
+        members.append(('refresh-state.json', dict(version=1, targets={
+            old: dict(summary=dict(dataComplete=False, pendingCount=1)),
+            DAY: dict(summary=dict(dataComplete=True, priceDataComplete=True, pendingCount=0))})))
+        fixture(self.client, members)
+        status_before = self.client.objects['data/collection-status.json']
+        manifest_before = self.client.objects['data/manifest.json']
+        self.args.phase = 'catchup'
+        executor = Mock(side_effect=AssertionError('No restored target may reach the executor'))
+        with patch.object(runner.worker, 'now', return_value='2026-09-27T07:00:00+08:00'):
+            result = runner.run(self.args, self.client, executor=executor, minimum_universe=1)
+        executor.assert_not_called()
+        self.assertEqual(result['outcome'], 'no_work')
+        self.assertEqual(result['exitReason'], 'no_due_target')
+        self.assertIsNone(result['targetDate'])
+        self.assertNotIn('dataComplete', result)
+        self.assertEqual(self.client.objects['data/collection-status.json'], status_before)
+        self.assertEqual(self.client.objects['data/manifest.json'], manifest_before)
+        self.assertFalse(any(write['Key'].startswith(('data/', 'collector/actions-state'))
+                             for write in self.client.writes))
+
+    def test_worker_is_bound_to_the_single_restored_target(self):
+        self.args.phase = 'catchup'
+        self.args.target_date = None
+        self.args.max_minutes = 20
+        selected = []
+        def execute(options, log):
+            selected.append(options.target_date)
+            self.assertTrue((Path(options.root)/'data'/f'{options.target_date}.json').exists())
+            raise RuntimeError('fixture stops before source work')
+        with self.assertRaisesRegex(RuntimeError, 'fixture stops before source work'):
+            runner.run(self.args, self.client, executor=execute, minimum_universe=1)
+        self.assertEqual(selected, [DAY])
+        self.assertIsNone(self.args.target_date)
     def test_timeout_sends_term_then_kill_and_waits_before_returning(self):
         process=Mock(pid=12345)
         process.wait.side_effect=[subprocess.TimeoutExpired('worker',1),subprocess.TimeoutExpired('worker',1),-9]
@@ -259,6 +434,22 @@ class ActionsExecutionTests(unittest.TestCase):
         self.assertEqual([call.args[1] for call in kill.call_args_list],[signal.SIGTERM,signal.SIGKILL])
         self.assertTrue(popen.call_args.kwargs['start_new_session'])
         self.assertNotIn('systemctl',popen.call_args.args[0])
+
+    def test_price_backfill_worker_command_carries_the_frozen_identity_and_batch(self):
+        process=Mock(pid=12345)
+        process.wait.return_value=0
+        process.poll.return_value=0
+        popen=Mock(return_value=process)
+        options=SimpleNamespace(**dict(vars(self.args),mode='price_backfill',lease_owner='owner',
+            backfill_id='ohlc-v1-20260920',backfill_from='2026-03-06',
+            backfill_to='2026-09-18',backfill_batch_size=20))
+        runner.spawn_worker(options,io.StringIO(),popen=popen)
+        command=popen.call_args.args[0]
+        self.assertEqual(command[command.index('--backfill-id')+1],'ohlc-v1-20260920')
+        self.assertEqual(command[command.index('--backfill-from')+1],'2026-03-06')
+        self.assertEqual(command[command.index('--backfill-to')+1],'2026-09-18')
+        self.assertEqual(command[command.index('--backfill-batch-size')+1],'20')
+
     def test_price_backfill_import_uses_the_runtime_scripts_path(self):
         source=Path(runner.__file__).read_text()
         self.assertIn('import backfill_quotes',source)
@@ -287,6 +478,7 @@ class ActionsExecutionTests(unittest.TestCase):
         actions=json.loads(self.client.objects[runner.STATE_KEY])
         self.assertNotEqual(actions['workerState'].get('phase'),'price_backfill')
         self.assertNotIn('priceBackfillId',actions['workerState'])
+
     def test_price_backfill_hard_failure_preserves_daily_status_and_reports_safe_stage(self):
         self.args.mode='price_backfill';self.args.max_minutes=20
         self.args.backfill_id='ohlc-v1-20260920';self.args.backfill_from='2026-03-06'
@@ -309,6 +501,7 @@ class ActionsExecutionTests(unittest.TestCase):
         self.assertNotIn('data/collection-status.json',written_keys)
         self.assertNotIn(runner.STATE_KEY,written_keys)
         self.assertFalse((self.root/'data/price-backfill-state.json').exists())
+
     def test_worker_failure_summary_reads_only_safe_traceback_coordinates(self):
         self.root.mkdir()
         (self.root/'worker-private.log').write_text(
@@ -316,7 +509,9 @@ class ActionsExecutionTests(unittest.TestCase):
             '  File "/tmp/private/backend/server/actions_runner.py", line 525, in execute_worker\n'
             '    private runtime detail\n'
             'FileNotFoundError: /tmp/private/data/manifest.json\n')
+
         error_type,error_stage=runner.worker_failure_summary(self.root)
+
         self.assertEqual(error_type,'FileNotFoundError')
         self.assertEqual(error_stage,'actions_runner.py:525:execute_worker')
     def test_worker_reuses_history_resume_and_follows_latest_with_remaining_budget(self):
