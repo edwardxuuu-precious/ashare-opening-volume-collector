@@ -28,10 +28,10 @@ def complete(row, day=None):
         if not isinstance(evidence, dict) or (day and evidence.get('date') != day):
             return False
         from .no_trade_evidence import valid_notice
-        from .exchange_status import valid_exchange_evidence
+        from .exchange_status import valid_historical_no_trade
         return ((evidence.get('kind') == 'explicit_zero_daily_volume' and evidence.get('volume') == 0)
                 or valid_notice(evidence, row.get('code'))
-                or valid_exchange_evidence(evidence, row.get('code')))
+                or valid_historical_no_trade(evidence, row.get('code'), day or evidence.get('date')))
     return row.get('status') == 'ok' and volumes_present(row) and type(row.get('ratio')) in (int, float) and abs(
         row['ratio'] - row['first15Volume'] / row['dailyVolume'] * 100) <= 1e-5
 
@@ -147,14 +147,27 @@ def fetch(task):
     snapshot_supplied = len(task) == 6 or (len(task) >= 7 and snapshot is not None)
     code = item['code']; symbol = collect.market(code).lower() + code
     from .no_trade_evidence import evidence
-    from .exchange_status import valid_exchange_evidence
+    from .exchange_status import valid_exchange_evidence, valid_historical_no_trade
     notice = evidence(code, day)
+    # Price backfill already stores exact stock/date listing and suspension
+    # evidence. Reuse that proof after a stale core checkpoint marked it missing;
+    # never turn positive core observations into no-trade from an old proof.
+    saved_proof = previous.get('noTradeEvidence')
+    if (not notice and previous.get('status') in ('missing', 'suspended') and
+            not (volume(previous.get('dailyVolume')) and previous['dailyVolume'] > 0) and
+            not (volume(opening) and opening > 0) and
+            not (volume(previous.get('first15Volume')) and previous['first15Volume'] > 0) and
+            valid_historical_no_trade(saved_proof, code, day)):
+        notice = saved_proof
     if not notice and valid_exchange_evidence(status_evidence, code):
         notice = status_evidence
     if phase != 'opening' and notice:
-        row = collect.pending_record(item, [day])['days'][day]
+        row = (dict(previous) if notice is saved_proof else
+               collect.pending_record(item, [day])['days'][day])
         row.update(status='suspended', calculationPolicy='download_only', ratio=None,
-                   reason='公司公告确认目标日停牌，无交易', noTradeEvidence=notice)
+                   reason=('交易所上市记录确认目标日尚未上市，无交易' if notice.get('kind') == 'not_yet_listed'
+                           else '已核验目标日期停牌证据，无交易'), noTradeEvidence=notice,
+                   pctChange=None, amplitude=None)
         row.update(missing_prices('not_traded'))
         if notice.get('specialStatus'):
             row['specialStatus'] = notice['specialStatus']
