@@ -186,7 +186,7 @@ def publish_changes(out, items, dirty, sample=False, universe_total=None, single
         results = []
         for item in items:
             row = rows.get(item['code']) or collect.pending_record(item, [day])['days'][day]
-            pending = row.get('reason') == '尚未采集'
+            pending = row.get('status') == 'missing' and row.get('reason') == '尚未采集'
             results.append(dict(code=item['code'], fetchStatus='pending' if pending else 'ok', days={day:row}))
         attempted = sum(record['fetchStatus'] != 'pending' for record in results)
         scope = 'sample' if sample else ('full' if attempted == len(items) else 'partial')

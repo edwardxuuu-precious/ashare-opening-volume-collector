@@ -443,6 +443,8 @@ def run(args, publisher):
                     row = dict(rows.get(code, {}), **{key:value for key,value in row.items()
                                if value is not None or key in ('ratio','reason','pctChange','amplitude',
                                                                *PRICE_FIELDS,'priceStatus')})
+                    if result['row'].get('status') == 'ok':
+                        row.pop('reason', None)
                     if row.get('priceStatus') != 'available':
                         row.pop('priceSourceProvider', None)
                     record_path = out/'checkpoint'/(code+'.json')
