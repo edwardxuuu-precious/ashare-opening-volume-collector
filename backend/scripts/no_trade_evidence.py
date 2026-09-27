@@ -154,5 +154,70 @@ def evidence(code, day):
     return result
 
 
+# Explanations are separately reviewed presentation data. Adding one must not
+# change the identity of a previously published exact-date no-trade proof.
+REVIEWED_EXPLANATIONS = {
+    ('000016', '2026-09-07'): _special(
+        'pending_delisting', '主动终止上市事项停牌',
+        '公司拟以股东会决议方式主动终止上市，股票自2026-09-04起停牌；截至目标日该事项尚待股东会审议，不能标记为已退市。',
+        '2026-09-04', '巨潮资讯公司公告',
+        '关于本次终止上市事项暨距离公司股票停牌尚余3个交易日的提示性公告',
+        'https://static.cninfo.com.cn/finalpage/2026-09-01/1225537108.PDF'),
+    ('002731', '2026-09-07'): _special(
+        'pending_delisting', '规范类退市程序停牌',
+        '公司未按期披露定期报告，股票自2026-09-01起停牌，并自2026-09-07起因规范类退市情形继续停牌，等待交易所作出后续决定。',
+        '2026-09-01', '公司公告及深圳证券交易所信息披露',
+        '关于公司股票将被终止上市暨继续停牌的风险提示公告',
+        'https://file.finance.sina.com.cn/211.154.219.97:9494/MRGG/CNSESZ_STOCK/2026/2026-9/2026-09-07/12586056.PDF'),
+    ('002743', '2026-09-07'): _special(
+        'risk_warning_transition', '风险警示切换停牌',
+        '公司主要银行账户被冻结，公告安排股票于2026-09-07停牌一天，9月8日起复牌并实施其他风险警示；这不是持续多日停牌。',
+        '2026-09-07', '公司指定信息披露媒体：中国证券报',
+        '关于公司主要银行账号被冻结暨股票交易被实施其他风险警示及股票停复牌的公告',
+        'https://epaper.cs.com.cn/zgzqb/html/2026-09/05/nw.D110000zgzqb_20260905_4-B024.htm'),
+    ('002870', '2026-09-07'): _special(
+        'asset_acquisition', '筹划资产收购停牌',
+        '公司筹划发行股份及支付现金购买资产并募集配套资金，股票自2026-09-01起停牌；公告明确本次交易预计不构成重大资产重组，目标日仍在停牌。',
+        '2026-09-01', '巨潮资讯公司公告',
+        '关于筹划发行股份及支付现金方式购买资产并募集配套资金事项的停牌进展公告',
+        'https://static.cninfo.com.cn/finalpage/2026-09-08/1225550443.PDF'),
+    ('002998', '2026-09-07'): _special(
+        'control_change', '控制权变更停牌',
+        '实际控制人正在筹划公司控制权变更，股票自2026-09-04起停牌；9月8日公告追溯确认原停牌安排，并说明将继续停牌。',
+        '2026-09-04', '巨潮资讯公司公告',
+        '关于筹划公司控制权变更事项进展暨继续停牌的公告',
+        'https://static.cninfo.com.cn/finalpage/2026-09-08/1225551828.PDF'),
+    ('301139', '2026-09-07'): _special(
+        'pending_delisting', '重大违法退市程序停牌',
+        '公司因证券发行文件虚假记载触及重大违法强制退市情形，交易所拟终止其股票上市，股票自2026-08-31起停牌；目标日尚不能标记为已完成退市。',
+        '2026-08-31', '巨潮资讯公司公告',
+        '关于公司股票被实施其他风险警示的第七次提示性公告',
+        'https://static.cninfo.com.cn/finalpage/2026-09-07/1225551366.PDF'),
+    ('600825', '2026-09-07'): _special(
+        'major_restructuring', '重大资产重组停牌',
+        '公司筹划发行股份购买资产暨关联交易，公告正文确认股票已于2026-09-07开市起停牌，并于9月8日起继续停牌。',
+        '2026-09-07', '巨潮资讯公司公告',
+        '关于筹划发行股份购买资产暨关联交易事项的停牌公告',
+        'https://static.cninfo.com.cn/finalpage/2026-09-08/1225552231.PDF'),
+    ('600929', '2026-09-07'): _special(
+        'major_restructuring', '重大资产重组停牌',
+        '公司筹划发行股份及支付现金购买资产并募集配套资金，预计构成重大资产重组，股票自2026-08-31起停牌；目标日仍处于原公告的停牌期间。',
+        '2026-08-31', '巨潮资讯公司公告',
+        '关于筹划重大资产重组的停牌进展公告',
+        'https://static.cninfo.com.cn/finalpage/2026-09-05/1225548997.PDF'),
+    ('688432', '2026-09-07'): _special(
+        'asset_acquisition', '筹划资产收购停牌',
+        '公司筹划发行股份及支付现金购买资产并募集配套资金暨关联交易，股票自2026-08-31起停牌；公告明确9月7日起继续停牌。',
+        '2026-08-31', '巨潮资讯公司公告',
+        '关于筹划发行股份及支付现金购买资产并募集配套资金暨关联交易事项的进展并继续停牌的公告',
+        'https://static.cninfo.com.cn/finalpage/2026-09-05/1225549389.PDF'),
+}
+
+
+def explanation(code, day):
+    value = REVIEWED_EXPLANATIONS.get((code, day))
+    return dict(value) if value else None
+
+
 def valid_notice(value, code):
     return isinstance(value, dict) and value.get('code') == code and value == evidence(code, value.get('date'))

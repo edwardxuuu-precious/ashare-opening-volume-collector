@@ -1,0 +1,123 @@
+{
+  "sourceCommit": "e855b461d80a8ce9452fb1fae5be09c1906ce431",
+  "date": "2026-09-07",
+  "proofs": {
+    "000016": {
+      "kind": "company_suspension_notice",
+      "code": "000016",
+      "date": "2026-09-07",
+      "noticeId": "2026-69",
+      "disclosedAt": "2026-09-04",
+      "url": "https://epaper.cs.com.cn/zgzqb/html/2026-09/04/nw.D110000zgzqb_20260904_6-B015.htm",
+      "validatedDates": [
+        "2026-09-07"
+      ],
+      "reviewedAt": "2026-09-08",
+      "evidenceTiming": "contemporaneous"
+    },
+    "002731": {
+      "kind": "company_suspension_notice",
+      "code": "002731",
+      "date": "2026-09-07",
+      "noticeId": "2026-109",
+      "disclosedAt": "2026-09-07",
+      "url": "https://file.finance.sina.com.cn/211.154.219.97:9494/MRGG/CNSESZ_STOCK/2026/2026-9/2026-09-07/12586056.PDF",
+      "validatedDates": [
+        "2026-09-07"
+      ],
+      "reviewedAt": "2026-09-08",
+      "evidenceTiming": "contemporaneous"
+    },
+    "002743": {
+      "kind": "company_suspension_notice",
+      "code": "002743",
+      "date": "2026-09-07",
+      "noticeId": "2026-062",
+      "disclosedAt": "2026-09-05",
+      "url": "https://epaper.cs.com.cn/zgzqb/html/2026-09/05/nw.D110000zgzqb_20260905_4-B024.htm",
+      "validatedDates": [
+        "2026-09-07"
+      ],
+      "reviewedAt": "2026-09-08",
+      "evidenceTiming": "contemporaneous"
+    },
+    "002870": {
+      "kind": "company_suspension_notice",
+      "code": "002870",
+      "date": "2026-09-07",
+      "noticeId": "2026-069",
+      "disclosedAt": "2026-09-08",
+      "url": "https://static.cninfo.com.cn/finalpage/2026-09-08/1225550443.PDF",
+      "validatedDates": [
+        "2026-09-07"
+      ],
+      "reviewedAt": "2026-09-08",
+      "evidenceTiming": "retrospective_confirmation"
+    },
+    "002998": {
+      "kind": "company_suspension_notice",
+      "code": "002998",
+      "date": "2026-09-07",
+      "noticeId": "2026-053",
+      "disclosedAt": "2026-09-08",
+      "url": "https://static.cninfo.com.cn/finalpage/2026-09-08/1225551828.PDF",
+      "validatedDates": [
+        "2026-09-07"
+      ],
+      "reviewedAt": "2026-09-08",
+      "evidenceTiming": "retrospective_confirmation"
+    },
+    "301139": {
+      "kind": "company_suspension_notice",
+      "code": "301139",
+      "date": "2026-09-07",
+      "noticeId": "2026-092",
+      "disclosedAt": "2026-09-07",
+      "url": "https://static.cninfo.com.cn/finalpage/2026-09-07/1225551366.PDF",
+      "validatedDates": [
+        "2026-09-07"
+      ],
+      "reviewedAt": "2026-09-08",
+      "evidenceTiming": "contemporaneous"
+    },
+    "600825": {
+      "kind": "company_suspension_notice",
+      "code": "600825",
+      "date": "2026-09-07",
+      "noticeId": "2026-014",
+      "disclosedAt": "2026-09-08",
+      "url": "https://file.finance.sina.com.cn/211.154.219.97:9494/MRGG/CNSESH_STOCK/2026/2026-9/2026-09-08/12588319.PDF",
+      "validatedDates": [
+        "2026-09-07"
+      ],
+      "reviewedAt": "2026-09-08",
+      "evidenceTiming": "retrospective_confirmation"
+    },
+    "600929": {
+      "kind": "company_suspension_notice",
+      "code": "600929",
+      "date": "2026-09-07",
+      "noticeId": "2026-034",
+      "disclosedAt": "2026-09-05",
+      "url": "https://static.cninfo.com.cn/finalpage/2026-09-05/1225548997.PDF",
+      "validatedDates": [
+        "2026-09-07"
+      ],
+      "reviewedAt": "2026-09-08",
+      "evidenceTiming": "ongoing_suspension_notice"
+    },
+    "688432": {
+      "kind": "company_suspension_notice",
+      "code": "688432",
+      "date": "2026-09-07",
+      "noticeId": "2026-038",
+      "disclosedAt": "2026-09-05",
+      "url": "https://static.cninfo.com.cn/finalpage/2026-09-05/1225549389.PDF",
+      "validatedDates": [
+        "2026-09-07"
+      ],
+      "reviewedAt": "2026-09-08",
+      "evidenceTiming": "contemporaneous"
+    }
+  }
+}

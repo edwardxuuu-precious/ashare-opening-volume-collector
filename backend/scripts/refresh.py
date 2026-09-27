@@ -146,7 +146,7 @@ def fetch(task):
     status_evidence = task[6] if len(task) >= 7 else None
     snapshot_supplied = len(task) == 6 or (len(task) >= 7 and snapshot is not None)
     code = item['code']; symbol = collect.market(code).lower() + code
-    from .no_trade_evidence import evidence
+    from .no_trade_evidence import evidence, explanation
     from .exchange_status import valid_exchange_evidence, valid_historical_no_trade
     notice = evidence(code, day)
     # Price backfill already stores exact stock/date listing and suspension
@@ -169,8 +169,9 @@ def fetch(task):
                            else '已核验目标日期停牌证据，无交易'), noTradeEvidence=notice,
                    pctChange=None, amplitude=None)
         row.update(missing_prices('not_traded'))
-        if notice.get('specialStatus'):
-            row['specialStatus'] = notice['specialStatus']
+        special_status = notice.get('specialStatus') or explanation(code, day)
+        if special_status:
+            row['specialStatus'] = special_status
         return dict(code=code,row=row,opening=None,errors=[],speedDegraded=False,firstDataRequestAt=None)
     errors = []; degraded = False; request_started = None
     retained_quote = {}
