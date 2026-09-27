@@ -220,7 +220,7 @@ class RefreshWorkerTests(unittest.TestCase):
             stack.enter_context(patch.object(worker, 'load_universe', side_effect=load_catalog))
             stack.enter_context(patch.object(worker, 'load_sse_suspensions',
                                             return_value=exchange_status or {}))
-            stack.enter_context(patch.object(worker, 'load_szse_suspensions',
+            self.szse_lookup = stack.enter_context(patch.object(worker, 'load_szse_suspensions',
                                             return_value=szse_status or {}))
             stack.enter_context(patch.object(worker, 'validate_universe',
                                             side_effect=lambda value, **kwargs: validate_universe(value, minimum_count=1)))
@@ -269,6 +269,87 @@ class RefreshWorkerTests(unittest.TestCase):
         self.assertTrue(self.visible()['priceDataComplete'])
         self.assertEqual(self.read('refresh-state.json')['targets'][target]['summary']
                          ['lastAttemptedAt'], '2026-09-27T07:00:00+08:00')
+
+    def test_szse_official_evidence_repairs_attempted_missing_rows_without_market_requests(self):
+        target = '2026-09-15'
+        self.clock = Clock('2026-09-27T07:00:00+08:00')
+        self.codes = ('002731', '301139', '301390')
+        saved = [row(code, status='missing', first15Volume=None, dailyVolume=None, ratio=None)
+                 for code in self.codes]
+        self.write(target + '.json', dict(date=target, rows=saved, universeTotal=3))
+        self.write('refresh-state.json', dict(version=1, targets={target: dict(attempts={
+            '002731': dict(committed=True, nextRetryAt='2026-09-28T07:00:00+08:00'),
+            '301139': dict(committed=False, failures=1),
+            '301390': dict(committed=True, failures=3),
+        })}))
+        evidence = {}
+        for code, start in (('002731', '2026-09-01'), ('301139', '2026-08-31'),
+                            ('301390', '2026-09-10')):
+            evidence.update(parse_szse_suspensions([dict(zqdm=code, zqjc='Fixture',
+                tpkssj=start + ' 开市', fpkssj='', tpsj='停牌', tpyy='重大事项')], target, code=code))
+        with patch.object(worker.collect, 'minute_unadjusted') as minute, \
+                patch('scripts.sina_daily.daily_unadjusted') as daily:
+            result_code = self.run_worker(handler=lambda task: worker.refresh.fetch(task),
+                target=target, calendar_dates=[target], szse_status=evidence)
+        self.szse_lookup.assert_called_once_with(target, list(self.codes))
+        self.assertEqual(result_code, 0)
+        minute.assert_not_called()
+        daily.assert_not_called()
+        published = json.loads(self.client.objects['data/' + target + '.json'])['rows']
+        self.assertEqual(len(published), 3)
+        for value in published:
+            self.assertEqual(value['status'], 'suspended')
+            self.assertEqual(value['noTradeEvidence']['date'], target)
+            self.assertEqual(value['noTradeEvidence']['provider'], 'szse')
+            self.assertEqual(value['specialStatus']['source'], '深圳证券交易所停复牌提示')
+        self.assertTrue(self.visible()['dataComplete'])
+
+    def test_szse_missing_candidates_require_attempt_and_no_known_volume_and_are_bounded(self):
+        target = '2026-09-15'
+        self.clock = Clock('2026-09-27T07:00:00+08:00')
+        untouched = tuple(f'300{index:03}' for index in range(90))
+        excluded = tuple(f'300{index:03}' for index in range(90, 97))
+        eligible = tuple(f'300{index:03}' for index in range(100, 130))
+        self.codes = untouched + excluded + eligible
+        saved = {code: row(code, status='missing', first15Volume=None, dailyVolume=None, ratio=None)
+                 for code in self.codes}
+        for code, field, value in (('300090', 'first15Volume', 10),
+                                   ('300091', 'dailyVolume', 100),
+                                   ('300092', 'first15Volume', 0),
+                                   ('300093', 'dailyVolume', 0)):
+            saved[code][field] = value
+        attempts = {code: dict(committed=True) for code in excluded + eligible}
+        attempts['300095'] = dict(committed=False, failures=True)
+        attempts['300096'] = dict(committed=False, failures=0, dispatchedAt=self.clock.now().isoformat())
+        self.write(target + '.json', dict(date=target, rows=list(saved.values()),
+                                         universeTotal=len(self.codes)))
+        self.write('refresh-state.json', dict(version=1, targets={target: dict(
+            attempts=attempts, openings={'300094': 10})}))
+
+        self.run_worker(target=target, calendar_dates=[target])
+
+        self.szse_lookup.assert_called_once_with(target, list(eligible[:20]))
+
+    def test_szse_no_match_keeps_attempted_empty_sina_response_missing(self):
+        target = '2026-09-15'
+        self.clock = Clock('2026-09-27T07:00:00+08:00')
+        self.codes = ('301390',)
+        saved = row('301390', status='missing', first15Volume=None, dailyVolume=None, ratio=None)
+        self.write(target + '.json', dict(date=target, rows=[saved], universeTotal=1))
+        self.write('refresh-state.json', dict(version=1, targets={target: dict(
+            attempts={'301390': dict(committed=True, failures=1)})}))
+        with patch.object(worker.refresh, 'AK', object(), create=True), \
+                patch.object(worker.collect, 'minute_unadjusted', return_value=pd.DataFrame()), \
+                patch('scripts.sina_daily.daily_unadjusted', return_value=pd.DataFrame()):
+            self.run_worker(handler=lambda task: worker.refresh.fetch(task),
+                            target=target, calendar_dates=[target])
+
+        self.szse_lookup.assert_called_once_with(target, list(self.codes))
+        published = json.loads(self.client.objects['data/' + target + '.json'])['rows'][0]
+        self.assertEqual(published['status'], 'missing')
+        self.assertNotIn('noTradeEvidence', published)
+        self.assertNotIn('specialStatus', published)
+        self.assertFalse(self.visible()['dataComplete'])
 
     def test_opening_only_persists_private_cache_and_never_publishes_daily_snapshot(self):
         self.clock = Clock('2026-09-08T09:50:00+08:00')

@@ -321,11 +321,23 @@ def run(args, publisher):
             status.update(exchangeStatusSource='sse', exchangeStatusAvailable=False,
                           exchangeStatusMatchCount=0,
                           exchangeStatusError=type(exc).__name__)
-    # Only known zero-volume/no-trade rows need a reason lookup. Never turn a
-    # large historical quote gap into thousands of per-stock disclosure calls.
-    unexplained_sz = sorted(code for code in names if code.startswith(('00', '30'))
-        and rows.get(code, {}).get('status') == 'suspended'
-        and not special_status_explained(rows[code]))
+    # Query known no-trade rows and already-attempted rows with neither volume.
+    # Untouched history and partial volume observations are not suspension
+    # evidence; only an exact-day official record may repair a missing row.
+    unexplained_sz = []
+    for code in sorted(names):
+        if not code.startswith(('00', '30')):
+            continue
+        row = rows.get(code, {})
+        attempt = attempts.get(code, {})
+        attempted_missing = (row.get('status') == 'missing'
+            and not refresh.volume(row.get('first15Volume'))
+            and not refresh.volume(openings.get(code))
+            and not refresh.volume(row.get('dailyVolume'))
+            and (attempt.get('committed') is True or
+                 type(attempt.get('failures')) is int and attempt['failures'] > 0))
+        if attempted_missing or (row.get('status') == 'suspended' and not special_status_explained(row)):
+            unexplained_sz.append(code)
     if phase != 'opening' and unexplained_sz:
         try:
             szse_evidence = load_szse_suspensions(day, unexplained_sz[:SZSE_MAX_CODES])
