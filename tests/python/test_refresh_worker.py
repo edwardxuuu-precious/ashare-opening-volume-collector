@@ -15,6 +15,7 @@ import pandas as pd
 import cloud_worker
 import refresh_worker as worker
 from scripts import collect
+from scripts.reconciliation import missing_prices
 from scripts.exchange_status import parse_sse_suspensions, parse_szse_suspensions
 from scripts.universe_cache import validate_universe
 from test_actions_runner import FakeS3
@@ -169,6 +170,44 @@ class RefreshWorkerTests(unittest.TestCase):
         explained = worker.metrics([item], {CODES[0]: stopped}, target, 'catchup')
         self.assertTrue(explained['dataComplete'])
         self.assertTrue(explained['statusExplanationComplete'])
+
+    def test_exhausted_status_review_releases_runner_without_waiting_for_cutoff(self):
+        day = DAY
+        code = CODES[0]
+        evidence = dict(kind='explicit_zero_daily_volume', provider='sina',
+                        date=day, symbol='sz'+code, volume=0)
+        stopped = row(code, status='suspended', first15Volume=None, dailyVolume=0,
+                      ratio=None, noTradeEvidence=evidence, pctChange=None,
+                      amplitude=None, **missing_prices('not_traded'))
+        self.write(day+'.json', dict(date=day, universeTotal=1, rows=[stopped]))
+        with patch.object(worker, 'reviewed_no_trade_evidence', return_value=evidence):
+            self.assertEqual(self.run_worker(
+                handler=lambda task: result(task[0]['code'], row=stopped, opening=None),
+                target=day, calendar_dates=[day], max_minutes=10.1), 0)
+        self.assertEqual(len(self.pool.tasks), 1)
+        self.assertLess(self.clock.elapsed, 2)
+        self.assertEqual(self.visible()['exitReason'], 'completed')
+        self.assertFalse(self.visible()['statusExplanationComplete'])
+
+    def test_required_status_explanation_exhaustion_stays_incomplete_but_releases_runner(self):
+        day = '2026-09-18'
+        code = CODES[0]
+        self.clock = Clock('2026-09-20T07:00:00+08:00')
+        evidence = dict(kind='explicit_zero_daily_volume', provider='sina',
+                        date=day, symbol='sz'+code, volume=0)
+        stopped = row(code, status='suspended', first15Volume=None, dailyVolume=0,
+                      ratio=None, noTradeEvidence=evidence, pctChange=None,
+                      amplitude=None, **missing_prices('not_traded'))
+        self.write(day+'.json', dict(date=day, universeTotal=1, rows=[stopped]))
+        with patch.object(worker, 'reviewed_no_trade_evidence', return_value=evidence):
+            self.assertEqual(self.run_worker(
+                handler=lambda task: result(task[0]['code'], row=stopped, opening=None),
+                target=day, calendar_dates=[day], max_minutes=10.1), 0)
+        self.assertEqual(len(self.pool.tasks), 1)
+        self.assertLess(self.clock.elapsed, 2)
+        self.assertEqual(self.visible()['outcome'], 'incomplete_checkpointed')
+        self.assertEqual(self.visible()['exitReason'], 'repair_attempts_exhausted')
+        self.assertFalse(self.visible()['dataComplete'])
 
     def write(self, name, value):
         collect.write_json(self.out / name, value)

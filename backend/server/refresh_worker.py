@@ -354,6 +354,7 @@ def run(args, publisher):
     source_http_failure_streak = 0; source_throttled = False
     source_cooldown_until = 0.0
     retry_deferred = False
+    repair_attempts_exhausted = False
     quote_attempted = set()
     status_attempted = set()
     close_snapshot = None
@@ -525,9 +526,11 @@ def run(args, publisher):
                 next_retry = metrics(items, rows, target, phase).get('nextRetryAt')
                 if should_finish_for_deferred_retry(unresolved, active, pending, next_retry, now()):
                     retry_deferred = True
-                    break
-                if dirty or time.monotonic()-last_sync >= 60: sync()
-                time.sleep(min(5, max(0, deadline-time.monotonic())))
+                else:
+                    # A reviewed status/quote can remain unresolved after its
+                    # one bounded attempt with no future retry timestamp.
+                    repair_attempts_exhausted = True
+                break
             else:
                 time.sleep(.1)
         finished = metrics(items, rows, target, phase)
@@ -536,10 +539,12 @@ def run(args, publisher):
             outcome='completed' if complete else 'incomplete_checkpointed',
             exitCode=0, exitReason='completed' if complete else (
                 'source_throttled' if source_throttled else 'source_retry_not_due' if retry_deferred else
+                'repair_attempts_exhausted' if repair_attempts_exhausted else
                 'interrupted' if stopped else 'cutoff'),
             message=('开盘量预采完成；15:30 开始下载全天量' if phase=='opening' else '目标交易日数据已补齐') if complete else (
                 '上游连续拒绝请求，已保存断点并等待新 runner 接力' if source_throttled else
                 '所有剩余项尚未到期，已保存断点并等待下一轮到期补采' if retry_deferred else
+                '本轮证据核查已尝试且无其他可执行项，断点已保存' if repair_attempts_exhausted else
                 '保存断点，等待下一轮到期补采'))
         return 0
     except Exception as exc:
