@@ -60,7 +60,11 @@ def preserve_published_quote_frame(checkpoint_row, published_row):
         raise
     if published_price not in ('available', 'not_traded') or checkpoint_price in ('available', 'not_traded'):
         return checkpoint_row
-    if ((published_price == 'available' and checkpoint_row.get('status') != 'ok') or
+    # Core volume completion and independent OHLC availability are separate.
+    # Only a newly confirmed no-trade result supersedes an available frame;
+    # missing opening/daily volume must never erase an already published quote.
+    if ((published_price == 'available' and checkpoint_row.get('status') == 'suspended'
+         and refresh.complete(checkpoint_row)) or
             (published_price == 'not_traded' and checkpoint_row.get('status') == 'ok')):
         return checkpoint_row
     merged = dict(checkpoint_row)
@@ -434,7 +438,7 @@ def run(args, publisher):
                     status['sourceHTTPFailureStreak'] = 0
                 if refresh.volume(result.get('opening')): openings[code] = result['opening']
                 if phase != 'opening':
-                    row = result['row']
+                    row = preserve_published_quote_frame(result['row'], rows.get(code, {}))
                     # Preserve independently captured quote fields and exact history.
                     row = dict(rows.get(code, {}), **{key:value for key,value in row.items()
                                if value is not None or key in ('ratio','reason','pctChange','amplitude',

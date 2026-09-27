@@ -162,9 +162,10 @@ def fetch(task):
     errors = []; degraded = False; request_started = None
     retained_quote = {}
     saved_daily = volume(previous.get('dailyVolume')) and previous['dailyVolume'] > 0
-    # Retaining a completed daily volume must not discard an independently
-    # captured OHLC frame while the opening volume is still missing.
-    if saved_daily and day >= PRICE_REQUIRED_FROM and validate_price_row(previous) == 'available':
+    # Preserve an independently captured OHLC frame for every date, even when
+    # either core volume is missing. The rollout date gates new price requests,
+    # never retention of already published prices.
+    if validate_price_row(previous) == 'available':
         retained_quote = {key: previous[key] for key in
             (*PRICE_FIELDS, 'priceStatus', 'priceSourceProvider', 'pctChange', 'amplitude',
              'dailyAdapter', 'quoteTime') if key in previous}
