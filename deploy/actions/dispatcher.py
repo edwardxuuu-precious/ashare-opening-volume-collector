@@ -58,6 +58,15 @@ def pending(target, day=None):
         "unprocessedCount", "retryableCount", "pendingCount", "latestPendingStocks"))
 
 
+def source_held(target):
+    # Mirror refresh.all_sources_held without importing the collector in Lambda.
+    total = target.get('pendingCount')
+    blocked = target.get('sourceBlockedCount')
+    return (type(total) is int and total > 0 and type(blocked) is int and blocked == total and
+            target.get('unprocessedCount') == 0 and target.get('retryableCount') == 0 and
+            target.get('automaticActionableCount') == 0)
+
+
 def first_pass_complete(target):
     return (target.get("dataComplete") is True or target.get("firstPassComplete") is True or
             type(target.get("unprocessedCount")) is int and target["unprocessedCount"] == 0)
@@ -143,7 +152,8 @@ def choose_work(status, phase, now):
         closed = sorted((day for day in dates if day >= start and
                          (day < today or (day == today and clock >= "15:30"))),
                         reverse=True)
-        candidates = [day for day in closed if pending(targets.get(day, {}), day)]
+        candidates = [day for day in closed if pending(targets.get(day, {}), day) and
+                      not source_held(targets.get(day, {}))]
         # The explicit 07:00 trigger may bootstrap yesterday after a broken run.
         # Watchdog does not repeatedly dispatch unknown historical days.
         if not candidates and phase == "catchup" and closed and closed[0] not in targets:
@@ -151,6 +161,8 @@ def choose_work(status, phase, now):
         if not candidates:
             if priority_retry_deferred:
                 return None, "source_retry_not_due"
+            if any(pending(targets.get(day, {}), day) and source_held(targets.get(day, {})) for day in closed):
+                return None, "source_evidence_required"
             return None, "no_known_backlog"
         candidates = [day for day in candidates if not
                       ((retry_at := instant(targets.get(day, {}).get("nextRetryAt"))) and now < retry_at)]
@@ -165,6 +177,8 @@ def choose_work(status, phase, now):
         selected = ("catchup", day, targets.get(day, {}), deadline)
 
     selected_phase, day, target, deadline = selected
+    if selected_phase != 'opening' and source_held(target):
+        return None, "source_evidence_required"
     next_retry = instant(target.get("nextRetryAt"))
     # Source backoff also applies while first-pass rows remain unprocessed;
     # otherwise every watchdog tick would launch another runner into the same

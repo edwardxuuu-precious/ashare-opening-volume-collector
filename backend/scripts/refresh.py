@@ -1,5 +1,7 @@
-"""Target-date collection primitives. Empty source responses are always retryable."""
+"""Target-date collection primitives; unchanged historical source holes are bounded."""
 from datetime import datetime, timedelta, timezone
+import hashlib
+import json
 import math
 
 from . import collect
@@ -7,6 +9,49 @@ from .download_only import evaluate_downloaded, volumes_present
 from .reconciliation import PRICE_FIELDS, PRICE_REQUIRED_FROM, missing_prices, validate_price_row
 
 AK = None
+SOURCE_OBSERVATION_LIMIT = 3
+
+
+def observation_fingerprint(value):
+    """Fingerprint the exact target result, not unrelated bars or a raw HTTP body."""
+    if (not isinstance(value, dict) or value.get('version') != 1 or
+            value.get('provider') != 'sina' or value.get('kind') != 'target_opening_absent' or
+            not isinstance(value.get('code'), str) or len(value['code']) != 6 or not value['code'].isdigit() or
+            not volume(value.get('dailyVolume')) or value['dailyVolume'] <= 0 or
+            value.get('targetTime') != '09:45:00'):
+        return None
+    try:
+        day = datetime.strptime(value['date'], '%Y-%m-%d').date().isoformat()
+    except (KeyError, TypeError, ValueError):
+        return None
+    if day != value['date']:
+        return None
+    semantic = {key:value[key] for key in
+                ('version','code','date','provider','kind','dailyVolume','targetTime')}
+    return hashlib.sha256(json.dumps(semantic, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+
+
+def source_held(attempt, code=None, day=None):
+    hold = attempt.get('sourceHold')
+    observation = attempt.get('sourceObservation')
+    if not isinstance(hold, dict) or not isinstance(observation, dict):
+        return False
+    fingerprint = observation_fingerprint(observation)
+    return bool(attempt.get('committed') is True and fingerprint and
+                hold.get('fingerprint') == observation.get('fingerprint') == fingerprint and
+                type(hold.get('observations')) is int and hold['observations'] >= SOURCE_OBSERVATION_LIMIT and
+                hold['observations'] == observation.get('observations') and
+                (code is None or observation['code'] == code) and
+                (day is None or observation['date'] == day))
+
+
+def all_sources_held(summary):
+    """Only a fully observed, price/description-safe target can leave automatic work."""
+    pending = summary.get('pendingCount')
+    blocked = summary.get('sourceBlockedCount')
+    return (type(pending) is int and pending > 0 and type(blocked) is int and blocked == pending and
+            summary.get('unprocessedCount') == 0 and summary.get('retryableCount') == 0 and
+            summary.get('automaticActionableCount') == 0)
 
 
 def init_worker(budget):
@@ -51,6 +96,8 @@ def quotes_present(row, day=None):
 
 
 def retry_due(attempt, now):
+    if source_held(attempt):
+        return False
     # A dispatch without a committed result is immediately reclaimable, even tomorrow.
     if not attempt.get('committed'):
         return True
@@ -65,11 +112,28 @@ def ready(code, day, phase, attempt, now, status_evidence=None):
     return (phase != 'opening' and confirmed) or retry_due(attempt, now)
 
 
-def commit_attempt(previous, now, success):
+def commit_attempt(previous, now, success, source_observation=None):
     failures = 0 if success else previous.get('failures', 0) + 1
     delay = (5, 15, 30)[min(max(0, failures - 1), 2)]
-    return dict(previous, committed=True, attemptedAt=now.isoformat(), failures=failures,
-                nextRetryAt=None if success else (now + timedelta(minutes=delay)).isoformat())
+    result = dict(previous, committed=True, attemptedAt=now.isoformat(), failures=failures,
+                  nextRetryAt=None if success else (now + timedelta(minutes=delay)).isoformat())
+    result.pop('sourceHold', None)
+    old = result.pop('sourceObservation', {})
+    fingerprint = observation_fingerprint(source_observation)
+    if success or not fingerprint or source_observation['date'] >= now.date().isoformat():
+        return result
+    same = old.get('fingerprint') == fingerprint and observation_fingerprint(old) == fingerprint
+    count = old.get('observations', 0) if same and type(old.get('observations')) is int else 0
+    observation = dict(source_observation, fingerprint=fingerprint, observations=count+1,
+                       firstObservedAt=old['firstObservedAt'] if count else now.isoformat(),
+                       lastObservedAt=now.isoformat())
+    result['sourceObservation'] = observation
+    if observation['observations'] >= SOURCE_OBSERVATION_LIMIT:
+        result.update(nextRetryAt=None, sourceHold=dict(fingerprint=fingerprint,
+            observations=observation['observations'], blockedAt=now.isoformat(),
+            reason='unchanged_target_opening_absent',
+            reopenCondition='verified exact-date opening data or valid exact-date no-trade proof'))
+    return result
 
 
 def target_date(phase, explicit, calendar, now):
@@ -114,6 +178,8 @@ def select_target(phase, explicit, calendar, cache, legacy, now):
                 day >= PRICE_REQUIRED_FROM and summary.get('priceDataComplete') is not True)
 
     def due(day):
+        if all_sources_held(targets.get(day, {}).get('summary', {})):
+            return False
         retry_at = targets.get(day, {}).get('summary', {}).get('nextRetryAt')
         return not retry_at or datetime.fromisoformat(retry_at) <= now
 
@@ -258,5 +324,15 @@ def fetch(task):
         row.update(status='missing', ratio=None, reason='；'.join(errors) or '新浪未提供目标日期的开盘量或日成交量；等待补采')
         if row.get('priceStatus') == 'not_traded':
             row.update(missing_prices())
-    return dict(code=code, row=row, opening=row.get('first15Volume'), errors=errors, speedDegraded=degraded,
-                firstDataRequestAt=request_started)
+    result = dict(code=code, row=row, opening=row.get('first15Volume'), errors=errors, speedDegraded=degraded,
+                  firstDataRequestAt=request_started)
+    # Only an error-free source call with a retained positive daily volume and
+    # available prices can qualify. HTTP/parse failures and current-day prefetch
+    # never become source absence. Existing failure counts do not seed this log.
+    if (not errors and request_started and row.get('status') == 'missing' and
+            not volume(row.get('first15Volume')) and volume(row.get('dailyVolume')) and
+            row['dailyVolume'] > 0 and validate_price_row(row) == 'available'):
+        result['sourceObservation'] = dict(version=1, code=code, date=day, provider='sina',
+            kind='target_opening_absent', targetTime='09:45:00', dailyVolume=row['dailyVolume'],
+            responseRows=len(minute), responseEmpty=minute.empty)
+    return result

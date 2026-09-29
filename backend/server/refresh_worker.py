@@ -48,6 +48,11 @@ def validate_cache(value):
                 if len(code) != 6 or not code.isdigit() or not isinstance(attempt, dict):
                     raise ValueError('Invalid refresh attempt')
                 if attempt.get('nextRetryAt'): datetime.fromisoformat(attempt['nextRetryAt'])
+                if attempt.get('sourceHold') and not refresh.source_held(attempt, code, day):
+                    # An interrupted dispatch retains the last committed observation,
+                    # but cannot invent a new held result.
+                    if attempt.get('committed') is not False or not refresh.source_held(dict(attempt, committed=True), code, day):
+                        raise ValueError('Invalid source hold identity or observation')
     return value
 
 
@@ -95,6 +100,8 @@ def metrics(items, rows, target, phase):
     checked_at = now()
     quote_pending = {code for code in codes if day and day >= PRICE_REQUIRED_FROM
                      and not refresh.quotes_present(rows.get(code, {}), day)}
+    blocked = {code for code in codes-ok if phase != 'opening' and
+               refresh.source_held(attempts.get(code, {}), code, day)}
     due = [(datetime.fromisoformat(a['nextRetryAt']), a['nextRetryAt'])
            for code, a in attempts.items() if a.get('nextRetryAt') and
            (code not in target.get('openings', {}) if phase == 'opening' else
@@ -110,7 +117,10 @@ def metrics(items, rows, target, phase):
     return dict(totalStocks=len(codes), completedStocks=len(observed), unprocessedCount=unprocessed,
         calculableCount=sum(rows.get(code, {}).get('status') == 'ok' for code in ok),
         noTradeCount=sum(rows.get(code, {}).get('status') == 'suspended' for code in ok),
-        retryableCount=pending-unprocessed, pendingStockDates=pending, pendingCount=pending,
+        retryableCount=pending-unprocessed-len(blocked), sourceBlockedCount=len(blocked),
+        sourceBlockedCodes=sorted(blocked),
+        automaticActionableCount=pending-len(blocked)+len(quote_pending),
+        pendingStockDates=pending, pendingCount=pending,
         firstPassComplete=unprocessed == 0, dataComplete=pending == 0,
         openingCachedCount=len(codes & set(target.get('openings', {}))),
         openingComplete=codes <= set(target.get('openings', {})),
@@ -226,9 +236,16 @@ def run(args, publisher):
         gap = missing + unverified + (universe_total - total) + unproven
         summary = cache['targets'].setdefault(historical_day, {}).setdefault('summary', {})
         if gap:
-            summary.update(pendingCount=gap, retryableCount=gap, dataComplete=False)
+            # A manifest gap is still missing; it must not erase a committed
+            # source hold or make every later current-day run reopen that hole.
+            held = summary.get('sourceBlockedCount', 0)
+            held = held if type(held) is int and 0 <= held <= gap else 0
+            summary.update(pendingCount=gap, retryableCount=gap-held, dataComplete=False,
+                           automaticActionableCount=gap-held+summary.get('priceMissing', 0))
         elif entry.get('valid', 0) + suspended == universe_total:
-            summary.update(pendingCount=0, retryableCount=0, unprocessedCount=0, dataComplete=True)
+            summary.update(pendingCount=0, retryableCount=0, unprocessedCount=0, dataComplete=True,
+                           sourceBlockedCount=0, sourceBlockedCodes=[],
+                           automaticActionableCount=summary.get('priceMissing', 0))
             manifest_complete.add(historical_day)
     for historical_day, gap in legacy_backlog.items():
         if historical_day in days and historical_day not in manifest_complete:
@@ -239,8 +256,11 @@ def run(args, publisher):
             if summary.get('dataComplete') is True:
                 continue
             known = max(gap, summary.get('pendingCount', 0))
-            summary.update(pendingCount=known, retryableCount=max(known, summary.get('retryableCount', 0)),
-                           dataComplete=False)
+            held = summary.get('sourceBlockedCount', 0)
+            held = held if type(held) is int and 0 <= held <= known else 0
+            summary.update(pendingCount=known, retryableCount=max(known-held, summary.get('retryableCount', 0)),
+                           dataComplete=False,
+                           automaticActionableCount=known-held+summary.get('priceMissing', 0))
     day = refresh.select_target(phase, getattr(args, 'target_date', None), days, cache,
                                old_state, began)
     if not day:
@@ -438,6 +458,8 @@ def run(args, publisher):
                     source_http_failure_streak = 0
                     status['sourceHTTPFailureStreak'] = 0
                 if refresh.volume(result.get('opening')): openings[code] = result['opening']
+                attempt = refresh.commit_attempt(attempts.get(code, {}), now(), success,
+                                                  result.get('sourceObservation'))
                 if phase != 'opening':
                     row = preserve_published_quote_frame(result['row'], rows.get(code, {}))
                     # Preserve independently captured quote fields and exact history.
@@ -448,6 +470,9 @@ def run(args, publisher):
                         row.pop('reason', None)
                     if row.get('priceStatus') != 'available':
                         row.pop('priceSourceProvider', None)
+                    if refresh.source_held(attempt, code, day):
+                        row['reason'] = ('新浪未提供目标日期09:45开盘量；连续相同观测后已停止自动补采；'
+                                         '待精确原始开盘记录或合法无交易证据后复核')
                     record_path = out/'checkpoint'/(code+'.json')
                     saved_record = read_json(record_path)
                     saved_day = saved_record.get('days', {}).get(day, {})
@@ -456,7 +481,7 @@ def run(args, publisher):
                     record = merge_checkpoint(saved_record, code, {day:row}, began.date().isoformat(), preserve_history=True)
                     collect.write_json(record_path, record)
                     rows[code] = record['days'][day]; dirty[code] = rows[code]
-                attempts[code] = refresh.commit_attempt(attempts.get(code, {}), now(), success)
+                attempts[code] = attempt
                 status['attemptedThisRun'] += 1
                 status['speedDegraded'] |= result['speedDegraded']
                 changed_count += 1
@@ -535,13 +560,16 @@ def run(args, publisher):
                 time.sleep(.1)
         finished = metrics(items, rows, target, phase)
         complete = target_complete(finished, phase, day)
+        source_held = not complete and refresh.all_sources_held(finished)
         status.update(status='completed' if complete else 'paused', state='completed' if complete else 'paused',
             outcome='completed' if complete else 'incomplete_checkpointed',
             exitCode=0, exitReason='completed' if complete else (
+                'source_evidence_required' if source_held else
                 'source_throttled' if source_throttled else 'source_retry_not_due' if retry_deferred else
                 'repair_attempts_exhausted' if repair_attempts_exhausted else
                 'interrupted' if stopped else 'cutoff'),
             message=('开盘量预采完成；15:30 开始下载全天量' if phase=='opening' else '目标交易日数据已补齐') if complete else (
+                '目标开盘量连续相同观测后仍缺失，已保存断点并停止该项自动补采；待精确新证据复核' if source_held else
                 '上游连续拒绝请求，已保存断点并等待新 runner 接力' if source_throttled else
                 '所有剩余项尚未到期，已保存断点并等待下一轮到期补采' if retry_deferred else
                 '本轮证据核查已尝试且无其他可执行项，断点已保存' if repair_attempts_exhausted else

@@ -131,6 +131,40 @@ class RefreshWorkerTests(unittest.TestCase):
         self.clock = Clock('2026-09-08T07:00:00+08:00')
         self.codes = CODES[:1]
 
+    def test_identical_historical_source_gap_stops_after_three_committed_observations(self):
+        code = CODES[0]
+        saved = row(code, status='missing', first15Volume=None, ratio=None,
+                    reason='新浪未提供目标日期的开盘量或日成交量；等待补采',
+                    open=9.8, high=10.3, low=9.7, close=10.0,
+                    priceStatus='available', priceSourceProvider='sina',
+                    pctChange=None, amplitude=None)
+        self.write(DAY + '.json', dict(date=DAY, universeTotal=1, rows=[saved]))
+        with patch.object(worker.collect, 'minute_unadjusted', return_value=pd.DataFrame([
+                dict(day=DAY+' 10:00:00', volume=5)])) as minute:
+            for clock in ('07:00', '08:00', '09:00'):
+                self.clock = Clock(TODAY+'T'+clock+':00+08:00')
+                self.assertEqual(self.run_worker(handler=worker.refresh.fetch), 0)
+                self.assertEqual(len(self.pool.tasks), 1)
+            status = self.visible()
+            self.assertEqual(status.get('sourceBlockedCount'), 1)
+            self.assertEqual(status['pendingCount'], 1)
+            self.assertEqual(status['retryableCount'], 0)
+            self.assertFalse(status['dataComplete'])
+            self.assertEqual(status['exitReason'], 'source_evidence_required')
+            self.assertEqual(status['outcome'], 'incomplete_checkpointed')
+            target = self.read('refresh-state.json')['targets'][DAY]
+            self.assertEqual(target['attempts'][code]['sourceHold']['observations'], 3)
+            self.assertIsNone(target['attempts'][code]['nextRetryAt'])
+            self.clock = Clock(TODAY+'T16:00:00+08:00')
+            self.assertEqual(self.run_worker(handler=worker.refresh.fetch), 0)
+            self.assertEqual(len(self.pool.tasks), 0)
+            self.assertEqual(minute.call_count, 3)
+        published = json.loads(self.client.objects['data/'+DAY+'.json'])['rows'][0]
+        for field in ('dailyVolume','sourceProvider','open','high','low','close','priceSourceProvider'):
+            self.assertEqual(published[field], saved[field])
+        self.assertIsNone(published['first15Volume'])
+        self.assertIsNone(published['ratio'])
+
     def test_summary_separates_core_completion_from_ohlc_completion(self):
         item = {'code': CODES[0]}
         core = row(CODES[0])
