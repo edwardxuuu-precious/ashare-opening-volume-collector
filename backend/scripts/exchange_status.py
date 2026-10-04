@@ -154,6 +154,31 @@ OFFICIAL_DISCLOSURE_SUSPENSIONS = (
     ),
 )
 
+# Only this exact alias was verified on 2026-10-04: both official URLs returned
+# the same 101120-byte PDF, SHA256
+# 99fa56aab391cff5d1fa210fc06b82f455e3d311b2d16ed212eedd111fae4c9f.
+# Other documents, hosts, query strings and path variants remain distinct.
+_VERIFIED_DISCLOSURE_URL_ALIASES = {
+    ('https://disc.static.szse.cn/disc/disk03/finalpage/'
+     '2026-04-29/01cd3652-6986-4e3d-beb3-7c702124695b.PDF'):
+    ('https://disc.static.szse.cn/download/disc/disk03/finalpage/'
+     '2026-04-29/01cd3652-6986-4e3d-beb3-7c702124695b.PDF'),
+}
+
+
+def _verified_disclosure_url(value):
+    return _VERIFIED_DISCLOSURE_URL_ALIASES.get(value, value) if isinstance(value, str) else value
+
+
+def _verified_disclosure_citations(value):
+    normalized = dict(value)
+    for field in ('sourceUrl', 'resumeUrl'):
+        normalized[field] = _verified_disclosure_url(value.get(field))
+    normalized['specialStatus'] = dict(value['specialStatus'])
+    normalized['specialStatus']['announcementUrl'] = _verified_disclosure_url(
+        value['specialStatus'].get('announcementUrl'))
+    return normalized
+
 
 def _date(value):
     if not isinstance(value, str) or len(value) != 8 or not value.isdigit():
@@ -339,9 +364,12 @@ def valid_historical_no_trade(value, code, day):
         return parse_market_suspensions([row], day).get(code) == value
     if value.get('kind') == 'official_disclosure_suspension':
         try:
-            return official_disclosure_suspensions(day).get(code) == value
+            expected = official_disclosure_suspensions(day).get(code)
         except ValueError:
             return False
+        if expected is None or not isinstance(value.get('specialStatus'), dict):
+            return False
+        return _verified_disclosure_citations(expected) == _verified_disclosure_citations(value)
     return valid_exchange_evidence(value, code)
 
 

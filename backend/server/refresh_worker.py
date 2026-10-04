@@ -1,10 +1,12 @@
 """One leased writer, separate target-day queues, private opening cache and bounded retries."""
 import multiprocessing as mp
+import re
 import signal
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
+from urllib.parse import urlsplit
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -162,9 +164,83 @@ def source_recovery_confirmed(first_data_request_at, current, cooldown_until):
     return bool(first_data_request_at) and current >= cooldown_until
 
 
+def validate_membership_repair(value, day, catalog, today):
+    """Validate a reviewed one-code listing-day grant; never fetch its source."""
+    fields = {'date', 'code', 'listingDate', 'sourceUrl', 'sourceSha256'}
+    if not isinstance(value, dict) or set(value) != fields:
+        raise ValueError('Membership repair requires date/code/listingDate/sourceUrl/sourceSha256')
+    code = value['code']
+    if not isinstance(code, str) or not re.fullmatch(r'[0-9]{6}', code):
+        raise ValueError('Invalid membership repair code')
+    if value['date'] != day or value['listingDate'] != day or day > today:
+        raise ValueError('Membership repair must match the exact nonfuture listing day')
+    if not day <= catalog['asOf'] <= today:
+        raise ValueError('Membership repair catalog does not cover the target day')
+    source = value['sourceUrl']
+    if not isinstance(source, str) or source != source.strip():
+        raise ValueError('Invalid membership repair source URL')
+    url = urlsplit(source)
+    hosts = {'static.cninfo.com.cn', 'www.sse.com.cn', 'www.szse.cn', 'www.bse.cn'}
+    if url.scheme != 'https' or url.netloc not in hosts or not url.path or url.fragment:
+        raise ValueError('Membership repair requires an official disclosure source URL')
+    digest = value['sourceSha256']
+    if not isinstance(digest, str) or not re.fullmatch(r'[0-9a-f]{64}', digest):
+        raise ValueError('Invalid membership repair source SHA256')
+    member = next((item for item in catalog['rows'] if item['code'] == code), None)
+    if member is None:
+        raise ValueError('Membership repair code is absent from the validated catalog')
+    return member
+
+
+def ensure_target(cache, day, catalog, saved_payload, today, repair_target=None, phase='catchup'):
+    """Preserve frozen members; historical additions require an explicit grant."""
+    target = cache['targets'].get(day, {})
+    saved_rows = saved_payload.get('rows', [])
+    saved_complete = bool(saved_rows and saved_payload.get('universeTotal') == len(saved_rows))
+    repair_member = None
+    if repair_target is not None:
+        repair_member = validate_membership_repair(repair_target, day, catalog, today)
+        if not target.get('universe') and not saved_complete:
+            raise ValueError('Membership repair requires a frozen or fully saved target scope')
+    target = cache['targets'].setdefault(day, target)
+    target['date'] = day
+    items = target.get('universe')
+    if not items:
+        if saved_complete and day < today:
+            items = [dict(code=row['code'], name=row['name']) for row in saved_rows]
+        else:
+            items = catalog['rows']
+        target['universe'] = items
+    known = {item['code'] for item in items}
+    eligible = ([repair_member] if repair_member is not None else
+                catalog['rows'] if day == today and catalog['asOf'] == day else [])
+    additions = [item for item in eligible if item['code'] not in known]
+    if additions:
+        correction = dict(repair_target or {},
+                          mode='explicit_membership_repair' if repair_target else 'same_day_catalog',
+                          date=day, catalogAsOf=catalog['asOf'],
+                          codes=[item['code'] for item in additions], updatedAt=now().isoformat())
+        for field in ('firstPassCompletedAt', 'fullyPublishedAt'):
+            if field in target:
+                correction[field] = target.pop(field)
+        target.setdefault('membershipCorrections', []).append(correction)
+        items = [*items, *additions]
+        target['universe'] = items
+        summary = {key:value for key,value in target.get('summary', {}).items()
+                   if key not in ('firstPassCompletedAt', 'fullyPublishedAt', 'publishedAt')}
+        target['summary'] = dict(summary, **metrics(
+            items, {row['code']:row for row in saved_rows}, target, phase))
+    return target, items
+
+
 def run(args, publisher):
     root = Path(args.root); out = root/'data'
     phase = args.phase
+    repair_target = getattr(args, 'repair_target', None)
+    if repair_target is not None and (not isinstance(repair_target, dict) or
+            repair_target.get('date') != getattr(args, 'target_date', None) or
+            phase not in ('close', 'catchup')):
+        raise ValueError('Membership repair requires its exact explicit target date and close/catchup phase')
     began = now(); started = time.monotonic()
     previous = read_json(root/'worker-state.json')
     cache = validate_cache(read_json(out/'refresh-state.json', dict(version=1, targets={})))
@@ -261,6 +337,15 @@ def run(args, publisher):
             summary.update(pendingCount=known, retryableCount=max(known-held, summary.get('retryableCount', 0)),
                            dataComplete=False,
                            automaticActionableCount=known-held+summary.get('priceMissing', 0))
+    # A completed current-day summary can otherwise hide a later catalog addition
+    # before target selection reaches the frozen scope. Only inspect a validated
+    # local exact-day catalog here; stale catalogs and history remain frozen.
+    if phase == 'catchup' and not getattr(args, 'target_date', None) and today in days and clock >= '15:30':
+        current = cache['targets'].get(today, {})
+        catalog = read_json(out/'universe.json')
+        if current.get('universe') and catalog and catalog.get('asOf') == today:
+            validate_universe(catalog)
+            ensure_target(cache, today, catalog, read_json(out/(today+'.json')), today)
     day = refresh.select_target(phase, getattr(args, 'target_date', None), days, cache,
                                old_state, began)
     if not day:
@@ -269,17 +354,10 @@ def run(args, publisher):
     if day == began.date().isoformat() or not catalog:
         catalog = load_universe(out/'universe.json', began.date().isoformat(), ak.stock_info_a_code_name)
     validate_universe(catalog)
-    items = catalog['rows']; names = {item['code']:item for item in items}
-    target = cache['targets'].setdefault(day, {})
-    target['date'] = day
     saved_payload = read_json(out/(day+'.json'))
-    saved_rows = saved_payload.get('rows', [])
-    if target.get('universe'):
-        items = target['universe']
-    elif saved_rows and saved_payload.get('universeTotal') == len(saved_rows) and day < began.date().isoformat():
-        items = [dict(code=row['code'], name=row['name']) for row in saved_rows]
-    target.setdefault('universe', items)
-    names = {item['code']:item for item in items}
+    target, items = ensure_target(cache, day, catalog, saved_payload, today, repair_target, phase)
+    names = {item['code']:item for item in items
+             if repair_target is None or item['code'] == repair_target['code']}
     openings = target.setdefault('openings', {})
     attempts = target.setdefault('openingAttempts' if phase == 'opening' else 'attempts', {})
     rows = {row['code']:row for row in read_json(out/(day+'.json')).get('rows', [])}

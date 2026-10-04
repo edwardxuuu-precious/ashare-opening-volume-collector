@@ -244,9 +244,11 @@ def scan_needs(out, cache_quotes, force, start=DEFAULT_FROM, end=DEFAULT_TO, bat
 
 
 def patch_files(out, quotes, changed_generated_at, selected_dates=None, status_evidence=None):
-    """Apply cached quote tables to saved rows; write only files that changed."""
+    """Apply cached quote tables to selected saved days; write only changed files."""
     filled = unfilled = files_changed = 0
     selected_dates = set(selected_dates or [])
+    if not selected_dates:
+        return dict(filledRows=0, unfilledRows=0, filesChanged=0)
     status_evidence = status_evidence or {}
     # Fail the complete batch before the first write if a source says both traded
     # and no-trade for the same stock-day.
@@ -275,6 +277,11 @@ def patch_files(out, quotes, changed_generated_at, selected_dates=None, status_e
             continue
         original = json.dumps(payload, ensure_ascii=False, sort_keys=True)
         for row in payload['rows']:
+            # scan_needs requests only incomplete rows, so a sparse cache is
+            # not an instruction to replace an already valid saved quote.
+            if complete_price(row):
+                filled += 1
+                continue
             row['verificationVersion'] = VERIFICATION_VERSION
             code = row.get('code')
             table = quotes.get(code, {}).get('days', {}) if code else {}
