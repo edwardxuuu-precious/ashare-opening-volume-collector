@@ -51,6 +51,42 @@ def _daily_metrics(frame, day):
     return quote['pctChange'], quote['amplitude']
 
 
+def _sina_close_quote(code, day):
+    """Read a fresh Sina share-volume frame for a symbol omitted by the bulk list."""
+    import requests
+
+    prefix = 'sh' if code.startswith(('60', '68')) else 'sz' if code.startswith(('00', '30')) else 'bj'
+    symbol = prefix + code
+    response = requests.get('https://hq.sinajs.cn/list=' + symbol,
+                            headers={'Referer': 'https://finance.sina.com.cn/'}, timeout=20)
+    response.raise_for_status()
+    response.encoding = 'gb18030'
+    match = re.fullmatch(r'\s*var\s+hq_str_' + re.escape(symbol) + r'\s*=\s*"([^"\r\n]*)";\s*',
+                         response.text)
+    if not match:
+        return None
+    fields = match[1].split(',')
+    if len(fields) < 33 or fields[30] != day:
+        return None
+    try:
+        quote_at = datetime.strptime(day + ' ' + fields[31], '%Y-%m-%d %H:%M:%S')
+    except ValueError:
+        return None
+    if quote_at.strftime('%H:%M:%S') < '15:30:00':
+        return None
+    volume = _number(fields[8])
+    previous = _number(fields[2])
+    if volume is None or volume <= 0 or volume != int(volume) or previous is None or previous <= 0:
+        return None
+    quote = _observation({'今开': fields[1], '最新价': fields[3], '最高': fields[4],
+                          '最低': fields[5], '昨收': fields[2], '成交量': volume})
+    if quote['priceStatus'] != 'available':
+        return None
+    return dict(code=code, date=day, market=PREFIXES[prefix], dailyVolume=int(volume),
+                **quote, quoteTime=day + ' ' + fields[31], sourceProvider='sina',
+                priceSourceProvider='sina', dailyAdapter='sina_symbol_close_quote')
+
+
 def _daily_quote_fallback(ak, code, day):
     """Fill rare symbols omitted by the bulk snapshot without changing volume."""
     prefix = 'sh' if code.startswith(('60', '68')) else 'sz' if code.startswith(('00', '30')) else 'bj'
@@ -113,6 +149,13 @@ def load_snapshot(ak, universe, day, *, moment=None):
     if not expected_markets <= fresh_markets:
         raise ValueError('Sina spot snapshot is stale for one or more target markets')
     for code in sorted(expected - set(rows))[:DAILY_FALLBACK_LIMIT]:
+        try:
+            fallback = _sina_close_quote(code, day)
+        except Exception:
+            fallback = None
+        if fallback:
+            rows[code] = fallback
+            continue
         try:
             fallback = _daily_quote_fallback(ak, code, day)
         except Exception:
