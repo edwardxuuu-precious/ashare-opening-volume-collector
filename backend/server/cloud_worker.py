@@ -142,6 +142,11 @@ class Publisher:
     def publish_status(self, status):
         visible = dict(status, **self.latest_published, state=status['status'], id=status.get('id', 'full-market'),
                        latestDate=max(status.get('dates') or [status.get('latestDate', '')]))
+        # The active target can be unclosed or an older repair. Only the
+        # committed directory identifies the latest saved market snapshot.
+        published = max(self.manifest.get('dates', []), key=lambda entry: entry['date'], default=None)
+        visible['latestPublishedDate'] = published['date'] if published else None
+        visible['latestPublishedAt'] = published.get('generatedAt') if published else None
         # Full exchange calendars belong in the private checkpoint. Repeating them in a
         # 20-second browser status response turns a sub-2 KB progress record into >100 KB.
         visible.pop('calendarDates', None)

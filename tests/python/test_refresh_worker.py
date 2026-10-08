@@ -451,6 +451,88 @@ class RefreshWorkerTests(unittest.TestCase):
         self.assertEqual(self.context.processes, 4)
         self.assertTrue(self.pool.closed and self.pool.joined)
 
+    def test_opening_resume_reports_cache_work_separately_from_unpublished_daily_rows(self):
+        self.clock = Clock('2026-09-08T09:50:00+08:00')
+        self.codes = CODES
+        self.write('refresh-state.json', dict(version=1, targets={TODAY: dict(
+            date=TODAY, openings={CODES[0]: 10, CODES[1]: 10},
+            openingAttempts={CODES[0]: dict(committed=True, failures=0),
+                             CODES[1]: dict(committed=True, failures=0),
+                             CODES[2]: dict(committed=True, failures=1,
+                                nextRetryAt='2026-09-08T10:20:00+08:00')} )}))
+        self.assertEqual(self.run_worker(
+            lambda task: (_ for _ in ()).throw(AssertionError('Retry is not due')),
+            phase='opening', target=TODAY), 0)
+        status = self.visible()
+        self.assertEqual(len(self.pool.tasks), 0)
+        self.assertEqual(status['openingCachedCount'], 2)
+        self.assertEqual(status.get('openingMissingCount'), 1)
+        self.assertEqual(status.get('openingUnprocessedCount'), 0)
+        self.assertEqual(status.get('openingRetryableCount'), 1)
+        self.assertFalse(status['openingComplete'])
+        self.assertFalse(status['dataComplete'])
+        self.assertFalse(status['publicationCommitted'])
+        self.assertEqual(status['exitReason'], 'source_retry_not_due')
+        self.assertNotIn('data/'+TODAY+'.json', self.client.objects)
+
+    def test_opening_exact_day_official_no_trade_completes_without_quote_requests(self):
+        self.clock = Clock(TODAY+'T09:50:00+08:00')
+        self.codes = ('600111',)
+        proof = parse_sse_suspensions([dict(
+            productCode='600111', productName='Fixture', controlType='TR',
+            startStopDate='20260907', endStopDate='', type='LXTP',
+            stopReason='交易所确认全天停牌')], TODAY)
+        with patch.object(worker.collect, 'minute_unadjusted',
+                          side_effect=AssertionError('Official no-trade needs no quote request')) as minute:
+            self.assertEqual(self.run_worker(
+                handler=worker.refresh.fetch, phase='opening', target=TODAY,
+                exchange_status=proof), 0)
+        self.assertEqual(minute.call_count, 0)
+        status = self.visible()
+        self.assertTrue(status['openingComplete'])
+        self.assertEqual(status.get('openingNoTradeCount'), 1)
+        self.assertEqual(status.get('openingMissingCount'), 0)
+        self.assertEqual(status['openingCachedCount'], 0)
+        self.assertFalse(status['dataComplete'])
+        self.assertFalse(status['publicationCommitted'])
+        self.assertNotIn('data/'+TODAY+'.json', self.client.objects)
+        self.assertIsNone(self.context.processes)
+
+    def test_opening_no_trade_cache_rejects_wrong_day_or_conflicting_volume(self):
+        code = '600111'
+        proof = parse_sse_suspensions([dict(
+            productCode=code, productName='Fixture', controlType='TR',
+            startStopDate='20260907', endStopDate='', type='LXTP',
+            stopReason='交易所确认全天停牌')], TODAY)[code]
+        valid = dict(version=1, targets={TODAY: dict(date=TODAY,
+            openingNoTrade={code: proof})})
+        self.assertEqual(worker.validate_cache(valid), valid)
+        invalid_day = dict(valid, targets={TODAY: dict(date=TODAY,
+            openingNoTrade={code: dict(proof, date=DAY)})})
+        with self.assertRaises(ValueError):
+            worker.validate_cache(invalid_day)
+        contradictory = dict(valid, targets={TODAY: dict(date=TODAY,
+            openingNoTrade={code: proof}, openings={code: 0})})
+        with self.assertRaises(ValueError):
+            worker.validate_cache(contradictory)
+
+    def test_opening_missing_without_formal_proof_remains_retryable_not_zero(self):
+        self.clock = Clock(TODAY+'T09:50:00+08:00')
+        self.codes = ('600111',)
+        self.assertEqual(self.run_worker(
+            lambda task: dict(code=task[0]['code'], opening=None,
+                              speedDegraded=False, errors=[]),
+            phase='opening', target=TODAY), 0)
+        status = self.visible()
+        self.assertFalse(status['openingComplete'])
+        self.assertEqual(status['openingNoTradeCount'], 0)
+        self.assertEqual(status['openingMissingCount'], 1)
+        self.assertEqual(status['openingRetryableCount'], 1)
+        cached = self.read('refresh-state.json')['targets'][TODAY]
+        self.assertNotIn('600111', cached['openings'])
+        self.assertEqual(cached['openingNoTrade'], {})
+        self.assertNotIn('data/'+TODAY+'.json', self.client.objects)
+
     def test_target_refresh_preserves_all_checkpoint_history_and_legacy_queue_bytes(self):
         old_row = row(CODES[0], first15Volume=5, dailyVolume=100, ratio=5)
         partial = row(CODES[0], status='missing', dailyVolume=None, ratio=None, reason='日线缺失', close=8.12)

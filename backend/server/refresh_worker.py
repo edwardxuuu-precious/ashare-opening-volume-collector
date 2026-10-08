@@ -11,11 +11,12 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from scripts import collect, refresh, sina_spot
-from scripts.exchange_status import load_sse_suspensions, load_szse_suspensions, SZSE_MAX_CODES
+from scripts.exchange_status import (load_sse_suspensions, load_szse_suspensions,
+                                    valid_historical_no_trade, SZSE_MAX_CODES)
 from scripts.daily_collector import SharedHTTPBudget, deadline_for, publish_changes
 from scripts.daily_state import load_calendar, read_json, merge_checkpoint
 from scripts.universe_cache import load_universe, validate_universe
-from scripts.no_trade_evidence import evidence as reviewed_no_trade_evidence
+from scripts.no_trade_evidence import evidence as reviewed_no_trade_evidence, valid_notice
 from scripts.reconciliation import (PRICE_FIELDS, PRICE_REQUIRED_FROM,
                                     STATUS_EXPLANATION_REQUIRED_FROM,
                                     price_counts, special_status_counts,
@@ -33,6 +34,12 @@ def now():
     return datetime.now(ZONE)
 
 
+def valid_opening_no_trade(proof, code, day):
+    """Only exact-day formal proof resolves an opening without a volume."""
+    return bool(isinstance(proof, dict) and proof.get('date') == day and
+                (valid_notice(proof, code) or valid_historical_no_trade(proof, code, day)))
+
+
 def validate_cache(value):
     if not isinstance(value, dict) or value.get('version') != 1 or not isinstance(value.get('targets'), dict):
         raise ValueError('Invalid refresh cache')
@@ -45,6 +52,14 @@ def validate_cache(value):
         for code, amount in target.get('openings', {}).items():
             if len(code) != 6 or not code.isdigit() or not refresh.volume(amount):
                 raise ValueError('Invalid opening cache identity/volume')
+        no_trade = target.get('openingNoTrade', {})
+        if not isinstance(no_trade, dict):
+            raise ValueError('Invalid opening no-trade cache')
+        for code, proof in no_trade.items():
+            if (not isinstance(code, str) or not re.fullmatch(r'[0-9]{6}', code) or
+                    not valid_opening_no_trade(proof, code, day) or
+                    code in target.get('openings', {})):
+                raise ValueError('Invalid or conflicting opening no-trade proof')
         for phase in ('openingAttempts', 'attempts'):
             for code, attempt in target.get(phase, {}).items():
                 if len(code) != 6 or not code.isdigit() or not isinstance(attempt, dict):
@@ -98,6 +113,14 @@ def metrics(items, rows, target, phase):
     observed |= {code for code in codes if rows.get(code, {}).get('status') in ('ok','suspended')}
     unprocessed = len(codes - observed)
     missing = len(codes - ok)
+    opening_cached = codes & set(target.get('openings', {}))
+    opening_no_trade = {code for code, proof in target.get('openingNoTrade', {}).items()
+                       if code in codes-opening_cached and valid_opening_no_trade(proof, code, day)}
+    opening_resolved = opening_cached | opening_no_trade
+    opening_observed = opening_resolved | {code for code, attempt in
+        target.get('openingAttempts', {}).items() if code in codes and attempt.get('committed')}
+    opening_unprocessed = len(codes-opening_observed)
+    opening_missing = len(codes-opening_resolved)
     attempts = target.get('openingAttempts' if phase == 'opening' else 'attempts', {})
     checked_at = now()
     quote_pending = {code for code in codes if day and day >= PRICE_REQUIRED_FROM
@@ -106,7 +129,7 @@ def metrics(items, rows, target, phase):
                refresh.source_held(attempts.get(code, {}), code, day)}
     due = [(datetime.fromisoformat(a['nextRetryAt']), a['nextRetryAt'])
            for code, a in attempts.items() if a.get('nextRetryAt') and
-           (code not in target.get('openings', {}) if phase == 'opening' else
+           (code not in opening_resolved if phase == 'opening' else
             code not in ok or code in quote_pending)
            and datetime.fromisoformat(a['nextRetryAt']) > checked_at]
     result_rows = [rows.get(code, {}) for code in codes]
@@ -124,8 +147,11 @@ def metrics(items, rows, target, phase):
         automaticActionableCount=pending-len(blocked)+len(quote_pending),
         pendingStockDates=pending, pendingCount=pending,
         firstPassComplete=unprocessed == 0, dataComplete=pending == 0,
-        openingCachedCount=len(codes & set(target.get('openings', {}))),
-        openingComplete=codes <= set(target.get('openings', {})),
+        openingCachedCount=len(opening_cached), openingNoTradeCount=len(opening_no_trade),
+        openingMissingCount=opening_missing, openingUnprocessedCount=opening_unprocessed,
+        openingRetryableCount=opening_missing-opening_unprocessed,
+        openingFirstPassComplete=opening_unprocessed == 0,
+        openingComplete=codes <= opening_resolved,
         nextRetryAt=min(due, key=lambda value: value[0])[1] if due else None,
         **coverage, **explanation_coverage)
 
@@ -359,6 +385,7 @@ def run(args, publisher):
     names = {item['code']:item for item in items
              if repair_target is None or item['code'] == repair_target['code']}
     openings = target.setdefault('openings', {})
+    opening_no_trade = target.setdefault('openingNoTrade', {})
     attempts = target.setdefault('openingAttempts' if phase == 'opening' else 'attempts', {})
     rows = {row['code']:row for row in read_json(out/(day+'.json')).get('rows', [])}
     dirty = {}
@@ -404,10 +431,11 @@ def run(args, publisher):
         status.pop(key, None)
     exchange_status_evidence = {}
     unresolved_sh = [code for code in names if code.startswith('6') and (
+                     code not in openings and code not in opening_no_trade if phase == 'opening' else
                      not refresh.complete(rows.get(code, {}), day) or
                      rows.get(code, {}).get('status') == 'suspended' and
                      not special_status_explained(rows[code]))]
-    if phase != 'opening' and unresolved_sh:
+    if unresolved_sh:
         try:
             exchange_status_evidence = load_sse_suspensions(day)
             exchange_status_evidence = {
@@ -438,9 +466,11 @@ def run(args, publisher):
             and not refresh.volume(row.get('dailyVolume'))
             and (attempt.get('committed') is True or
                  type(attempt.get('failures')) is int and attempt['failures'] > 0))
-        if attempted_missing or (row.get('status') == 'suspended' and not special_status_explained(row)):
+        opening_gap = (phase == 'opening' and code not in openings and
+                       code not in opening_no_trade and attempt.get('committed') is True)
+        if opening_gap or attempted_missing or (row.get('status') == 'suspended' and not special_status_explained(row)):
             unexplained_sz.append(code)
-    if phase != 'opening' and unexplained_sz:
+    if unexplained_sz:
         try:
             szse_evidence = load_szse_suspensions(day, unexplained_sz[:SZSE_MAX_CODES])
             exchange_status_evidence.update(szse_evidence)
@@ -448,6 +478,16 @@ def run(args, publisher):
             status['exchangeStatusMatchCount'] = len(exchange_status_evidence)
         except Exception as exc:
             status['exchangeStatusErrors'] = {'szse': type(exc).__name__}
+    if phase == 'opening':
+        for code in names:
+            if code in openings:
+                continue
+            proof = reviewed_no_trade_evidence(code, day) or exchange_status_evidence.get(code)
+            if valid_opening_no_trade(proof, code, day):
+                opening_no_trade[code] = proof
+                # A no-trade conclusion is a committed observation, not a zero
+                # opening. Never publish an unclosed daily row here.
+                attempts[code] = refresh.commit_attempt(attempts.get(code, {}), now(), True)
     active = {}; pool = None; changed_count = 0; published = False; last_sync = 0
     source_http_failure_streak = 0; source_throttled = False
     source_cooldown_until = 0.0
@@ -461,7 +501,7 @@ def run(args, publisher):
         threshold = (began.date()-timedelta(days=7)).isoformat()
         for cached_day, saved in cache['targets'].items():
             if cached_day < threshold and saved.get('summary', {}).get('dataComplete'):
-                for field in ('openings', 'openingAttempts', 'attempts', 'universe'):
+                for field in ('openings', 'openingNoTrade', 'openingAttempts', 'attempts', 'universe'):
                     saved.pop(field, None)
         cache['updatedAt'] = now().isoformat()
         collect.write_json(out/'refresh-state.json', cache)
@@ -584,7 +624,7 @@ def run(args, publisher):
                          code in exchange_status_evidence))
 
             unresolved = [code for code in names if (
-                code not in openings if phase == 'opening' else
+                code not in openings and code not in opening_no_trade if phase == 'opening' else
                 not refresh.complete(rows.get(code, {}), day) or
                 quote_repairable(code) or status_repairable(code)
             )]
