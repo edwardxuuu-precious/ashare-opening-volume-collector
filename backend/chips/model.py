@@ -212,7 +212,7 @@ def prepare_eastmoney(raw, *, expected_code, cutoff, allow_valid_suffix=False):
     }
 
 
-def estimate_snapshots(bars, requested_dates, *, security_id):
+def estimate_snapshots(bars, requested_dates, *, security_id, state=None, export_state=False):
     if not isinstance(security_id, str) or not security_id.strip():
         raise ValueError("EXPLICIT_SECURITY_ID_REQUIRED")
     targets = {iso_day(d) for d in requested_dates}
@@ -223,6 +223,22 @@ def estimate_snapshots(bars, requested_dates, *, security_id):
     first_date = previous = None
     rounding, clipped, source_zero_turnover_trades = [], [], []
     prefix_digest = hashlib.sha256()
+    saved_date = None
+    state_found = False
+    processed_rows = 0
+    if state is not None:
+        if state.get('schema') != 'chip-estimate.state.v1' or state.get('model_version') != VERSION or state.get('security_id') != security_id:
+            raise ValueError('MODEL_STATE_IDENTITY_MISMATCH')
+        saved_date = iso_day(state['last_date'])
+        if saved_date > max(targets): raise ValueError('MODEL_STATE_FROM_FUTURE')
+        weights = {int(i): Decimal(v) for i,v in state['weights'].items()}
+        scale, seed_survival = Decimal(state['scale']), Decimal(state['seed_survival'])
+        if not weights or len(weights)>1000000 or any(i<0 or i>1000000 or not v.is_finite() or v<=0 for i,v in weights.items()) or not scale.is_finite() or scale<=0:
+            raise ValueError('MODEL_STATE_INVALID')
+        first_date = state['first_date']
+        rounding, clipped = list(state['rounding']), list(state['clipped'])
+        source_zero_turnover_trades = list(state['source_zero_turnover_trades'])
+        snapshots = {d:v for d,v in state['last_snapshots'].items() if d in targets}
     with localcontext() as ctx:
         ctx.prec = PRECISION
         for row_index, bar in enumerate(bars):
@@ -231,12 +247,20 @@ def estimate_snapshots(bars, requested_dates, *, security_id):
             if previous is not None and bar.source_date <= previous:
                 raise ValueError("UNIQUE_INCREASING_BAR_DATES_REQUIRED")
             previous = bar.source_date
+            processed_rows = row_index + 1
             mode, adjustment = bar.mode()
             if adjustment:
                 rounding.append(adjustment)
             prefix_digest.update(json.dumps([bar.source_date, *[str(v) for v in (
                 bar.open, bar.high, bar.low, bar.close, bar.volume_shares,
                 bar.amount_cny, bar.turnover_pct)]], separators=(",", ":")).encode())
+            if saved_date and bar.source_date <= saved_date:
+                if bar.source_date == saved_date:
+                    if prefix_digest.hexdigest()!=state['normalized_input_prefix_sha256'] or row_index+1!=state['rows_processed']:
+                        raise ValueError('MODEL_STATE_PREFIX_CHANGED')
+                    state_found=True
+                continue
+            if saved_date and not state_found: raise ValueError('MODEL_STATE_BOUNDARY_MISSING')
             a_unbounded = COEFFICIENT * bar.turnover_pct / 100
             a = min(Decimal(1), a_unbounded)
             if a_unbounded > 1:
@@ -283,9 +307,19 @@ def estimate_snapshots(bars, requested_dates, *, security_id):
                 "unchanged_threshold": None, "unchanged_classification": None,
                 "historical_PIT_authenticated": False, "vendor_equivalence": "NOT_CALIBRATED",
             }
+    if saved_date and not state_found: raise ValueError('MODEL_STATE_BOUNDARY_MISSING')
     missing = sorted(targets - snapshots.keys())
     if missing:
         raise ValueError("REQUESTED_SOURCE_DATES_MISSING:" + ",".join(missing))
+    if export_state:
+        if saved_date and not state_found: raise ValueError('MODEL_STATE_BOUNDARY_MISSING')
+        saved = {'schema':'chip-estimate.state.v1','model_version':VERSION,'security_id':security_id,
+            'last_date':previous,'first_date':first_date,'rows_processed':processed_rows,
+            'normalized_input_prefix_sha256':prefix_digest.hexdigest(),
+            'weights':{str(i):str(v) for i,v in weights.items()},'scale':str(scale),'seed_survival':str(seed_survival),
+            'rounding':rounding,'clipped':clipped,'source_zero_turnover_trades':source_zero_turnover_trades,
+            'last_snapshots':snapshots}
+        return snapshots,saved
     return snapshots
 
 
