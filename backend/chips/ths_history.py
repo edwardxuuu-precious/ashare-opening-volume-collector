@@ -27,6 +27,8 @@ def normalize(stock, value, raw, as_of, start_date=None, full=True):
         if day <= last:
             raise ValueError('THS_DATES_NOT_INCREASING')
         last = day
+        if day > as_of:
+            continue
         # Do not infer missing turnover or amount from other fields.
         try:
             with localcontext() as context:

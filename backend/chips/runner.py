@@ -71,8 +71,9 @@ class Storage:
 
 def frame(stock,raw,receipt,days,pools,dataset,actual_limits=None,model_state=None):
     lines=(json.loads(raw).get('data') or {}).get('klines') or []
+    screen_stock={**stock,'reference_close_verified':receipt.get('provider')!='THS_UNADJUSTED'}
     row={'security_id':stock['code'],'name':stock['name'],'market':board(stock['code'])[0],
-         **prefilter(stock,lines,days,pools,actual_limits),'chip_status':'MISSING','peak_prices_cny':[],
+         **prefilter(screen_stock,lines,days,pools,actual_limits),'chip_status':'MISSING','peak_prices_cny':[],
          'previous_peak_prices_cny':[],'original_peak_changes':[]}
     result={'schema':'stock.chips.market.stock.v1','dataset_id':dataset,'as_of':days[-1],
         'security_id':stock['code'],'name':stock['name'],'model':MODEL,'unchanged_threshold':None,
@@ -142,7 +143,8 @@ def _calculate(store,source,stock,ctx):
             cached,_=store.get(f'collector/chips/model/{stock["code"]}.json')
             row=previous['screening_row']
             if cached and cached.get('_source_bundle_sha256')==previous.get('source',{}).get('sha256'):
-                row.update(prefilter(stock,cached['_source_history'],days,state['pools'],state.get('actual_limits')))
+                screen_stock={**stock,'reference_close_verified':cached.get('_source_provider')!='THS_UNADJUSTED'}
+                row.update(prefilter(screen_stock,cached['_source_history'],days,state['pools'],state.get('actual_limits')))
             previous.update(dataset_id=dataset,recorded_at=now(),reused_from_generation=previous_slot,
                 calculation_execution_identity=previous.get('calculation_execution_identity',previous['execution_identity']),
                 execution_identity=ctx.get('execution_identity'),screening_row=row)

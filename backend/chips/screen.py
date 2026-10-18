@@ -20,8 +20,9 @@ def closing_limit_state(stock, fields, pool, actual=None):
     code=stock['code']; market,rate=board(code); day=fields[0]
     if day<'2026-07-06': return 'UNKNOWN','RULE_VERSION_UNSUPPORTED'
     try:
-        close,change=Decimal(fields[2]),Decimal(fields[9]); reference=close-change
-        if not close.is_finite() or not reference.is_finite() or reference<=0 or close<=0:
+        close=Decimal(fields[2]);reference_verified=stock.get('reference_close_verified',True)
+        reference=close-Decimal(fields[9]) if reference_verified else None
+        if not close.is_finite() or close<=0 or (reference_verified and (not reference.is_finite() or reference<=0)):
             return 'UNKNOWN','REFERENCE_CLOSE_INVALID'
         listed=stock.get('listed')
         if listed and listed>day: return 'UNKNOWN','BEFORE_REPORTED_LISTING'
@@ -30,7 +31,8 @@ def closing_limit_state(stock, fields, pool, actual=None):
             if ordinal<=(1 if market=='BSE' else 5): return 'FAIL','IPO_NO_LIMIT_SESSION'
         if actual and actual.get('date')==day:
             upper=Decimal(actual['upper_limit'])
-            if upper.is_finite() and upper>0 and Decimal(actual['close'])==close and Decimal(actual['reference_close'])==reference:
+            if (upper.is_finite() and upper>0 and Decimal(actual['close'])==close
+                and Decimal(actual['reference_close'])>0 and (not reference_verified or Decimal(actual['reference_close'])==reference)):
                 return ('PASS' if close==upper else 'FAIL'),'VENDOR_ACTUAL_UPPER_LIMIT_MATCHED_DAILY_BAR'
         hit=(pool or {}).get(code)
         if hit:
@@ -38,12 +40,14 @@ def closing_limit_state(stock, fields, pool, actual=None):
             # session (the official AKShare adapter also keys pools by date).
             # Cross-check price, percentage and amount against that exact bar.
             price_ok=Decimal(str(hit['p']))/1000==close
-            pct_ok=abs(Decimal(str(hit['zdp']))-Decimal(fields[8]))<=Decimal('.015')
+            pct_ok=not reference_verified or abs(Decimal(str(hit['zdp']))-Decimal(fields[8]))<=Decimal('.015')
             amount=Decimal(fields[6]);pool_amount=Decimal(str(hit['amount']))
             amount_ok=abs(amount-pool_amount)<=max(Decimal('1'),amount*Decimal('.000001'))
             if price_ok and pct_ok and amount_ok:
-                return 'PASS','VENDOR_POOL_MATCHED_DAILY_CLOSE_PERCENT_AND_AMOUNT'
+                return 'PASS','VENDOR_POOL_MATCHED_DAILY_CLOSE_PERCENT_AND_AMOUNT' if reference_verified else 'VENDOR_POOL_MATCHED_DAILY_CLOSE_AND_AMOUNT;REFERENCE_CLOSE_NOT_INFERRED'
             return 'UNKNOWN','LIMIT_POOL_DAILY_FIELDS_CONFLICT'
+        if not reference_verified:
+            return 'UNKNOWN','HISTORICAL_REFERENCE_CLOSE_NOT_VERIFIED'
         raw=reference*(1+rate)
         if market=='BSE':
             possible={raw.quantize(Decimal('.01'),rounding=r) for r in (ROUND_FLOOR,ROUND_CEILING)}
