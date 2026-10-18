@@ -4,6 +4,7 @@ Protocol: https://pytdx-docs.readthedocs.io/zh-cn/latest/fuquan_factor/
 00 is unadjusted. Historical volume, amount and turnover are supplied per row;
 missing values stay missing and are rejected by the common model validator.
 """
+import base64
 import hashlib
 import json
 from datetime import datetime, timezone
@@ -63,12 +64,18 @@ def history(source, stock, as_of, start_date=None):
     suffix = 'last' if start_date else 'last10000'
     url = f'https://d.10jqka.com.cn/v6/line/hs_{stock["code"]}/00/{suffix}.js'
     raw = source.read_bytes(url)
-    prefix = f'quotebridge_v6_line_hs_{stock["code"]}_00_{suffix}('
-    text = raw.decode('utf-8').strip().rstrip(';')
-    if not text.startswith(prefix) or not text.endswith(')'):
-        raise ValueError('THS_CALLBACK_IDENTITY_MISMATCH')
-    original = json.loads(text[len(prefix):-1])
-    value, bundle = normalize(stock, original, raw, as_of, start_date, full=not start_date)
+    try:
+        prefix = f'quotebridge_v6_line_hs_{stock["code"]}_00_{suffix}('
+        text = raw.decode('utf-8').strip().rstrip(';')
+        if not text.startswith(prefix) or not text.endswith(')'):
+            raise ValueError('THS_CALLBACK_IDENTITY_MISMATCH')
+        original = json.loads(text[len(prefix):-1])
+        value, bundle = normalize(stock, original, raw, as_of, start_date, full=not start_date)
+    except Exception as exc:
+        exc.chip_rejected_sources=[{'provider':'THS_UNADJUSTED','url':url,
+            'sha256':hashlib.sha256(raw).hexdigest(),'bytes':len(raw),
+            'raw_base64':base64.b64encode(raw).decode(),'error':type(exc).__name__,'detail':str(exc)[:200]}]
+        raise
     receipt = {
         'provider': 'THS_UNADJUSTED', 'url': url,
         'sha256': hashlib.sha256(bundle).hexdigest(), 'bytes': len(bundle),

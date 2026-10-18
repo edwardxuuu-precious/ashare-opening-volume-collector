@@ -22,7 +22,7 @@ def implementation_identity():
     """Bind resumed batches and exact model caches to their actual source."""
     root=Path(__file__).parent
     hashes={name:hashlib.sha256((root/name).read_text(encoding='utf-8').replace('\r\n','\n').encode()).hexdigest()
-        for name in ('runner.py','source.py','baostock_history.py','ths_history.py','model.py','screen.py','calendar.py')}
+        for name in ('runner.py','source.py','baostock_history.py','ths_history.py','listing.py','model.py','screen.py','calendar.py')}
     transport=root.parent/'scripts'/'baostock_source.py'
     hashes['baostock_source.py']=hashlib.sha256(transport.read_text(encoding='utf-8').replace('\r\n','\n').encode()).hexdigest()
     adapter_hash=hashlib.sha256(encoded({k:hashes[k] for k in ('source.py','baostock_history.py','ths_history.py','baostock_source.py')})).hexdigest()
@@ -32,7 +32,7 @@ def compatible_state(state,identity):
     return (state.get('execution_identity')==identity and state.get('source_version')==Source.VERSION
         and state.get('active_slot')==state.get('dataset_id') and len(state.get('dataset_id',''))==16)
 
-def shared_universe(store,as_of):
+def shared_universe(store,as_of,source=None):
     """Reuse the site's published current-list catalog read-only if EM fails."""
     catalog,etag=store.get('data/stocks.json')
     if not catalog or catalog.get('historicalMembership') is not False: raise ValueError('SHARED_UNIVERSE_UNAVAILABLE')
@@ -46,8 +46,19 @@ def shared_universe(store,as_of):
         if len(code)!=6 or not code.isdigit() or code in seen or not isinstance(name,str) or not name.strip():raise ValueError('SHARED_UNIVERSE_INVALID')
         seen.add(code);markets.add(market);stocks.append({'code':code,'name':name,'secid':('1' if code.startswith('6') else '0')+'.'+code,'listed':None})
     if markets!={'MAIN','STAR','CHINEXT','BSE'}:raise ValueError('SHARED_UNIVERSE_MARKET_MISSING')
-    return stocks,[{'provider':'SITE_PUBLISHED_CURRENT_UNIVERSE','key':'data/stocks.json','etag':etag,
+    receipts=[{'provider':'SITE_PUBLISHED_CURRENT_UNIVERSE','key':'data/stocks.json','etag':etag,
         'as_of':catalog['asOf'],'canonical_sha256':hashlib.sha256(encoded(catalog)).hexdigest(),'cache_age_days':age,'historical_membership':False}]
+    if source:
+        try:
+            from .listing import sh_sz
+            official,official_receipts=sh_sz(source,as_of)
+            stocks=sorted(official+[s for s in stocks if board(s['code'])[0]=='BSE'],key=lambda s:s['code'])
+            receipts+=official_receipts
+            receipts[0]['reconciled_markets']=['SSE','SZSE']
+            receipts[0]['unreconciled_markets']=['BSE']
+        except Exception as exc:
+            receipts[0]['official_reconciliation_error']={'error':type(exc).__name__,'detail':str(exc)[:200]}
+    return stocks,receipts
 
 class Storage:
     def __init__(self,bucket,region):
@@ -128,6 +139,15 @@ def _calculate(store,source,stock,ctx):
         lease,_=store.get('collector/chips/lease.json')
         if not lease or lease.get('owner')!=ctx['owner'] or lease.get('expires',0)<=time.time():
             raise RuntimeError('CHIP_WRITER_LEASE_LOST')
+    def preserve_rejected(entries):
+        links=[]
+        for entry in entries[:4]:
+            rejected_key=f'collector/chips/rejected/{dataset}/{stock["code"]}/{entry["sha256"]}.json'
+            original,_=store.get(rejected_key)
+            if original is None:
+                own();store.put(rejected_key,entry,new=True,compressed=True)
+            links.append({k:v for k,v in entry.items() if k!='raw_base64'}|{'private_raw_key':rejected_key})
+        return links
     key=f'data/chips/daily/{slot}/{stock["code"]}.json'
     existing,_=store.get(key)
     if existing:
@@ -139,7 +159,9 @@ def _calculate(store,source,stock,ctx):
         previous,_=store.get(f'data/chips/daily/{previous_slot}/{stock["code"]}.json')
         if (previous and previous.get('as_of')==as_of and previous.get('chip_status')=='READY'
             and previous.get('model')==MODEL and previous.get('execution_identity',{}).get('files',{}).get('model.py')
-                ==ctx.get('execution_identity',{}).get('files',{}).get('model.py')):
+                ==ctx.get('execution_identity',{}).get('files',{}).get('model.py')
+            and previous.get('execution_identity',{}).get('history_adapter_sha256')
+                ==ctx.get('execution_identity',{}).get('history_adapter_sha256')):
             cached,_=store.get(f'collector/chips/model/{stock["code"]}.json')
             row=previous['screening_row']
             if cached and cached.get('_source_bundle_sha256')==previous.get('source',{}).get('sha256'):
@@ -162,6 +184,8 @@ def _calculate(store,source,stock,ctx):
             if hashlib.sha256(raw).hexdigest()!=receipt['sha256']: raise ValueError('RAW_HASH_MISMATCH')
         else:
             _,receipt,raw=source.history(stock,as_of,cached=valid_history_cache) if valid_history_cache and valid_history_cache.get('_source_history') else source.history(stock,as_of)
+            rejected=preserve_rejected(receipt.pop('_rejected_sources',[]))
+            if rejected:receipt['rejected_sources']=rejected
             own()
             store.put(raw_key,{'receipt':receipt,'raw_base64':base64.b64encode(raw).decode()},new=True,compressed=True)
         model_hash=ctx.get('execution_identity',{}).get('files',{}).get('model.py')
@@ -196,6 +220,8 @@ def _calculate(store,source,stock,ctx):
             'chip_status':'MISSING','snapshots':{},'history':[],'reasons':row['reasons']}
         if getattr(e,'chip_source_attempts',None):value['source_failures']=e.chip_source_attempts
         value['error_detail']=str(e)[:300]
+        rejected=preserve_rejected(getattr(e,'chip_rejected_sources',[]))
+        if rejected:value['rejected_sources']=rejected
         if getattr(e,'chip_source_errors',None):value['source_errors']=e.chip_source_errors
     own()
     value['execution_identity']=ctx.get('execution_identity')
@@ -246,10 +272,15 @@ def run(store,*,as_of,max_minutes=285,workers=4):
             # every afternoon. Subsequent sessions reuse its exact model states.
             as_of=state['as_of']
         if state and state['as_of']>as_of: raise ValueError('WOULD_REPLACE_NEWER_BATCH')
+        if state and state.get('retry_failed'):
+            old_slot=state['active_slot']
+            dataset=hashlib.sha256(encoded([old_slot,identity,now()])).hexdigest()[:16]
+            state.update(dataset_id=dataset,active_slot=dataset,previous_slot=old_slot,rows={},retry_failed=False)
+            state_etag=store.put('collector/chips/state.json',state,match=state_etag,compressed=True)
         if not state or state['as_of']!=as_of:
             try:stocks,universe_receipts=source.universe()
             except Exception as exc:
-                stocks,universe_receipts=shared_universe(store,as_of)
+                stocks,universe_receipts=shared_universe(store,as_of,source)
                 universe_receipts[0]['em_refresh_error']=type(exc).__name__
             days=last_ten(as_of);pools,pool_receipts=source.pools(days)
             for day in days:
@@ -308,7 +339,7 @@ def run(store,*,as_of,max_minutes=285,workers=4):
         cloud=isinstance(store,Storage)
         executor=concurrent.futures.ProcessPoolExecutor(max_workers=workers,initializer=_initialize_worker,initargs=(store.bucket,store.region,ctx)) if cloud else concurrent.futures.ThreadPoolExecutor(max_workers=workers)
         with executor as pool:
-            active={};iterator=iter(pending)
+            active={};iterator=iter(pending);recent_source_failures=[]
             def fill():
                 while len(active)<workers and time.monotonic()<deadline-90:
                     try: stock=next(iterator)
@@ -321,11 +352,15 @@ def run(store,*,as_of,max_minutes=285,workers=4):
                 finished,_=concurrent.futures.wait(active,timeout=30,return_when=concurrent.futures.FIRST_COMPLETED)
                 for future in finished:
                     code=active.pop(future);done[code]=future.result()
+                    recent_source_failures.append(done[code]['chip_status']=='MISSING' and
+                        any(x.startswith('SOURCE_OR_MODEL_ERROR:') for x in done[code]['reasons']))
+                    recent_source_failures=recent_source_failures[-20:]
                 if (finished and len(done)%20<workers) or time.monotonic()-saved_at>45:
                     checkpoint()
                     save_status('RUNNING');saved_at=time.monotonic()
                     print(json.dumps({'outcome':'PROGRESS','as_of':as_of,'scanned':len(done),'total':len(state['stocks'])}),flush=True)
-                if len(done)>=20 and all(r['chip_status']=='MISSING' and any(x.startswith('SOURCE_OR_MODEL_ERROR:') for x in r['reasons']) for r in done.values()):
+                if len(recent_source_failures)==20 and all(recent_source_failures):
+                    state['retry_failed']=True;saved_count=-1
                     checkpoint();save_status('SOURCE_UNAVAILABLE')
                     raise RuntimeError('SOURCE_UNAVAILABLE_STOPPED_AFTER_BOUNDED_PROBE')
                 fill()
