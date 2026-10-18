@@ -5,7 +5,7 @@ from .calendar import sessions
 def board(code):
     if code.startswith(('4','8','9')): return 'BSE',Decimal('.30')
     if code.startswith(('688','689')): return 'STAR',Decimal('.20')
-    if code.startswith(('300','301')): return 'CHINEXT',Decimal('.20')
+    if code.startswith('30'): return 'CHINEXT',Decimal('.20')
     if code.startswith(('60','00')): return 'MAIN',Decimal('.10')
     raise ValueError('UNSUPPORTED_SECURITY_BOARD')
 
