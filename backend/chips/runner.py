@@ -87,6 +87,7 @@ def frame(stock,raw,receipt,days,pools,dataset,actual_limits=None,model_state=No
             audit.update(source_provider='BAOSTOCK_0.9.3',source_volume_unit='SHARES',
                 volume_conversion='SDK shares / 100 into common hand field, then *100 exactly',
                 amount_unit='CNY_AS_DOCUMENTED_BY_BAOSTOCK',confirmed_no_trade_sessions=json.loads(raw).get('confirmed_no_trade_sessions',[]),
+                confirmed_no_trade_missing_fields=json.loads(raw).get('confirmed_no_trade_missing_fields',[]),
                 original_raw_preserved=False,original_sdk_field_strings_preserved=True)
             audit['original_sdk_bundle_sha256']=hashlib.sha256(raw).hexdigest()
         result['source_audit']=audit
@@ -170,6 +171,7 @@ def _calculate(store,source,stock,ctx):
         value={'schema':'stock.chips.market.stock.v1','dataset_id':dataset,'as_of':as_of,
             'security_id':stock['code'],'name':stock['name'],'model':MODEL,'unchanged_threshold':None,
             'chip_status':'MISSING','snapshots':{},'history':[],'reasons':row['reasons']}
+        if getattr(e,'chip_source_attempts',None):value['source_failures']=e.chip_source_attempts
     own()
     value['execution_identity']=ctx.get('execution_identity')
     value['screening_row']=row
