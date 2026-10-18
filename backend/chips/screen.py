@@ -60,6 +60,10 @@ def closing_limit_state(stock, fields, pool, actual=None):
 def prefilter(stock, lines, days, pools, actual_limits=None):
     rows={line.split(',')[0]:line.split(',') for line in lines}
     today=rows.get(days[-1]); close=None; hits=[]; unknown=[]; evidence=[]
+    no_trade=set(stock.get('confirmed_no_trade_sessions',[]));carried_date=None
+    if not today and days[-1] in no_trade:
+        carried_date=max((d for d in rows if d<days[-1]),default=None)
+        if carried_date:today=rows[carried_date]
     try:
         close=Decimal(today[2]) if today else None
         if close is not None and (not close.is_finite() or close<=0): close=None
@@ -67,11 +71,13 @@ def prefilter(stock, lines, days, pools, actual_limits=None):
     for day in days:
         row=rows.get(day)
         actual=(actual_limits or {}).get(day,{}).get(stock['code'])
-        state,reason=closing_limit_state(stock,row,pools.get(day),actual) if row and len(row)==11 else ('UNKNOWN','DAILY_BAR_MISSING')
+        state,reason=('FAIL','SOURCE_CONFIRMED_NO_TRADE') if day in no_trade else (closing_limit_state(stock,row,pools.get(day),actual) if row and len(row)==11 else ('UNKNOWN','DAILY_BAR_MISSING'))
         evidence.append({'date':day,'status':state,'reason':reason})
         if state=='PASS': hits.append(day)
         if state=='UNKNOWN': unknown.append(day)
     status='FAIL' if close is not None and close>=10 else ('PASS' if close is not None and hits else ('FAIL' if close is not None and not unknown else 'UNKNOWN'))
     return {'close_cny':str(close) if close is not None else None,'prefilter_status':status,
             'recent_limit_up_dates':hits,'limit_evidence':evidence,
-            'reasons':(['LATEST_CLOSE_MISSING'] if close is None else [])+(['LIMIT_HISTORY_INCOMPLETE'] if not hits and unknown else [])}
+            'last_trade_close_date':carried_date,
+            'reasons':(['LATEST_CLOSE_MISSING'] if close is None else [])+(['LIMIT_HISTORY_INCOMPLETE'] if not hits and unknown else [])+
+                (['LAST_TRADE_CLOSE_DURING_CONFIRMED_NO_TRADE_SESSION:'+carried_date] if carried_date else [])}

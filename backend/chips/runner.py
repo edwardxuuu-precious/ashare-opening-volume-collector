@@ -5,6 +5,7 @@ S3. The currently committed slot remains readable until manifest-last commit.
 """
 from __future__ import annotations
 import argparse,base64,concurrent.futures,gzip,hashlib,json,os,time,uuid
+from copy import deepcopy
 from collections import Counter
 from datetime import datetime,timedelta,timezone
 from decimal import Decimal
@@ -80,9 +81,41 @@ class Storage:
         if new: args['IfNoneMatch']='*'
         return self.s3.put_object(**args)['ETag']
 
+
+def session_snapshots(bars,targets,*,security_id,no_trade,state=None):
+    """Carry model mass only across explicitly confirmed no-trade sessions.
+
+    No candle is inserted. The distribution and last traded close are carried
+    with an explicit status; absent source sessions are never assumed halted.
+    """
+    observed={bar.source_date for bar in bars}
+    anchors={}
+    no_trade=set(no_trade)
+    for day in targets:
+        if day in observed:anchors[day]=day;continue
+        prior=max((d for d in observed if d<day),default=None)
+        if day not in no_trade or not prior:
+            raise ValueError('REQUESTED_SOURCE_DATES_MISSING:'+day)
+        required=set(sessions(prior,day))-observed
+        if not required<=no_trade:raise ValueError('UNCONFIRMED_NO_TRADE_GAP:'+day)
+        anchors[day]=prior
+    calculated,next_state=estimate_snapshots(bars,sorted(set(anchors.values())),security_id=security_id,state=state,export_state=True)
+    snapshots={}
+    for day,anchor in anchors.items():
+        snapshot=deepcopy(calculated[anchor])
+        if day!=anchor:
+            snapshot.update(source_date=day,last_trade_date=anchor,turnover_percent='0',effective_replacement='0',
+                market_session_status='SOURCE_CONFIRMED_NO_TRADE',close_status='LAST_OBSERVED_TRADE_CLOSE',
+                no_trade_confirmation_dates=sorted(d for d in no_trade if anchor<d<=day))
+        snapshots[day]=snapshot
+    return snapshots,next_state
+
 def frame(stock,raw,receipt,days,pools,dataset,actual_limits=None,model_state=None):
-    lines=(json.loads(raw).get('data') or {}).get('klines') or []
-    screen_stock={**stock,'reference_close_verified':receipt.get('provider')!='THS_UNADJUSTED'}
+    decoded=json.loads(raw)
+    lines=(decoded.get('data') or {}).get('klines') or []
+    no_trade=decoded.get('confirmed_no_trade_sessions',[])
+    screen_stock={**stock,'reference_close_verified':receipt.get('provider')!='THS_UNADJUSTED',
+        'confirmed_no_trade_sessions':no_trade}
     row={'security_id':stock['code'],'name':stock['name'],'market':board(stock['code'])[0],
          **prefilter(screen_stock,lines,days,pools,actual_limits),'chip_status':'MISSING','peak_prices_cny':[],
          'previous_peak_prices_cny':[],'original_peak_changes':[]}
@@ -114,10 +147,10 @@ def frame(stock,raw,receipt,days,pools,dataset,actual_limits=None,model_state=No
             'turnover_percent':str(b.turnover_pct)} for b in bars[-500:]]
         if model_state and model_state.get('last_date','9999')>days[-2]:model_state=None
         try:
-            snapshots,next_state=estimate_snapshots(bars,days[-2:],security_id=stock['code'],state=model_state,export_state=True)
+            snapshots,next_state=session_snapshots(bars,days[-2:],security_id=stock['code'],state=model_state,no_trade=no_trade)
         except ValueError as e:
             if not model_state:raise
-            snapshots,next_state=estimate_snapshots(bars,days[-2:],security_id=stock['code'],export_state=True)
+            snapshots,next_state=session_snapshots(bars,days[-2:],security_id=stock['code'],no_trade=no_trade)
             row['reasons'].append('MODEL_CACHE_REBUILT:'+str(e)[:100])
         result['_model_state']=next_state
         result.update(snapshots=snapshots,chip_status='READY')
@@ -165,7 +198,8 @@ def _calculate(store,source,stock,ctx):
             cached,_=store.get(f'collector/chips/model/{stock["code"]}.json')
             row=previous['screening_row']
             if cached and cached.get('_source_bundle_sha256')==previous.get('source',{}).get('sha256'):
-                screen_stock={**stock,'reference_close_verified':cached.get('_source_provider')!='THS_UNADJUSTED'}
+                screen_stock={**stock,'reference_close_verified':cached.get('_source_provider')!='THS_UNADJUSTED',
+                    'confirmed_no_trade_sessions':cached.get('_confirmed_no_trade_sessions',[])}
                 row.update(prefilter(screen_stock,cached['_source_history'],days,state['pools'],state.get('actual_limits')))
             previous.update(dataset_id=dataset,recorded_at=now(),reused_from_generation=previous_slot,
                 calculation_execution_identity=previous.get('calculation_execution_identity',previous['execution_identity']),
@@ -191,10 +225,36 @@ def _calculate(store,source,stock,ctx):
         model_hash=ctx.get('execution_identity',{}).get('files',{}).get('model.py')
         model_cache=valid_history_cache if valid_history_cache and model_hash and valid_history_cache.get('_model_code_sha256')==model_hash else None
         row,value=frame(stock,raw,receipt,days,state['pools'],dataset,state.get('actual_limits'),model_cache)
+        if (row['chip_status']=='MISSING' and receipt.get('provider')=='THS_UNADJUSTED'
+            and board(stock['code'])[0]!='BSE' and stock.get('listed')!=as_of
+            and any(reason.startswith('REQUESTED_SOURCE_DATES_MISSING:') for reason in value['reasons'])):
+            try:
+                alternate_key=f'collector/chips/raw/{dataset}/{stock["code"]}-trade-status.json'
+                alternate,_=store.get(alternate_key)
+                if alternate:
+                    alternate_receipt=alternate['receipt'];alternate_raw=base64.b64decode(alternate['raw_base64'],validate=True)
+                    if hashlib.sha256(alternate_raw).hexdigest()!=alternate_receipt['sha256']:raise ValueError('ALTERNATE_RAW_HASH_MISMATCH')
+                else:
+                    _,alternate_receipt,alternate_raw=source.confirmed_history(stock,as_of)
+                    own();store.put(alternate_key,{'receipt':alternate_receipt,'raw_base64':base64.b64encode(alternate_raw).decode()},new=True,compressed=True)
+                original_rows={r.split(',')[0]:r.split(',') for r in json.loads(raw)['data']['klines']}
+                alternate_rows={r.split(',')[0]:r.split(',') for r in json.loads(alternate_raw)['data']['klines']}
+                common=sorted(original_rows.keys()&alternate_rows.keys())[-10:]
+                if not common or any(Decimal(original_rows[d][i])!=Decimal(alternate_rows[d][i]) for d in common for i in (1,2,3,4)):
+                    raise ValueError('TRADE_STATUS_FALLBACK_PRICE_CONFLICT')
+                alternate_row,alternate_value=frame(stock,alternate_raw,alternate_receipt,days,state['pools'],dataset,state.get('actual_limits'))
+                if alternate_row['chip_status']=='READY':
+                    alternate_receipt['prior_source_raw_key']=raw_key
+                    alternate_receipt['fallback_reason']='PRIOR_PROVIDER_MISSING_REQUESTED_SESSIONS;EXPLICIT_TRADE_STATUS_REQUIRED'
+                    row,value,receipt,raw,raw_key=alternate_row,alternate_value,alternate_receipt,alternate_raw,alternate_key
+                else:value['trade_status_fallback_reasons']=alternate_value['reasons']
+            except Exception as exc:
+                value['trade_status_fallback_error']={'error':type(exc).__name__,'detail':str(exc)[:200]}
         next_state=value.pop('_model_state',None)
         if next_state:
             next_state.update(_source_history=json.loads(raw)['data']['klines'],_source_provider=receipt.get('provider','EASTMONEY'),
-                _source_bundle_sha256=receipt['sha256'],_source_raw_key=raw_key,_model_code_sha256=model_hash,_history_adapter_sha256=adapter_hash)
+                _source_bundle_sha256=receipt['sha256'],_source_raw_key=raw_key,_model_code_sha256=model_hash,_history_adapter_sha256=adapter_hash,
+                _confirmed_no_trade_sessions=json.loads(raw).get('confirmed_no_trade_sessions',[]))
         if next_state and (not cache or next_state['last_date']>=cache['last_date']):
             own()
             store.put(cache_key,next_state,match=cache_etag,new=cache_etag is None,compressed=True)
@@ -352,14 +412,17 @@ def run(store,*,as_of,max_minutes=285,workers=4):
                 finished,_=concurrent.futures.wait(active,timeout=30,return_when=concurrent.futures.FIRST_COMPLETED)
                 for future in finished:
                     code=active.pop(future);done[code]=future.result()
-                    recent_source_failures.append(done[code]['chip_status']=='MISSING' and
-                        any(x.startswith('SOURCE_OR_MODEL_ERROR:') for x in done[code]['reasons']))
+                    transport_types=('BaoStockTransportError','RemoteDisconnected','URLError','TimeoutError',
+                        'ConnectionError','ConnectionResetError','ConnectionAbortedError','ReadTimeout')
+                    recent_source_failures.append((done[code]['market'],done[code]['chip_status']=='MISSING' and
+                        any(x=='SOURCE_OR_MODEL_ERROR:'+kind for x in done[code]['reasons'] for kind in transport_types)))
                     recent_source_failures=recent_source_failures[-20:]
                 if (finished and len(done)%20<workers) or time.monotonic()-saved_at>45:
                     checkpoint()
                     save_status('RUNNING');saved_at=time.monotonic()
                     print(json.dumps({'outcome':'PROGRESS','as_of':as_of,'scanned':len(done),'total':len(state['stocks'])}),flush=True)
-                if len(recent_source_failures)==20 and all(recent_source_failures):
+                if (len(recent_source_failures)==20 and all(failed for _,failed in recent_source_failures)
+                    and len({market for market,_ in recent_source_failures})>=2):
                     state['retry_failed']=True;saved_count=-1
                     checkpoint();save_status('SOURCE_UNAVAILABLE')
                     raise RuntimeError('SOURCE_UNAVAILABLE_STOPPED_AFTER_BOUNDED_PROBE')

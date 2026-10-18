@@ -99,7 +99,7 @@ class Source:
             except Exception as e:
                 with self.health_lock:
                     self.em_failures+=1
-                    if self.em_failures>=8:self.em_disabled_until=time.monotonic()+900;self.em_failures=0
+                    if self.em_failures>=2:self.em_disabled_until=time.monotonic()+900;self.em_failures=0
                 error=type(e).__name__
         else:error='PROVIDER_COOLDOWN_AFTER_REPEATED_FAILURES'
         try:
@@ -141,6 +141,13 @@ class Source:
 
     def close(self):
         if self.bao:self.bao.close()
+
+    def confirmed_history(self,stock,as_of):
+        """Independent full source with explicit trading-status evidence."""
+        if self.bao is None:
+            from .baostock_history import BaoHistory
+            self.bao=BaoHistory()
+        return self.bao.history(stock,as_of)
 
     def pools(self,days):
         result={};receipts=[]
