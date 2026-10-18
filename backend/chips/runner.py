@@ -16,6 +16,7 @@ from .model import MODEL,compare_snapshots,estimate_snapshots,prepare_eastmoney
 from .screen import board,prefilter
 from .source import Source
 from .listing import trusted_listing
+from .display import display_frame,response_upper_bound
 
 def listing_context(stock):
     return {'listed':stock.get('listed'),'evidence':stock.get('listing_evidence')}
@@ -27,7 +28,7 @@ def implementation_identity():
     """Bind resumed batches and exact model caches to their actual source."""
     root=Path(__file__).parent
     hashes={name:hashlib.sha256((root/name).read_text(encoding='utf-8').replace('\r\n','\n').encode()).hexdigest()
-        for name in ('runner.py','source.py','baostock_history.py','ths_history.py','listing.py','model.py','screen.py','calendar.py')}
+        for name in ('runner.py','source.py','baostock_history.py','ths_history.py','listing.py','display.py','model.py','screen.py','calendar.py')}
     transport=root.parent/'scripts'/'baostock_source.py'
     hashes['baostock_source.py']=hashlib.sha256(transport.read_text(encoding='utf-8').replace('\r\n','\n').encode()).hexdigest()
     adapter_hash=hashlib.sha256(encoded({k:hashes[k] for k in ('source.py','baostock_history.py','ths_history.py','baostock_source.py')})).hexdigest()
@@ -196,6 +197,23 @@ def _calculate(store,source,stock,ctx):
                 own();store.put(rejected_key,entry,new=True,compressed=True)
             links.append({k:v for k,v in entry.items() if k!='raw_base64'}|{'private_raw_key':rejected_key})
         return links
+    def publish(value):
+        display=display_frame(value)
+        if display is not value and not display.get('full_precision_frame_private_key'):
+            full_key=f'collector/chips/full-frames/{dataset}/{stock["code"]}.json'
+            hashes={day:s['original_profile_sha256'] for day,s in display['snapshots'].items() if s.get('original_profile_sha256')}
+            original,_=store.get(full_key)
+            if original is None:
+                own();store.put(full_key,{**value,'archived_display_profile_sha256':hashes},new=True,compressed=True)
+            elif (original.get('dataset_id')!=dataset or original.get('security_id')!=stock['code']
+                or original.get('source',{}).get('sha256')!=value.get('source',{}).get('sha256')
+                or original.get('archived_display_profile_sha256')!=hashes):
+                raise RuntimeError('IMMUTABLE_FULL_PRECISION_FRAME_CONFLICT')
+            display['full_precision_frame_private_key']=full_key
+        bound=response_upper_bound(display)
+        if bound>=5900000:raise ValueError('STOCK_DISPLAY_EXCEEDS_AUTHENTICATED_API_LIMIT')
+        display['screening_row']['display_response_upper_bound_bytes']=bound
+        own();store.put(key,display,new=True,compressed=True)
     key=f'data/chips/daily/{slot}/{stock["code"]}.json'
     existing,_=store.get(key)
     if existing:
@@ -229,7 +247,7 @@ def _calculate(store,source,stock,ctx):
             previous.update(dataset_id=dataset,recorded_at=now(),reused_from_generation=previous_slot,
                 calculation_execution_identity=previous.get('calculation_execution_identity',previous['execution_identity']),
                 execution_identity=ctx.get('execution_identity'),screening_row=row,listing_context=listing_context(stock))
-            own();store.put(key,previous,new=True,compressed=True)
+            publish(previous)
             return row
     try:
         cache_key=f'collector/chips/model/{stock["code"]}.json'
@@ -321,10 +339,9 @@ def _calculate(store,source,stock,ctx):
         rejected=preserve_rejected(getattr(e,'chip_rejected_sources',[]))
         if rejected:value['rejected_sources']=rejected
         if getattr(e,'chip_source_errors',None):value['source_errors']=e.chip_source_errors
-    own()
     value['execution_identity']=ctx.get('execution_identity')
     value['screening_row']=row
-    store.put(key,value,new=True,compressed=True)
+    publish(value)
     return row
 
 _WORKER=None
@@ -425,6 +442,7 @@ def run(store,*,as_of,max_minutes=285,workers=4):
                 state_etag=store.put('collector/chips/state.json',state,match=state_etag,compressed=True)
                 saved_count=len(done)
         def save_status(status):
+            assert_owned()
             store.put('data/chips/daily/status.json',{'schema':'stock.chips.market.status.v1','state':status,
                 'as_of':as_of,'dataset_id':dataset,'universe_total':len(state['stocks']),'scanned_count':len(done),
                 'model_ready_count':sum(r['chip_status']=='READY' for r in done.values()),'updated_at':now(),
@@ -448,7 +466,10 @@ def run(store,*,as_of,max_minutes=285,workers=4):
                 while len(active)<workers and time.monotonic()<deadline-90:
                     try: stock=next(iterator)
                     except StopIteration: break
-                    if cloud:time.sleep(.8)
+                    # Same-session repair mostly copies authenticated READY
+                    # frames. Retain each worker's source rate limit, without
+                    # sleeping for every private cached stock in the parent.
+                    if cloud and not ctx.get('previous_slot'):time.sleep(.8)
                     future=pool.submit(_worker_stock,stock) if cloud else pool.submit(_calculate,store,source,stock,ctx)
                     active[future]=stock['code']
             fill();saved_at=time.monotonic()
@@ -481,6 +502,8 @@ def run(store,*,as_of,max_minutes=285,workers=4):
         manifest={'schema':'stock.chips.market.manifest.v1','dataset_id':dataset,'active_slot':slot,'as_of':as_of,
             'previous_date':days[-2],'official_sessions':days,'universe_total':len(rows),'scanned_count':len(rows),
             'model_ready_count':ready,'screen_counts':{k:counts[k] for k in ('PASS','FAIL','UNKNOWN')},
+            'display_response_verified_count':sum(0<r.get('display_response_upper_bound_bytes',0)<5900000 for r in rows),
+            'max_display_response_upper_bound_bytes':max((r.get('display_response_upper_bound_bytes',0) for r in rows),default=0),
             'market_complete':ready==len(rows) and counts['UNKNOWN']==0 and not catalog_only,
             'universe_coverage':'OFFICIAL_CURRENT_LIST_RECONCILED' if reconciled else ('SITE_CATALOG_UNVERIFIED' if catalog_only else 'VENDOR_REPORTED_TOTAL_VALIDATED'),
             'execution_identity':identity,'coefficient':2,'unchanged_threshold':None,
@@ -490,10 +513,15 @@ def run(store,*,as_of,max_minutes=285,workers=4):
             'universe_receipts':state['universe_receipts'],'pool_receipts':state['pool_receipts']}
         assert_owned()
         screening={'schema':'stock.chips.market.screen.v1','dataset_id':dataset,'as_of':as_of,'rows':rows,'unchanged_threshold':None}
+        manifest['screening_response_upper_bound_bytes']=response_upper_bound(screening)
+        if manifest['screening_response_upper_bound_bytes']>=5900000:
+            raise ValueError('MARKET_SCREEN_EXCEEDS_AUTHENTICATED_API_LIMIT')
         screen_key=f'data/chips/daily/{slot}/screening.json'
         existing_screen,_=store.get(screen_key)
-        if existing_screen is None: store.put(screen_key,screening,new=True,compressed=True)
+        if existing_screen is None:
+            assert_owned();store.put(screen_key,screening,new=True,compressed=True)
         elif existing_screen!=screening: raise RuntimeError('IMMUTABLE_SCREEN_CONFLICT')
+        assert_owned()
         store.put('data/chips/daily/manifest.json',manifest,match=current_etag,new=current_etag is None)
         save_status('COMMITTED')
         return {'outcome':'COMMITTED','as_of':as_of,'total':len(rows),'model_ready':ready,'screen_counts':manifest['screen_counts'],'market_complete':manifest['market_complete']}
