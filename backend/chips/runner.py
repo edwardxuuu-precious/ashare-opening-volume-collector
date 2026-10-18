@@ -9,6 +9,7 @@ from collections import Counter
 from datetime import datetime,timedelta,timezone
 from decimal import Decimal
 from itertools import zip_longest
+from pathlib import Path
 from .calendar import SOURCES,last_ten,sessions
 from .model import MODEL,compare_snapshots,estimate_snapshots,prepare_eastmoney
 from .screen import board,prefilter
@@ -16,6 +17,20 @@ from .source import Source
 
 def now(): return datetime.now(timezone.utc).isoformat()
 def encoded(v): return json.dumps(v,ensure_ascii=False,separators=(',',':')).encode()
+
+def implementation_identity():
+    """Bind resumed batches and exact model caches to their actual source."""
+    root=Path(__file__).parent
+    hashes={name:hashlib.sha256((root/name).read_text(encoding='utf-8').replace('\r\n','\n').encode()).hexdigest()
+        for name in ('runner.py','source.py','baostock_history.py','model.py','screen.py','calendar.py')}
+    transport=root.parent/'scripts'/'baostock_source.py'
+    hashes['baostock_source.py']=hashlib.sha256(transport.read_text(encoding='utf-8').replace('\r\n','\n').encode()).hexdigest()
+    adapter_hash=hashlib.sha256(encoded({k:hashes[k] for k in ('source.py','baostock_history.py','baostock_source.py')})).hexdigest()
+    return {'sha256':hashlib.sha256(encoded(hashes)).hexdigest(),'files':hashes,'history_adapter_sha256':adapter_hash,'baostock_version':'0.9.3'}
+
+def compatible_state(state,identity):
+    return (state.get('execution_identity')==identity and state.get('source_version')==Source.VERSION
+        and state.get('active_slot')==state.get('dataset_id') and len(state.get('dataset_id',''))==16)
 
 def shared_universe(store,as_of):
     """Reuse the site's published current-list catalog read-only if EM fails."""
@@ -37,7 +52,7 @@ def shared_universe(store,as_of):
 class Storage:
     def __init__(self,bucket,region):
         import boto3
-        self.s3=boto3.client('s3',region_name=region);self.bucket=bucket
+        self.s3=boto3.client('s3',region_name=region);self.bucket=bucket;self.region=region
     def get(self,key):
         from botocore.exceptions import ClientError
         try:
@@ -64,7 +79,16 @@ def frame(stock,raw,receipt,days,pools,dataset,actual_limits=None,model_state=No
         'chip_status':'MISSING','snapshots':{},'history':[],'source':receipt,'known_at':None,
         'recorded_at':now(),'historical_PIT_authenticated':False,'reasons':[]}
     try:
-        bars,audit=prepare_eastmoney(raw,expected_code=stock['code'],cutoff=days[-1],allow_valid_suffix=True)
+        model_raw=raw
+        if receipt.get('provider')=='BAOSTOCK_0.9.3':
+            decoded=json.loads(raw);model_raw=encoded({'rc':decoded['rc'],'data':decoded['data']})
+        bars,audit=prepare_eastmoney(model_raw,expected_code=stock['code'],cutoff=days[-1],allow_valid_suffix=True)
+        if receipt.get('provider')=='BAOSTOCK_0.9.3':
+            audit.update(source_provider='BAOSTOCK_0.9.3',source_volume_unit='SHARES',
+                volume_conversion='SDK shares / 100 into common hand field, then *100 exactly',
+                amount_unit='CNY_AS_DOCUMENTED_BY_BAOSTOCK',confirmed_no_trade_sessions=json.loads(raw).get('confirmed_no_trade_sessions',[]),
+                original_raw_preserved=False,original_sdk_field_strings_preserved=True)
+            audit['original_sdk_bundle_sha256']=hashlib.sha256(raw).hexdigest()
         result['source_audit']=audit
         result['history']=[{'date':b.source_date,'open':str(b.open),'high':str(b.high),'low':str(b.low),
             'close':str(b.close),'volume_shares':str(b.volume_shares),'amount_cny':str(b.amount_cny),
@@ -89,6 +113,79 @@ def frame(stock,raw,receipt,days,pools,dataset,actual_limits=None,model_state=No
     result['reasons']+=row['reasons']
     return row,result
 
+def _calculate(store,source,stock,ctx):
+    slot,dataset,days,as_of=ctx['slot'],ctx['dataset'],ctx['days'],ctx['as_of']
+    state=ctx
+    def own():
+        lease,_=store.get('collector/chips/lease.json')
+        if not lease or lease.get('owner')!=ctx['owner'] or lease.get('expires',0)<=time.time():
+            raise RuntimeError('CHIP_WRITER_LEASE_LOST')
+    key=f'data/chips/daily/{slot}/{stock["code"]}.json'
+    existing,_=store.get(key)
+    if existing:
+        if existing.get('dataset_id')!=dataset or existing.get('security_id')!=stock['code']:
+            raise RuntimeError('IMMUTABLE_FRAME_CONFLICT')
+        return existing['screening_row']
+    try:
+        cache_key=f'collector/chips/model/{stock["code"]}.json'
+        cache,cache_etag=store.get(cache_key)
+        adapter_hash=ctx.get('execution_identity',{}).get('history_adapter_sha256')
+        valid_history_cache=cache if cache and adapter_hash and cache.get('_history_adapter_sha256')==adapter_hash else None
+        raw_key=f'collector/chips/raw/{dataset}/{stock["code"]}.json'
+        saved,_=store.get(raw_key)
+        if saved:
+            receipt=saved['receipt'];raw=base64.b64decode(saved['raw_base64'],validate=True)
+            if hashlib.sha256(raw).hexdigest()!=receipt['sha256']: raise ValueError('RAW_HASH_MISMATCH')
+        else:
+            _,receipt,raw=source.history(stock,as_of,cached=valid_history_cache) if valid_history_cache and valid_history_cache.get('_source_history') else source.history(stock,as_of)
+            own()
+            store.put(raw_key,{'receipt':receipt,'raw_base64':base64.b64encode(raw).decode()},new=True,compressed=True)
+        model_hash=ctx.get('execution_identity',{}).get('files',{}).get('model.py')
+        model_cache=valid_history_cache if valid_history_cache and model_hash and valid_history_cache.get('_model_code_sha256')==model_hash else None
+        row,value=frame(stock,raw,receipt,days,state['pools'],dataset,state.get('actual_limits'),model_cache)
+        next_state=value.pop('_model_state',None)
+        if next_state:
+            next_state.update(_source_history=json.loads(raw)['data']['klines'],_source_provider=receipt.get('provider','EASTMONEY'),
+                _source_bundle_sha256=receipt['sha256'],_source_raw_key=raw_key,_model_code_sha256=model_hash,_history_adapter_sha256=adapter_hash)
+        if next_state and (not cache or next_state['last_date']>=cache['last_date']):
+            own()
+            store.put(cache_key,next_state,match=cache_etag,new=cache_etag is None,compressed=True)
+    except Exception as e:
+        row={'security_id':stock['code'],'name':stock['name'],'market':board(stock['code'])[0],
+            'close_cny':None,'prefilter_status':'UNKNOWN','recent_limit_up_dates':[],
+            'chip_status':'MISSING','peak_prices_cny':[],'previous_peak_prices_cny':[],'original_peak_changes':[],
+            'reasons':['SOURCE_OR_MODEL_ERROR:'+type(e).__name__]}
+        if stock['code'].startswith(('4','8','9')):row['reasons'].append('BSE_HISTORY_UNAVAILABLE')
+        quote=state.get('actual_limits',{}).get(as_of,{}).get(stock['code'])
+        if quote:
+            try:
+                close,upper=Decimal(quote['close']),Decimal(quote['upper_limit'])
+                if close.is_finite() and upper.is_finite() and close>0:
+                    row['close_cny']=str(close)
+                    if close>=10:row['prefilter_status']='FAIL'
+                    elif upper>0 and close==upper:
+                        row['prefilter_status']='PASS';row['recent_limit_up_dates']=[as_of]
+                    row['reasons'].append('LATEST_CLOSE_FROM_VERIFIED_DATED_TENCENT_QUOTE;HISTORICAL_OHLC_MISSING')
+            except (ArithmeticError,ValueError):pass
+        value={'schema':'stock.chips.market.stock.v1','dataset_id':dataset,'as_of':as_of,
+            'security_id':stock['code'],'name':stock['name'],'model':MODEL,'unchanged_threshold':None,
+            'chip_status':'MISSING','snapshots':{},'history':[],'reasons':row['reasons']}
+    own()
+    value['execution_identity']=ctx.get('execution_identity')
+    value['screening_row']=row
+    store.put(key,value,new=True,compressed=True)
+    return row
+
+_WORKER=None
+
+def _initialize_worker(bucket,region,ctx):
+    global _WORKER
+    import atexit
+    source=Source();_WORKER=(Storage(bucket,region),source,ctx);atexit.register(source.close)
+
+def _worker_stock(stock):
+    return _calculate(_WORKER[0],_WORKER[1],stock,_WORKER[2])
+
 def target_day(explicit=None):
     cn=datetime.now(timezone(timedelta(hours=8)))
     eligible=cn.date() if (cn.hour,cn.minute)>=(16,10) else cn.date()-timedelta(days=1)
@@ -107,7 +204,12 @@ def run(store,*,as_of,max_minutes=285,workers=4):
         current,current_etag=store.get('data/chips/daily/manifest.json')
         if current and current['as_of']==as_of:
             return {'outcome':'ALREADY_COMMITTED','as_of':as_of,'market_complete':current['market_complete']}
-        state,state_etag=store.get('collector/chips/state.json');source=Source()
+        state,state_etag=store.get('collector/chips/state.json');source=Source();identity=implementation_identity()
+        if state and not compatible_state(state,identity):
+            archive=f'collector/chips/recovery/{state["dataset_id"]}-{hashlib.sha256(encoded(state)).hexdigest()[:12]}.json'
+            archived,_=store.get(archive)
+            if not archived:store.put(archive,state,new=True,compressed=True)
+            state=None
         if state and state['as_of']<as_of and len(state['rows'])<len(state['stocks']):
             # Finish the first bootstrap rather than discarding its progress
             # every afternoon. Subsequent sessions reuse its exact model states.
@@ -128,22 +230,25 @@ def run(store,*,as_of,max_minutes=285,workers=4):
                 if quotes:
                     store.put(f'collector/chips/limits/{as_of}.json',{'quotes':quotes,'receipts':limit_receipts},new=True,compressed=True)
                     actual_limits[as_of]=quotes
-            dataset=hashlib.sha256(encoded([as_of,MODEL,stocks,now()])).hexdigest()[:16]
+            dataset=hashlib.sha256(encoded([as_of,MODEL,identity,stocks,now()])).hexdigest()[:16]
             state={'as_of':as_of,'dataset_id':dataset,'active_slot':dataset,
                 'days':days,'stocks':stocks,'pools':pools,'universe_receipts':universe_receipts,'pool_receipts':pool_receipts,
-                'actual_limits':actual_limits,'limit_receipts':limit_receipts,'rows':{},'started_at':now()}
+                'source_version':source.VERSION,'execution_identity':identity,'actual_limits':actual_limits,'limit_receipts':limit_receipts,'rows':{},'started_at':now()}
             state_etag=store.put('collector/chips/state.json',state,match=state_etag,new=state_etag is None,compressed=True)
         dataset=state['dataset_id'];slot=state['active_slot'];days=state['days'];done=state['rows']
         def assert_owned():
             lease_now,_=store.get('collector/chips/lease.json')
             if not lease_now or lease_now['owner']!=owner or lease_now['expires']<=time.time():
                 raise RuntimeError('CHIP_WRITER_LEASE_LOST')
+        saved_count=-1
         def checkpoint():
-            nonlocal state_etag,lease_etag,lease_expires
+            nonlocal state_etag,lease_etag,lease_expires,saved_count
             assert_owned()
             lease_expires=time.time()+600
             lease_etag=store.put('collector/chips/lease.json',{'owner':owner,'expires':lease_expires},match=lease_etag)
-            state_etag=store.put('collector/chips/state.json',state,match=state_etag,compressed=True)
+            if saved_count!=len(done):
+                state_etag=store.put('collector/chips/state.json',state,match=state_etag,compressed=True)
+                saved_count=len(done)
         def save_status(status):
             store.put('data/chips/daily/status.json',{'schema':'stock.chips.market.status.v1','state':status,
                 'as_of':as_of,'dataset_id':dataset,'universe_total':len(state['stocks']),'scanned_count':len(done),
@@ -156,60 +261,30 @@ def run(store,*,as_of,max_minutes=285,workers=4):
         for stock in state['stocks']:
             if stock['code'] not in done:groups[board(stock['code'])[0]].append(stock)
         pending=[s for group in zip_longest(*groups.values()) for s in group if s is not None]
-        def calculate(stock):
-            key=f'data/chips/daily/{slot}/{stock["code"]}.json'
-            existing,_=store.get(key)
-            if existing:
-                if existing.get('dataset_id')!=dataset or existing.get('security_id')!=stock['code']:
-                    raise RuntimeError('IMMUTABLE_FRAME_CONFLICT')
-                return existing['screening_row']
-            try:
-                raw_key=f'collector/chips/raw/{dataset}/{stock["code"]}.json'
-                saved,_=store.get(raw_key)
-                if saved:
-                    receipt=saved['receipt'];raw=base64.b64decode(saved['raw_base64'],validate=True)
-                    if hashlib.sha256(raw).hexdigest()!=receipt['sha256']: raise ValueError('RAW_HASH_MISMATCH')
-                else:
-                    _,receipt,raw=source.history(stock,as_of)
-                    if time.time()>=lease_expires: raise RuntimeError('CHIP_WRITER_LEASE_EXPIRED')
-                    store.put(raw_key,{'receipt':receipt,'raw_base64':base64.b64encode(raw).decode()},new=True,compressed=True)
-                cache_key=f'collector/chips/model/{stock["code"]}.json'
-                cache,cache_etag=store.get(cache_key)
-                row,value=frame(stock,raw,receipt,days,state['pools'],dataset,state.get('actual_limits'),cache)
-                next_state=value.pop('_model_state',None)
-                if next_state and (not cache or next_state['last_date']>=cache['last_date']):
-                    if time.time()>=lease_expires:raise RuntimeError('CHIP_WRITER_LEASE_EXPIRED')
-                    store.put(cache_key,next_state,match=cache_etag,new=cache_etag is None,compressed=True)
-            except Exception as e:
-                row={'security_id':stock['code'],'name':stock['name'],'market':board(stock['code'])[0],
-                    'close_cny':None,'prefilter_status':'UNKNOWN','recent_limit_up_dates':[],
-                    'chip_status':'MISSING','peak_prices_cny':[],'previous_peak_prices_cny':[],'original_peak_changes':[],
-                    'reasons':['SOURCE_OR_MODEL_ERROR:'+type(e).__name__]}
-                value={'schema':'stock.chips.market.stock.v1','dataset_id':dataset,'as_of':as_of,
-                    'security_id':stock['code'],'name':stock['name'],'model':MODEL,'unchanged_threshold':None,
-                    'chip_status':'MISSING','snapshots':{},'history':[],'reasons':row['reasons']}
-            if time.time()>=lease_expires: raise RuntimeError('CHIP_WRITER_LEASE_EXPIRED')
-            value['screening_row']=row
-            store.put(key,value,new=True,compressed=True)
-            return row
         # Submit only a bounded window so expiry cannot leave thousands of queued reads.
-        with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
+        ctx={'slot':slot,'dataset':dataset,'days':days,'as_of':as_of,'owner':owner,
+             'pools':state['pools'],'actual_limits':state.get('actual_limits',{}),'execution_identity':identity}
+        cloud=isinstance(store,Storage)
+        executor=concurrent.futures.ProcessPoolExecutor(max_workers=workers,initializer=_initialize_worker,initargs=(store.bucket,store.region,ctx)) if cloud else concurrent.futures.ThreadPoolExecutor(max_workers=workers)
+        with executor as pool:
             active={};iterator=iter(pending)
             def fill():
                 while len(active)<workers and time.monotonic()<deadline-90:
                     try: stock=next(iterator)
                     except StopIteration: break
-                    active[pool.submit(calculate,stock)]=stock['code']
+                    if cloud:time.sleep(.8)
+                    future=pool.submit(_worker_stock,stock) if cloud else pool.submit(_calculate,store,source,stock,ctx)
+                    active[future]=stock['code']
             fill();saved_at=time.monotonic()
             while active:
-                finished,_=concurrent.futures.wait(active,return_when=concurrent.futures.FIRST_COMPLETED)
+                finished,_=concurrent.futures.wait(active,timeout=30,return_when=concurrent.futures.FIRST_COMPLETED)
                 for future in finished:
                     code=active.pop(future);done[code]=future.result()
-                if len(done)%20<workers or time.monotonic()-saved_at>45:
+                if (finished and len(done)%20<workers) or time.monotonic()-saved_at>45:
                     checkpoint()
                     save_status('RUNNING');saved_at=time.monotonic()
                     print(json.dumps({'outcome':'PROGRESS','as_of':as_of,'scanned':len(done),'total':len(state['stocks'])}),flush=True)
-                if len(done)>=20 and all(r['chip_status']=='MISSING' and r['close_cny'] is None for r in done.values()):
+                if len(done)>=20 and all(r['chip_status']=='MISSING' and any(x.startswith('SOURCE_OR_MODEL_ERROR:') for x in r['reasons']) for r in done.values()):
                     checkpoint();save_status('SOURCE_UNAVAILABLE')
                     raise RuntimeError('SOURCE_UNAVAILABLE_STOPPED_AFTER_BOUNDED_PROBE')
                 fill()
@@ -221,7 +296,9 @@ def run(store,*,as_of,max_minutes=285,workers=4):
         manifest={'schema':'stock.chips.market.manifest.v1','dataset_id':dataset,'active_slot':slot,'as_of':as_of,
             'previous_date':days[-2],'official_sessions':days,'universe_total':len(rows),'scanned_count':len(rows),
             'model_ready_count':ready,'screen_counts':{k:counts[k] for k in ('PASS','FAIL','UNKNOWN')},
-            'market_complete':ready==len(rows) and counts['UNKNOWN']==0 and all(r.get('cache_age_days',0)==0 for r in state['universe_receipts']),'coefficient':2,'unchanged_threshold':None,
+            'market_complete':ready==len(rows) and counts['UNKNOWN']==0 and all('SITE_PUBLISHED_CURRENT_UNIVERSE'!=r.get('provider') for r in state['universe_receipts']),
+            'universe_coverage':'SITE_CATALOG_UNVERIFIED' if any(r.get('provider')=='SITE_PUBLISHED_CURRENT_UNIVERSE' for r in state['universe_receipts']) else 'VENDOR_REPORTED_TOTAL_VALIDATED',
+            'execution_identity':identity,'coefficient':2,'unchanged_threshold':None,
             'generated_at':now(),'calendar_source':SOURCES[0],'calendar_sources':SOURCES,
             'scope':'Current listed SH/SZ/BJ provider universe; historical delistings not included',
             'limit_evidence':'Vendor closing-limit pool matched to exact unadjusted daily close; uncertain candidates remain UNKNOWN',
@@ -236,6 +313,7 @@ def run(store,*,as_of,max_minutes=285,workers=4):
         save_status('COMMITTED')
         return {'outcome':'COMMITTED','as_of':as_of,'total':len(rows),'model_ready':ready,'screen_counts':manifest['screen_counts'],'market_complete':manifest['market_complete']}
     finally:
+        if 'source' in locals():source.close()
         latest,latest_etag=store.get('collector/chips/lease.json')
         if latest and latest.get('owner')==owner:
             store.put('collector/chips/lease.json',{'owner':owner,'expires':0},match=latest_etag)

@@ -1,9 +1,29 @@
 """Bounded source reads, explicit units, and raw-byte provenance."""
 import hashlib,json,re,threading,time,urllib.parse,urllib.request
-from datetime import datetime,timezone
+from datetime import datetime,timezone,timedelta
+
+def merge_cached(value,receipt,cached,start):
+    old=cached.get('_source_history')
+    if not isinstance(old,list) or not old or len(old)>10000:raise ValueError('CACHED_FULL_PREFIX_MISSING')
+    fresh=value['data']['klines']
+    if any(s.split(',')[0]<start for s in fresh):raise ValueError('INCREMENTAL_RESPONSE_BEFORE_REQUESTED_START')
+    old_overlap={s.split(',')[0] for s in old if s.split(',')[0]>=start}
+    observed={s.split(',')[0] for s in fresh}|set(value.get('confirmed_no_trade_sessions',[]))
+    if not old_overlap<=observed:raise ValueError('INCREMENTAL_OVERLAP_MISSING_PREVIOUS_TRADING_SESSION')
+    merged=[line for line in old if line.split(',')[0]<start]+fresh
+    if len(merged)>10000 or len({s.split(',')[0] for s in merged})!=len(merged):raise ValueError('CACHED_HISTORY_BOUND_OR_DUPLICATE')
+    value['data']['klines']=merged
+    value['cached_full_prefix']={'previous_raw_key':cached.get('_source_raw_key'),'previous_bundle_sha256':cached.get('_source_bundle_sha256'),
+        'refresh_from':start,'prefix_rows':len(merged)-len(fresh),'prefix_reauthenticated_today':False}
+    raw=json.dumps(value,ensure_ascii=False,separators=(',',':')).encode()
+    receipt.update(sha256=hashlib.sha256(raw).hexdigest(),bytes=len(raw),history_mode='CACHED_FULL_PREFIX_PLUS_RECENT_OVERLAP')
+    return value,receipt,raw
 
 class Source:
-    def __init__(self,interval=.8): self.interval=interval;self.lock=threading.Lock();self.next=0
+    VERSION='chips.source.em-baostock.v3'
+    def __init__(self,interval=.8):
+        self.interval=interval;self.lock=threading.Lock();self.next=0
+        self.health_lock=threading.Lock();self.em_failures=0;self.em_disabled_until=0;self.bao=None
     def read(self,url):
         with self.lock:
             delay=max(0,self.next-time.monotonic())
@@ -37,14 +57,48 @@ class Source:
         if len(stocks)!=total or not all(any(s['code'].startswith(p) for s in stocks) for p in ('60','00','30','688','9')): raise ValueError('UNIVERSE_COVERAGE_INCOMPLETE')
         return stocks,receipts
 
-    def history(self,stock,as_of):
-        q=urllib.parse.urlencode({'secid':stock['secid'],'klt':101,'fqt':0,'beg':'19900101','end':as_of.replace('-',''),'lmt':10000,
+    def history(self,stock,as_of,cached=None):
+        start=None
+        if cached and cached.get('_source_history') and cached.get('last_date','9999')<as_of:
+            start=max(cached['_source_history'][0].split(',')[0],(datetime.fromisoformat(cached['last_date'])-timedelta(days=30)).date().isoformat())
+        if start and cached.get('_source_provider')=='BAOSTOCK_0.9.3':
+            with self.health_lock:
+                if self.bao is None:
+                    from .baostock_history import BaoHistory
+                    self.bao=BaoHistory()
+            value,receipt,_=self.bao.history(stock,as_of,start_date=start)
+            return merge_cached(value,receipt,cached,start)
+        with self.health_lock:enabled=time.monotonic()>=self.em_disabled_until
+        if enabled:
+            try:
+                result=self.em_history(stock,as_of,start if start and cached.get('_source_provider')=='EASTMONEY' else None)
+                with self.health_lock:self.em_failures=0
+                return merge_cached(result[0],result[1],cached,start) if start and cached.get('_source_provider')=='EASTMONEY' else result
+            except Exception as e:
+                with self.health_lock:
+                    self.em_failures+=1
+                    if self.em_failures>=8:self.em_disabled_until=time.monotonic()+900;self.em_failures=0
+                error=type(e).__name__
+        else:error='PROVIDER_COOLDOWN_AFTER_REPEATED_FAILURES'
+        with self.health_lock:
+            if self.bao is None:
+                from .baostock_history import BaoHistory
+                self.bao=BaoHistory()
+        value,receipt,raw=self.bao.history(stock,as_of);receipt['eastmoney_error']=error
+        return value,receipt,raw
+
+    def em_history(self,stock,as_of,start=None):
+        q=urllib.parse.urlencode({'secid':stock['secid'],'klt':101,'fqt':0,'beg':start.replace('-','') if start else '19900101','end':as_of.replace('-',''),'lmt':10000,
             'fields1':'f1,f2,f3,f4,f5,f6','fields2':'f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61'})
         value,receipt,raw=self.read('https://push2his.eastmoney.com/api/qt/stock/kline/get?'+q)
         data=value.get('data') or {}
         if data.get('code')!=stock['code'] or not data.get('klines') or len(data['klines'])>=10000:
             raise ValueError('FULL_HISTORY_MISSING_OR_CAPPED')
+        receipt['provider']='EASTMONEY'
         return value,receipt,raw
+
+    def close(self):
+        if self.bao:self.bao.close()
 
     def pools(self,days):
         result={};receipts=[]
