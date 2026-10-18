@@ -63,7 +63,11 @@ def prefilter(stock, lines, days, pools, actual_limits=None):
     no_trade=set(stock.get('confirmed_no_trade_sessions',[]));carried_date=None
     if not today and days[-1] in no_trade:
         carried_date=max((d for d in rows if d<days[-1]),default=None)
-        if carried_date:today=rows[carried_date]
+        if carried_date:
+            try:confirmed=(set(sessions(carried_date,days[-1]))-set(rows))<=no_trade
+            except ValueError:confirmed=False
+            if confirmed:today=rows[carried_date]
+            else:carried_date=None
     try:
         close=Decimal(today[2]) if today else None
         if close is not None and (not close.is_finite() or close<=0): close=None
