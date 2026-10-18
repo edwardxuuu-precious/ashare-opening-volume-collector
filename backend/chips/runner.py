@@ -16,7 +16,7 @@ from .model import MODEL,compare_snapshots,estimate_snapshots,prepare_eastmoney
 from .screen import board,prefilter
 from .source import Source
 from .listing import trusted_listing
-from .display import display_frame,response_upper_bound
+from .display import display_frame,response_upper_bound,MAX_BROWSER_PROFILE_BINS
 
 def listing_context(stock):
     return {'listed':stock.get('listed'),'evidence':stock.get('listing_evidence')}
@@ -199,9 +199,11 @@ def _calculate(store,source,stock,ctx):
         return links
     def publish(value):
         display=display_frame(value)
-        if display is not value and not display.get('full_precision_frame_private_key'):
+        exceeds_browser_limit=any(len(s.get('profile',[]))>MAX_BROWSER_PROFILE_BINS for s in display.get('snapshots',{}).values())
+        if (display is not value or exceeds_browser_limit) and not display.get('full_precision_frame_private_key'):
             full_key=f'collector/chips/full-frames/{dataset}/{stock["code"]}.json'
-            hashes={day:s['original_profile_sha256'] for day,s in display['snapshots'].items() if s.get('original_profile_sha256')}
+            hashes={day:s.get('original_profile_sha256') or hashlib.sha256(encoded(s['profile'])).hexdigest()
+                for day,s in display['snapshots'].items()}
             original,_=store.get(full_key)
             if original is None:
                 own();store.put(full_key,{**value,'archived_display_profile_sha256':hashes},new=True,compressed=True)
@@ -210,6 +212,7 @@ def _calculate(store,source,stock,ctx):
                 or original.get('archived_display_profile_sha256')!=hashes):
                 raise RuntimeError('IMMUTABLE_FULL_PRECISION_FRAME_CONFLICT')
             display['full_precision_frame_private_key']=full_key
+        if exceeds_browser_limit:raise ValueError('STOCK_DISPLAY_EXCEEDS_BROWSER_PROFILE_LIMIT')
         bound=response_upper_bound(display)
         if bound>=5900000:raise ValueError('STOCK_DISPLAY_EXCEEDS_AUTHENTICATED_API_LIMIT')
         display['screening_row']['display_response_upper_bound_bytes']=bound

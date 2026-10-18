@@ -6,6 +6,7 @@ import gzip
 from decimal import Decimal,localcontext
 
 MAX_DISPLAY_BINS=4096
+MAX_BROWSER_PROFILE_BINS=100000
 
 
 def response_upper_bound(value):
@@ -21,6 +22,11 @@ def display_frame(value):
         return value
     # Keep exact shares at every price used by either date's peak comparison.
     anchors={p for s in snapshots.values() for p in s['peak_prices_cny']}
+    anchor_prices={Decimal(p) for p in anchors}
+    if len(anchors)>=MAX_DISPLAY_BINS:
+        # Do not drop tied peaks to satisfy a rendering limit. The API size
+        # guard will decide whether this unusual exact frame can be published.
+        return value
     result={**value,'snapshots':{}}
     with localcontext() as context:
         context.prec=60
@@ -33,16 +39,27 @@ def display_frame(value):
                 raise ValueError('DISPLAY_PROFILE_CANNOT_BE_REAGGREGATED_AS_EXACT_INPUT')
             first=int(Decimal(profile[0]['price_cny'])*100)
             last=int(Decimal(profile[-1]['price_cny'])*100)
-            width=max(1,(last-first+1+MAX_DISPLAY_BINS-1)//MAX_DISPLAY_BINS)
+            anchor_points=[p for p in profile if p['price_cny'] in anchors]
+            remaining_bins=MAX_DISPLAY_BINS-len(anchor_points)
+            width=max(1,(last-first+1+remaining_bins-1)//remaining_bins)
             groups={};exact={p:'0' for p in anchors}
             for point in profile:
                 price=point['price_cny'];cent=int(Decimal(price)*100)
-                if price in exact:exact[price]=point['share_percent']
+                if price in exact:
+                    exact[price]=point['share_percent']
+                    continue
                 index=(cent-first)//width
                 group=groups.setdefault(index,{'low':cent,'high':cent,'mass':Decimal(0)})
                 group['high']=cent;group['mass']+=Decimal(point['share_percent'])
-            display=[{'price_cny':str(Decimal(g['low']+g['high'])/200),'share_percent':str(g['mass'])}
-                for _,g in sorted(groups.items())]
+            display=[]
+            for _,g in sorted(groups.items()):
+                price=Decimal(g['low']+g['high'])/200
+                # Existing open browser tabs still use exact price lookup.
+                # A grouped representative must never impersonate an anchor.
+                if price in anchor_prices:price+=Decimal('0.000001')
+                display.append({'price_cny':str(price),'share_percent':str(g['mass'])})
+            display.extend(anchor_points)
+            display.sort(key=lambda p:Decimal(p['price_cny']))
             result['snapshots'][day]={**snapshot,'profile':display,
                 'profile_format':'DISPLAY_BANDS_WITH_EXACT_ANCHORS',
                 'display_bin_width_cny':str(Decimal(width)/100),
