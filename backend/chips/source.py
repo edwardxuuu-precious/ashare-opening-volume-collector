@@ -20,18 +20,22 @@ def merge_cached(value,receipt,cached,start):
     return value,receipt,raw
 
 class Source:
-    VERSION='chips.source.em-baostock.v3'
+    VERSION='chips.source.em-ths-baostock.v4'
     def __init__(self,interval=.8):
         self.interval=interval;self.lock=threading.Lock();self.next=0
         self.health_lock=threading.Lock();self.em_failures=0;self.em_disabled_until=0;self.bao=None
-    def read(self,url):
+    def read_bytes(self,url):
         with self.lock:
             delay=max(0,self.next-time.monotonic())
             if delay: time.sleep(delay)
             self.next=time.monotonic()+self.interval
         req=urllib.request.Request(url,headers={'User-Agent':'Mozilla/5.0','Referer':'https://quote.eastmoney.com/'})
         with urllib.request.urlopen(req,timeout=22) as r:
-            raw=r.read(18000000)
+            raw=r.read(18000001)
+        if len(raw)>18000000:raise ValueError('SOURCE_READ_BOUND_EXCEEDED')
+        return raw
+    def read(self,url):
+        raw=self.read_bytes(url)
         value=json.loads(raw)
         return value,{'url':url,'sha256':hashlib.sha256(raw).hexdigest(),'bytes':len(raw),'ingested_at':datetime.now(timezone.utc).isoformat()},raw
 
@@ -61,6 +65,10 @@ class Source:
         start=None
         if cached and cached.get('_source_history') and cached.get('last_date','9999')<as_of:
             start=max(cached['_source_history'][0].split(',')[0],(datetime.fromisoformat(cached['last_date'])-timedelta(days=30)).date().isoformat())
+        if start and cached.get('_source_provider')=='THS_UNADJUSTED':
+            from .ths_history import history
+            value,receipt,_=history(self,stock,as_of,start_date=start)
+            return merge_cached(value,receipt,cached,start)
         if start and cached.get('_source_provider')=='BAOSTOCK_0.9.3':
             with self.health_lock:
                 if self.bao is None:
@@ -80,11 +88,23 @@ class Source:
                     if self.em_failures>=8:self.em_disabled_until=time.monotonic()+900;self.em_failures=0
                 error=type(e).__name__
         else:error='PROVIDER_COOLDOWN_AFTER_REPEATED_FAILURES'
+        try:
+            from .ths_history import history
+            value,receipt,raw=history(self,stock,as_of)
+            receipt['eastmoney_error']=error
+            return value,receipt,raw
+        except Exception as ths_error:
+            ths_failure={'error':type(ths_error).__name__,'detail':str(ths_error)[:200]}
         with self.health_lock:
             if self.bao is None:
                 from .baostock_history import BaoHistory
                 self.bao=BaoHistory()
-        value,receipt,raw=self.bao.history(stock,as_of);receipt['eastmoney_error']=error
+        try:value,receipt,raw=self.bao.history(stock,as_of)
+        except Exception as exc:
+            exc.chip_source_errors=[{'provider':'EASTMONEY','error':error},{'provider':'THS_UNADJUSTED',**ths_failure},
+                {'provider':'BAOSTOCK_0.9.3','error':type(exc).__name__,'detail':str(exc)[:200]}]
+            raise
+        receipt['eastmoney_error']=error;receipt['ths_error']=ths_failure
         return value,receipt,raw
 
     def em_history(self,stock,as_of,start=None):

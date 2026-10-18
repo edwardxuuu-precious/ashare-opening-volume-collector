@@ -22,10 +22,10 @@ def implementation_identity():
     """Bind resumed batches and exact model caches to their actual source."""
     root=Path(__file__).parent
     hashes={name:hashlib.sha256((root/name).read_text(encoding='utf-8').replace('\r\n','\n').encode()).hexdigest()
-        for name in ('runner.py','source.py','baostock_history.py','model.py','screen.py','calendar.py')}
+        for name in ('runner.py','source.py','baostock_history.py','ths_history.py','model.py','screen.py','calendar.py')}
     transport=root.parent/'scripts'/'baostock_source.py'
     hashes['baostock_source.py']=hashlib.sha256(transport.read_text(encoding='utf-8').replace('\r\n','\n').encode()).hexdigest()
-    adapter_hash=hashlib.sha256(encoded({k:hashes[k] for k in ('source.py','baostock_history.py','baostock_source.py')})).hexdigest()
+    adapter_hash=hashlib.sha256(encoded({k:hashes[k] for k in ('source.py','baostock_history.py','ths_history.py','baostock_source.py')})).hexdigest()
     return {'sha256':hashlib.sha256(encoded(hashes)).hexdigest(),'files':hashes,'history_adapter_sha256':adapter_hash,'baostock_version':'0.9.3'}
 
 def compatible_state(state,identity):
@@ -80,7 +80,7 @@ def frame(stock,raw,receipt,days,pools,dataset,actual_limits=None,model_state=No
         'recorded_at':now(),'historical_PIT_authenticated':False,'reasons':[]}
     try:
         model_raw=raw
-        if receipt.get('provider')=='BAOSTOCK_0.9.3':
+        if receipt.get('provider') in ('BAOSTOCK_0.9.3','THS_UNADJUSTED'):
             decoded=json.loads(raw);model_raw=encoded({'rc':decoded['rc'],'data':decoded['data']})
         bars,audit=prepare_eastmoney(model_raw,expected_code=stock['code'],cutoff=days[-1],allow_valid_suffix=True)
         if receipt.get('provider')=='BAOSTOCK_0.9.3':
@@ -91,6 +91,12 @@ def frame(stock,raw,receipt,days,pools,dataset,actual_limits=None,model_state=No
                 original_raw_preserved=False,original_sdk_field_strings_preserved=True)
             audit['original_sdk_bundle_sha256']=hashlib.sha256(raw).hexdigest()
         result['source_audit']=audit
+        if receipt.get('provider')=='THS_UNADJUSTED':
+            audit.update(source_provider='THS_UNADJUSTED',source_volume_unit='SHARES',
+                volume_conversion='Original THS shares / 100 into common hand field, then *100 exactly',
+                amount_unit='CNY',adjustment='00_UNADJUSTED',original_source_preserved=True,
+                original_sdk_bundle_sha256=hashlib.sha256(raw).hexdigest(),
+                reference_close_method=json.loads(raw).get('reference_close_method'))
         result['history']=[{'date':b.source_date,'open':str(b.open),'high':str(b.high),'low':str(b.low),
             'close':str(b.close),'volume_shares':str(b.volume_shares),'amount_cny':str(b.amount_cny),
             'turnover_percent':str(b.turnover_pct)} for b in bars[-500:]]
@@ -127,6 +133,21 @@ def _calculate(store,source,stock,ctx):
         if existing.get('dataset_id')!=dataset or existing.get('security_id')!=stock['code']:
             raise RuntimeError('IMMUTABLE_FRAME_CONFLICT')
         return existing['screening_row']
+    previous_slot=ctx.get('previous_slot')
+    if previous_slot:
+        previous,_=store.get(f'data/chips/daily/{previous_slot}/{stock["code"]}.json')
+        if (previous and previous.get('as_of')==as_of and previous.get('chip_status')=='READY'
+            and previous.get('model')==MODEL and previous.get('execution_identity',{}).get('files',{}).get('model.py')
+                ==ctx.get('execution_identity',{}).get('files',{}).get('model.py')):
+            cached,_=store.get(f'collector/chips/model/{stock["code"]}.json')
+            row=previous['screening_row']
+            if cached and cached.get('_source_bundle_sha256')==previous.get('source',{}).get('sha256'):
+                row.update(prefilter(stock,cached['_source_history'],days,state['pools'],state.get('actual_limits')))
+            previous.update(dataset_id=dataset,recorded_at=now(),reused_from_generation=previous_slot,
+                calculation_execution_identity=previous.get('calculation_execution_identity',previous['execution_identity']),
+                execution_identity=ctx.get('execution_identity'),screening_row=row)
+            own();store.put(key,previous,new=True,compressed=True)
+            return row
     try:
         cache_key=f'collector/chips/model/{stock["code"]}.json'
         cache,cache_etag=store.get(cache_key)
@@ -172,6 +193,8 @@ def _calculate(store,source,stock,ctx):
             'security_id':stock['code'],'name':stock['name'],'model':MODEL,'unchanged_threshold':None,
             'chip_status':'MISSING','snapshots':{},'history':[],'reasons':row['reasons']}
         if getattr(e,'chip_source_attempts',None):value['source_failures']=e.chip_source_attempts
+        value['error_detail']=str(e)[:300]
+        if getattr(e,'chip_source_errors',None):value['source_errors']=e.chip_source_errors
     own()
     value['execution_identity']=ctx.get('execution_identity')
     value['screening_row']=row
@@ -204,9 +227,13 @@ def run(store,*,as_of,max_minutes=285,workers=4):
     lease_etag=store.put('collector/chips/lease.json',{'owner':owner,'expires':lease_expires},match=etag,new=etag is None)
     try:
         current,current_etag=store.get('data/chips/daily/manifest.json')
-        if current and current['as_of']==as_of:
+        if current and current['as_of']==as_of and current.get('market_complete'):
             return {'outcome':'ALREADY_COMMITTED','as_of':as_of,'market_complete':current['market_complete']}
         state,state_etag=store.get('collector/chips/state.json');source=Source();identity=implementation_identity()
+        if current and state and current['dataset_id']==state.get('dataset_id'):
+            # A committed but incomplete generation is immutable. Repair into a
+            # new generation, keeping the existing publication readable.
+            state=None
         if state and not compatible_state(state,identity):
             archive=f'collector/chips/recovery/{state["dataset_id"]}-{hashlib.sha256(encoded(state)).hexdigest()[:12]}.json'
             archived,_=store.get(archive)
@@ -223,6 +250,14 @@ def run(store,*,as_of,max_minutes=285,workers=4):
                 stocks,universe_receipts=shared_universe(store,as_of)
                 universe_receipts[0]['em_refresh_error']=type(exc).__name__
             days=last_ten(as_of);pools,pool_receipts=source.pools(days)
+            for day in days:
+                pool_key=f'collector/chips/pools/{day}.json'
+                cached_pool,pool_etag=store.get(pool_key)
+                if pools.get(day) is not None:
+                    store.put(pool_key,{'date':day,'pool':pools[day],
+                        'receipts':[r for r in pool_receipts if r.get('requested_session')==day]},match=pool_etag,new=pool_etag is None,compressed=True)
+                elif cached_pool and cached_pool.get('date')==day:
+                    pools[day]=cached_pool['pool'];pool_receipts+=cached_pool['receipts']
             actual_limits={};limit_receipts=[]
             for day in days:
                 value,_=store.get(f'collector/chips/limits/{day}.json')
@@ -236,6 +271,7 @@ def run(store,*,as_of,max_minutes=285,workers=4):
             state={'as_of':as_of,'dataset_id':dataset,'active_slot':dataset,
                 'days':days,'stocks':stocks,'pools':pools,'universe_receipts':universe_receipts,'pool_receipts':pool_receipts,
                 'source_version':source.VERSION,'execution_identity':identity,'actual_limits':actual_limits,'limit_receipts':limit_receipts,'rows':{},'started_at':now()}
+            if current and current['as_of']==as_of:state['previous_slot']=current['active_slot']
             state_etag=store.put('collector/chips/state.json',state,match=state_etag,new=state_etag is None,compressed=True)
         dataset=state['dataset_id'];slot=state['active_slot'];days=state['days'];done=state['rows']
         def assert_owned():
@@ -265,7 +301,8 @@ def run(store,*,as_of,max_minutes=285,workers=4):
         pending=[s for group in zip_longest(*groups.values()) for s in group if s is not None]
         # Submit only a bounded window so expiry cannot leave thousands of queued reads.
         ctx={'slot':slot,'dataset':dataset,'days':days,'as_of':as_of,'owner':owner,
-             'pools':state['pools'],'actual_limits':state.get('actual_limits',{}),'execution_identity':identity}
+             'pools':state['pools'],'actual_limits':state.get('actual_limits',{}),'execution_identity':identity,
+             'previous_slot':state.get('previous_slot')}
         cloud=isinstance(store,Storage)
         executor=concurrent.futures.ProcessPoolExecutor(max_workers=workers,initializer=_initialize_worker,initargs=(store.bucket,store.region,ctx)) if cloud else concurrent.futures.ThreadPoolExecutor(max_workers=workers)
         with executor as pool:
