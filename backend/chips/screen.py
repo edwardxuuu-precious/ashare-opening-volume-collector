@@ -1,6 +1,7 @@
 """Two price conditions only. No stability threshold or strategy decision."""
 from decimal import Decimal, ROUND_HALF_UP, ROUND_FLOOR, ROUND_CEILING
 from .calendar import sessions
+from .listing import trusted_listing
 
 def board(code):
     if code.startswith(('4','8','9')): return 'BSE',Decimal('.30')
@@ -24,7 +25,7 @@ def closing_limit_state(stock, fields, pool, actual=None):
         reference=close-Decimal(fields[9]) if reference_verified else None
         if not close.is_finite() or close<=0 or (reference_verified and (not reference.is_finite() or reference<=0)):
             return 'UNKNOWN','REFERENCE_CLOSE_INVALID'
-        listed=stock.get('listed')
+        listed=trusted_listing(stock)
         if listed and listed>day: return 'UNKNOWN','BEFORE_REPORTED_LISTING'
         if listed and listed>='2026-01-01':
             ordinal=len(sessions(listed,day))
@@ -58,6 +59,7 @@ def closing_limit_state(stock, fields, pool, actual=None):
     except (ValueError,KeyError,ArithmeticError): return 'UNKNOWN','LIMIT_EVIDENCE_INVALID'
 
 def prefilter(stock, lines, days, pools, actual_limits=None):
+    if not trusted_listing(stock,days[-1]):stock={**stock,'listing_evidence':None}
     rows={line.split(',')[0]:line.split(',') for line in lines}
     today=rows.get(days[-1]); close=None; hits=[]; unknown=[]; evidence=[]
     no_trade=set(stock.get('confirmed_no_trade_sessions',[]));carried_date=None
@@ -75,7 +77,11 @@ def prefilter(stock, lines, days, pools, actual_limits=None):
     for day in days:
         row=rows.get(day)
         actual=(actual_limits or {}).get(day,{}).get(stock['code'])
-        state,reason=('FAIL','SOURCE_CONFIRMED_NO_TRADE') if day in no_trade else (closing_limit_state(stock,row,pools.get(day),actual) if row and len(row)==11 else ('UNKNOWN','DAILY_BAR_MISSING'))
+        listed=trusted_listing(stock,days[-1])
+        if listed and day<listed:
+            state,reason='FAIL','NOT_YET_LISTED'
+        else:
+            state,reason=('FAIL','SOURCE_CONFIRMED_NO_TRADE') if day in no_trade else (closing_limit_state(stock,row,pools.get(day),actual) if row and len(row)==11 else ('UNKNOWN','DAILY_BAR_MISSING'))
         evidence.append({'date':day,'status':state,'reason':reason})
         if state=='PASS': hits.append(day)
         if state=='UNKNOWN': unknown.append(day)

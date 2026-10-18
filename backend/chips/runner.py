@@ -15,6 +15,10 @@ from .calendar import SOURCES,last_ten,sessions
 from .model import MODEL,compare_snapshots,estimate_snapshots,prepare_eastmoney
 from .screen import board,prefilter
 from .source import Source
+from .listing import trusted_listing
+
+def listing_context(stock):
+    return {'listed':stock.get('listed'),'evidence':stock.get('listing_evidence')}
 
 def now(): return datetime.now(timezone.utc).isoformat()
 def encoded(v): return json.dumps(v,ensure_ascii=False,separators=(',',':')).encode()
@@ -121,6 +125,7 @@ def frame(stock,raw,receipt,days,pools,dataset,actual_limits=None,model_state=No
          'previous_peak_prices_cny':[],'original_peak_changes':[]}
     result={'schema':'stock.chips.market.stock.v1','dataset_id':dataset,'as_of':days[-1],
         'security_id':stock['code'],'name':stock['name'],'model':MODEL,'unchanged_threshold':None,
+        'listing_context':listing_context(stock),
         'chip_status':'MISSING','snapshots':{},'history':[],'source':receipt,'known_at':None,
         'recorded_at':now(),'historical_PIT_authenticated':False,'reasons':[]}
     try:
@@ -146,19 +151,29 @@ def frame(stock,raw,receipt,days,pools,dataset,actual_limits=None,model_state=No
             'close':str(b.close),'volume_shares':str(b.volume_shares),'amount_cny':str(b.amount_cny),
             'turnover_percent':str(b.turnover_pct)} for b in bars[-500:]]
         if model_state and model_state.get('last_date','9999')>days[-2]:model_state=None
+        first_listed_session=trusted_listing(stock,days[-1])==days[-1]
+        if first_listed_session and bars[0].source_date!=days[-1]:
+            raise ValueError('VERIFIED_FIRST_LISTING_CONFLICTS_WITH_SOURCE_HISTORY')
+        targets=days[-1:] if first_listed_session else days[-2:]
         try:
-            snapshots,next_state=session_snapshots(bars,days[-2:],security_id=stock['code'],state=model_state,no_trade=no_trade)
+            snapshots,next_state=session_snapshots(bars,targets,security_id=stock['code'],state=model_state,no_trade=no_trade)
         except ValueError as e:
             if not model_state:raise
-            snapshots,next_state=session_snapshots(bars,days[-2:],security_id=stock['code'],no_trade=no_trade)
+            snapshots,next_state=session_snapshots(bars,targets,security_id=stock['code'],no_trade=no_trade)
             row['reasons'].append('MODEL_CACHE_REBUILT:'+str(e)[:100])
         result['_model_state']=next_state
         result.update(snapshots=snapshots,chip_status='READY')
-        comparison=compare_snapshots(snapshots[days[-2]],snapshots[days[-1]])
-        row.update(chip_status='READY',peak_prices_cny=comparison['current_peak_prices_cny'],
-            previous_peak_prices_cny=comparison['previous_peak_prices_cny'],
-            original_peak_changes=[{'price_cny':r['anchor_price_cny'],'previous_share_percent':r['previous_share_percent'],
-                'current_share_percent':r['current_same_price_share_percent'],'change_percentage_points':r['change_percentage_points']} for r in comparison['anchors']])
+        if first_listed_session:
+            result.update(comparison_status='NO_PREVIOUS_LISTED_SESSION',reported_listing_date=stock['listed'])
+            row.update(chip_status='READY',peak_prices_cny=snapshots[days[-1]]['peak_prices_cny'],
+                comparison_status='NO_PREVIOUS_LISTED_SESSION')
+            row['reasons'].append('FIRST_LISTED_SESSION_NO_PREVIOUS_CHIP_COMPARISON')
+        else:
+            comparison=compare_snapshots(snapshots[days[-2]],snapshots[days[-1]])
+            row.update(chip_status='READY',peak_prices_cny=comparison['current_peak_prices_cny'],
+                previous_peak_prices_cny=comparison['previous_peak_prices_cny'],
+                original_peak_changes=[{'price_cny':r['anchor_price_cny'],'previous_share_percent':r['previous_share_percent'],
+                    'current_share_percent':r['current_same_price_share_percent'],'change_percentage_points':r['change_percentage_points']} for r in comparison['anchors']])
         if audit['invalid_source_rows']: row['reasons'].append('MODEL_RESEEDED_AFTER_INVALID_SOURCE_HISTORY')
     except (ValueError,ArithmeticError) as e:
         result['reasons'].append(str(e)[:200]);row['reasons'].append('CHIP_MODEL_INPUT_INCOMPLETE')
@@ -190,12 +205,22 @@ def _calculate(store,source,stock,ctx):
     previous_slot=ctx.get('previous_slot')
     if previous_slot:
         previous,_=store.get(f'data/chips/daily/{previous_slot}/{stock["code"]}.json')
+        cached=None
+        listing_changed=previous is not None and previous.get('listing_context',{'listed':None,'evidence':None})!=listing_context(stock)
+        if previous and listing_changed:
+            cached,_=store.get(f'collector/chips/model/{stock["code"]}.json')
+            valid_screen_cache=(cached and cached.get('_source_history')
+                and cached.get('_source_bundle_sha256')==previous.get('source',{}).get('sha256')
+                and cached.get('_history_adapter_sha256')==ctx.get('execution_identity',{}).get('history_adapter_sha256'))
+            if (not valid_screen_cache or trusted_listing(stock,as_of)==as_of
+                or previous.get('comparison_status')=='NO_PREVIOUS_LISTED_SESSION'):
+                previous=None
         if (previous and previous.get('as_of')==as_of and previous.get('chip_status')=='READY'
             and previous.get('model')==MODEL and previous.get('execution_identity',{}).get('files',{}).get('model.py')
                 ==ctx.get('execution_identity',{}).get('files',{}).get('model.py')
             and previous.get('execution_identity',{}).get('history_adapter_sha256')
                 ==ctx.get('execution_identity',{}).get('history_adapter_sha256')):
-            cached,_=store.get(f'collector/chips/model/{stock["code"]}.json')
+            if cached is None:cached,_=store.get(f'collector/chips/model/{stock["code"]}.json')
             row=previous['screening_row']
             if cached and cached.get('_source_bundle_sha256')==previous.get('source',{}).get('sha256'):
                 screen_stock={**stock,'reference_close_verified':cached.get('_source_provider')!='THS_UNADJUSTED',
@@ -203,7 +228,7 @@ def _calculate(store,source,stock,ctx):
                 row.update(prefilter(screen_stock,cached['_source_history'],days,state['pools'],state.get('actual_limits')))
             previous.update(dataset_id=dataset,recorded_at=now(),reused_from_generation=previous_slot,
                 calculation_execution_identity=previous.get('calculation_execution_identity',previous['execution_identity']),
-                execution_identity=ctx.get('execution_identity'),screening_row=row)
+                execution_identity=ctx.get('execution_identity'),screening_row=row,listing_context=listing_context(stock))
             own();store.put(key,previous,new=True,compressed=True)
             return row
     try:
@@ -213,9 +238,22 @@ def _calculate(store,source,stock,ctx):
         valid_history_cache=cache if cache and adapter_hash and cache.get('_history_adapter_sha256')==adapter_hash else None
         raw_key=f'collector/chips/raw/{dataset}/{stock["code"]}.json'
         saved,_=store.get(raw_key)
+        same_session_cache=False
+        if (saved is None and valid_history_cache
+            and (valid_history_cache.get('_calculated_as_of')==as_of or valid_history_cache.get('last_date')==as_of)):
+            cached_key=valid_history_cache.get('_source_raw_key','')
+            if cached_key.startswith('collector/chips/raw/'):
+                cached_raw,_=store.get(cached_key)
+                if cached_raw:
+                    if cached_raw['receipt']['sha256']!=valid_history_cache.get('_source_bundle_sha256'):
+                        raise ValueError('SAME_SESSION_CACHE_SOURCE_HASH_MISMATCH')
+                    saved=deepcopy(cached_raw);saved['receipt']['same_session_cached_raw_key']=cached_key
+                    same_session_cache=True
         if saved:
             receipt=saved['receipt'];raw=base64.b64decode(saved['raw_base64'],validate=True)
             if hashlib.sha256(raw).hexdigest()!=receipt['sha256']: raise ValueError('RAW_HASH_MISMATCH')
+            if same_session_cache:
+                own();store.put(raw_key,saved,new=True,compressed=True)
         else:
             _,receipt,raw=source.history(stock,as_of,cached=valid_history_cache) if valid_history_cache and valid_history_cache.get('_source_history') else source.history(stock,as_of)
             rejected=preserve_rejected(receipt.pop('_rejected_sources',[]))
@@ -254,7 +292,7 @@ def _calculate(store,source,stock,ctx):
         if next_state:
             next_state.update(_source_history=json.loads(raw)['data']['klines'],_source_provider=receipt.get('provider','EASTMONEY'),
                 _source_bundle_sha256=receipt['sha256'],_source_raw_key=raw_key,_model_code_sha256=model_hash,_history_adapter_sha256=adapter_hash,
-                _confirmed_no_trade_sessions=json.loads(raw).get('confirmed_no_trade_sessions',[]))
+                _confirmed_no_trade_sessions=json.loads(raw).get('confirmed_no_trade_sessions',[]),_calculated_as_of=as_of)
         if next_state and (not cache or next_state['last_date']>=cache['last_date']):
             own()
             store.put(cache_key,next_state,match=cache_etag,new=cache_etag is None,compressed=True)
@@ -342,6 +380,12 @@ def run(store,*,as_of,max_minutes=285,workers=4):
             except Exception as exc:
                 stocks,universe_receipts=shared_universe(store,as_of,source)
                 universe_receipts[0]['em_refresh_error']=type(exc).__name__
+            from .listing import verified_current
+            reconciliation,_=store.get(f'collector/chips/universe-verified/{as_of}.json')
+            verified=verified_current(reconciliation,stocks,as_of)
+            if verified:
+                stocks,receipt=verified
+                universe_receipts.append(receipt)
             days=last_ten(as_of);pools,pool_receipts=source.pools(days)
             for day in days:
                 pool_key=f'collector/chips/pools/{day}.json'
@@ -432,11 +476,13 @@ def run(store,*,as_of,max_minutes=285,workers=4):
             save_status('PAUSED_BUDGET');return {'outcome':'CHECKPOINT_SAVED','as_of':as_of,'scanned':len(done),'total':len(state['stocks'])}
         rows=sorted(done.values(),key=lambda r:r['security_id']);counts=Counter(r['prefilter_status'] for r in rows)
         ready=sum(r['chip_status']=='READY' for r in rows)
+        reconciled=any(r.get('provider')=='OFFICIAL_CURRENT_LIST_RECONCILIATION' for r in state['universe_receipts'])
+        catalog_only=any(r.get('provider')=='SITE_PUBLISHED_CURRENT_UNIVERSE' for r in state['universe_receipts']) and not reconciled
         manifest={'schema':'stock.chips.market.manifest.v1','dataset_id':dataset,'active_slot':slot,'as_of':as_of,
             'previous_date':days[-2],'official_sessions':days,'universe_total':len(rows),'scanned_count':len(rows),
             'model_ready_count':ready,'screen_counts':{k:counts[k] for k in ('PASS','FAIL','UNKNOWN')},
-            'market_complete':ready==len(rows) and counts['UNKNOWN']==0 and all('SITE_PUBLISHED_CURRENT_UNIVERSE'!=r.get('provider') for r in state['universe_receipts']),
-            'universe_coverage':'SITE_CATALOG_UNVERIFIED' if any(r.get('provider')=='SITE_PUBLISHED_CURRENT_UNIVERSE' for r in state['universe_receipts']) else 'VENDOR_REPORTED_TOTAL_VALIDATED',
+            'market_complete':ready==len(rows) and counts['UNKNOWN']==0 and not catalog_only,
+            'universe_coverage':'OFFICIAL_CURRENT_LIST_RECONCILED' if reconciled else ('SITE_CATALOG_UNVERIFIED' if catalog_only else 'VENDOR_REPORTED_TOTAL_VALIDATED'),
             'execution_identity':identity,'coefficient':2,'unchanged_threshold':None,
             'generated_at':now(),'calendar_source':SOURCES[0],'calendar_sources':SOURCES,
             'scope':'Current listed SH/SZ/BJ provider universe; historical delistings not included',
@@ -466,5 +512,13 @@ def main():
     remaining=int((a.max_minutes*60-(time.monotonic()-started))/60)
     if value.get('outcome')=='COMMITTED' and value['as_of']<target and remaining>=3:
         value=run(store,as_of=target,max_minutes=remaining)
+    # Repair transient gaps in the same bounded invocation as time permits.
+    # Never loop indefinitely over permanent missing securities or unknown rules.
+    for _ in range(2):
+        remaining=int((a.max_minutes*60-(time.monotonic()-started))/60)
+        if value.get('outcome')!='COMMITTED' or value['model_ready']>=value['total'] or remaining<3:break
+        before=value['model_ready']
+        value=run(store,as_of=value['as_of'],max_minutes=remaining)
+        if value.get('outcome')!='COMMITTED' or value['model_ready']<=before:break
     print(json.dumps(value,ensure_ascii=False),flush=True)
 if __name__=='__main__': main()
