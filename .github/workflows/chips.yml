@@ -1,0 +1,64 @@
+name: Daily whole-market chip estimates
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: Bounded source check or private whole-market calculation
+        type: choice
+        options: [collect, probe]
+        default: collect
+      as_of:
+        description: Completed exchange session YYYY-MM-DD; empty selects latest
+        type: string
+      max_minutes:
+        description: Runtime budget 2..285 minutes; checkpointed for continuation
+        type: string
+        default: '285'
+  schedule:
+    # 16:20 Shanghai, with two bounded catch-up runs. Separate from opening collector.
+    - cron: '20 8,13,18 * * 1-5'
+permissions:
+  contents: read
+concurrency:
+  group: stock-chip-writer
+  cancel-in-progress: false
+jobs:
+  chips:
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'workflow_dispatch' || vars.DISABLE_CHIPS_UPDATE != 'true')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 310
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      AWS_EC2_METADATA_DISABLED: 'true'
+      AWS_DEFAULT_REGION: us-east-1
+      STOCK_BUCKET: ${{ vars.STOCK_BUCKET }}
+      STOCK_AS_OF: ${{ inputs.as_of }}
+      STOCK_MAX_MINUTES: ${{ inputs.max_minutes || '285' }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.11'
+      - run: pip install 'boto3>=1.40,<2'
+      - uses: aws-actions/configure-aws-credentials@ff717079ee2060e4bcee96c4779b553acc87447c
+        if: inputs.mode != 'probe'
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          role-duration-seconds: 21600
+          role-session-name: chips-${{ github.run_id }}
+          aws-region: us-east-1
+      - name: Compute privately and commit the complete scan
+        if: inputs.mode != 'probe'
+        shell: bash
+        run: |
+          set -euo pipefail
+          args=()
+          if [ -n "$STOCK_AS_OF" ]; then args+=(--as-of "$STOCK_AS_OF"); fi
+          python -m backend.chips.runner --bucket "$STOCK_BUCKET" --max-minutes "$STOCK_MAX_MINUTES" "${args[@]}"
+      - name: Bounded source health check
+        if: inputs.mode == 'probe'
+        run: python -m backend.chips.probe
