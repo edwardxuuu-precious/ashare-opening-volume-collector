@@ -274,6 +274,28 @@ def _calculate(store,source,stock,ctx):
                 ==ctx.get('execution_identity',{}).get('files',{}).get('model.py')
             and previous.get('execution_identity',{}).get('history_adapter_sha256')
                 ==ctx.get('execution_identity',{}).get('history_adapter_sha256')):
+            # The conjunction is already false at >=10. Reuse only a same-day
+            # READY frame whose row, snapshot and independently dated quote
+            # agree; historical limit evidence is retained without upgrading it.
+            quote=state.get('actual_limits',{}).get(as_of,{}).get(stock['code'])
+            price_excluded=False
+            if not listing_changed and quote and quote.get('date')==as_of and previous['screening_row']['prefilter_status']=='FAIL':
+                try:
+                    close=Decimal(quote['close'])
+                    price_excluded=(close.is_finite() and close>=10
+                        and close==Decimal(previous['screening_row']['close_cny'])
+                        and close==Decimal(previous['snapshots'][as_of]['close_cny']))
+                except (KeyError,ValueError,ArithmeticError):pass
+            if price_excluded:
+                row=previous['screening_row']
+                previous.update(dataset_id=dataset,recorded_at=now(),reused_from_generation=previous_slot,
+                    calculation_execution_identity=previous.get('calculation_execution_identity',previous['execution_identity']),
+                    execution_identity=ctx.get('execution_identity'),screening_row=row,
+                    price_exclusion_reuse={'date':as_of,'close_cny':str(close),
+                        'quote_private_key':f'collector/chips/limits/{as_of}.json',
+                        'reason':'DATED_QUOTE_ROW_AND_SNAPSHOT_AGREE_CLOSE_AT_LEAST_10'})
+                publish(previous)
+                return row
             if cached is None:cached,_=store.get(f'collector/chips/model/{stock["code"]}.json')
             if (cached and cached.get('_source_history')
                 and cached.get('_history_adapter_sha256')==ctx.get('execution_identity',{}).get('history_adapter_sha256')

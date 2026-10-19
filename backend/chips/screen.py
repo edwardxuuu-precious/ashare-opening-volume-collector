@@ -94,7 +94,21 @@ def prefilter(stock, lines, days, pools, actual_limits=None, reference_evidence=
             state,reason='FAIL','NOT_YET_LISTED'
         else:
             conflict=matched(reference,row) if reference else None
-            if conflict:state,reason='UNKNOWN',conflict
+            if conflict:
+                state,reason='UNKNOWN',conflict
+                # A quantity discrepancy cannot erase independent, dated price
+                # evidence. This path accepts only an actual upper-limit quote,
+                # never a formula/pool fallback or a conflicting reference.
+                if (conflict=='REFERENCE_DAILY_VOLUME_CONFLICT' and reference['tradestatus']=='1'
+                    and day not in no_trade and actual and actual.get('date')==day):
+                    try:
+                        if Decimal(actual['reference_close'])==Decimal(reference['preclose']):
+                            verified=list(row);verified[8]=reference['pctChg']
+                            verified[9]=str(Decimal(row[2])-Decimal(reference['preclose']))
+                            witnessed,why=closing_limit_state({**stock,'reference_close_verified':True},verified,None,actual)
+                            if why=='VENDOR_ACTUAL_UPPER_LIMIT_MATCHED_DAILY_BAR':
+                                state,reason=witnessed,'ACTUAL_PRICE_WITNESS_WITH_SEPARATE_VOLUME_DIFFERENCE;'+why
+                    except (KeyError,ValueError,ArithmeticError):pass
             elif reference and reference['tradestatus']=='0':state,reason='FAIL','REFERENCE_SOURCE_CONFIRMED_NO_TRADE'
             elif reference and day in no_trade:state,reason='UNKNOWN','REFERENCE_TRADE_STATUS_CONFLICT'
             elif reference:
