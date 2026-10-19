@@ -15,6 +15,7 @@ from .calendar import SOURCES,last_ten,sessions
 from .eastmoney_model import MODEL,compare_snapshots,estimate_snapshots,prepare_eastmoney
 from .screen import board,prefilter
 from .source import Source
+from .current_quote import collect as collect_final_quotes,overlay as overlay_final_quote
 from .listing import trusted_listing
 from .display import display_frame,response_upper_bound,MAX_BROWSER_PROFILE_BINS
 from .limit_reference import prepared as reference_prepared,closing_pool,fetch_closing_pool,fetch_reference,corroborate_quantity
@@ -29,13 +30,13 @@ def implementation_identity():
     """Bind resumed batches and exact model caches to their actual source."""
     root=Path(__file__).parent
     hashes={name:hashlib.sha256((root/name).read_text(encoding='utf-8').replace('\r\n','\n').encode()).hexdigest()
-        for name in ('runner.py','source.py','baostock_history.py','ths_history.py','listing.py','display.py','model.py','eastmoney_model.py','screen.py','calendar.py','limit_reference.py')}
+        for name in ('runner.py','source.py','baostock_history.py','ths_history.py','listing.py','display.py','model.py','eastmoney_model.py','current_quote.py','screen.py','calendar.py','limit_reference.py')}
     transport=root.parent/'scripts'/'baostock_source.py'
     hashes['baostock_source.py']=hashlib.sha256(transport.read_text(encoding='utf-8').replace('\r\n','\n').encode()).hexdigest()
     adapter_hash=hashlib.sha256(encoded({k:hashes[k] for k in ('source.py','baostock_history.py','ths_history.py','baostock_source.py')})).hexdigest()
     model_hash=hashlib.sha256(encoded({k:hashes[k] for k in ('model.py','eastmoney_model.py')})).hexdigest()
     return {'sha256':hashlib.sha256(encoded(hashes)).hexdigest(),'files':hashes,'model_implementation_sha256':model_hash,
-        'history_adapter_sha256':adapter_hash,'baostock_version':'0.9.3'}
+        'history_adapter_sha256':adapter_hash,'current_quote_sha256':hashes['current_quote.py'],'baostock_version':'0.9.3'}
 
 def compatible_state(state,identity):
     return (state.get('execution_identity')==identity and state.get('source_version')==Source.VERSION
@@ -146,6 +147,9 @@ def frame(stock,raw,receipt,days,pools,dataset,actual_limits=None,model_state=No
                 original_raw_preserved=False,original_sdk_field_strings_preserved=True)
             audit['original_sdk_bundle_sha256']=hashlib.sha256(raw).hexdigest()
         result['source_audit']=audit
+        if decoded.get('current_session_quote_overlay'):
+            audit['current_session_quote_overlay']=decoded['current_session_quote_overlay']
+            row['reasons'].append('CURRENT_SESSION_REAL_FINAL_QUOTE_USED')
         if receipt.get('provider')=='THS_UNADJUSTED':
             audit.update(source_provider='THS_UNADJUSTED',source_volume_unit='SHARES',
                 volume_conversion='Original THS shares / 100 into common hand field, then *100 exactly',
@@ -278,7 +282,13 @@ def _calculate(store,source,stock,ctx):
             and previous.get('model')==MODEL and previous.get('execution_identity',{}).get('model_implementation_sha256')
                 ==ctx.get('execution_identity',{}).get('model_implementation_sha256')
             and previous.get('execution_identity',{}).get('history_adapter_sha256')
-                ==ctx.get('execution_identity',{}).get('history_adapter_sha256')):
+                ==ctx.get('execution_identity',{}).get('history_adapter_sha256')
+            and previous.get('execution_identity',{}).get('current_quote_sha256')
+                ==ctx.get('execution_identity',{}).get('current_quote_sha256')
+            and previous.get('source',{}).get('current_quote_sha256')
+                ==state.get('actual_limits',{}).get(as_of,{}).get(stock['code'],{}).get('raw_quote_sha256')
+            and (not ctx.get('require_current_final_quote') or previous.get('source',{}).get('provider')!='THS_UNADJUSTED'
+                or previous.get('source',{}).get('current_quote_sha256'))):
             # The conjunction is already false at >=10. Reuse only a same-day
             # READY frame whose row, snapshot and independently dated quote
             # agree; historical limit evidence is retained without upgrading it.
@@ -323,8 +333,11 @@ def _calculate(store,source,stock,ctx):
         raw_key=f'collector/chips/raw/{dataset}/{stock["code"]}.json'
         saved,_=store.get(raw_key)
         same_session_cache=False
+        final_quote=state.get('actual_limits',{}).get(as_of,{}).get(stock['code'],{})
+        previous_session_cache=(valid_history_cache and final_quote.get('daily_line')
+            and valid_history_cache.get('last_date')==days[-2])
         if (saved is None and valid_history_cache
-            and (valid_history_cache.get('_calculated_as_of')==as_of or valid_history_cache.get('last_date')==as_of)):
+            and (valid_history_cache.get('_calculated_as_of')==as_of or valid_history_cache.get('last_date')==as_of or previous_session_cache)):
             cached_key=valid_history_cache.get('_source_raw_key','')
             if cached_key.startswith('collector/chips/raw/'):
                 cached_raw,_=store.get(cached_key)
@@ -332,18 +345,34 @@ def _calculate(store,source,stock,ctx):
                     if cached_raw['receipt']['sha256']!=valid_history_cache.get('_source_bundle_sha256'):
                         raise ValueError('SAME_SESSION_CACHE_SOURCE_HASH_MISMATCH')
                     saved=deepcopy(cached_raw);saved['receipt']['same_session_cached_raw_key']=cached_key
+                    if previous_session_cache:saved['receipt']['previous_session_cached_prefix_date']=days[-2]
                     same_session_cache=True
         if saved:
             receipt=saved['receipt'];raw=base64.b64decode(saved['raw_base64'],validate=True)
             if hashlib.sha256(raw).hexdigest()!=receipt['sha256']: raise ValueError('RAW_HASH_MISMATCH')
-            if same_session_cache:
+            original_raw=raw
+            original_raw_key=cached_key if same_session_cache else raw_key
+            raw,receipt=overlay_final_quote(raw,receipt,stock,as_of,state.get('actual_limits',{}).get(as_of,{}).get(stock['code']),require_final_quote=bool(ctx.get('require_current_final_quote')))
+            if raw!=original_raw:
+                receipt['original_history_raw_key']=original_raw_key
+                raw_key=f'collector/chips/raw/{dataset}/{stock["code"]}-current-quote.json'
+                existing,_=store.get(raw_key)
+                if existing and existing['receipt']['sha256']!=receipt['sha256']:raise ValueError('IMMUTABLE_QUOTE_OVERLAY_CONFLICT')
+                if existing is None:
+                    own();store.put(raw_key,{'receipt':receipt,'raw_base64':base64.b64encode(raw).decode()},new=True,compressed=True)
+            elif same_session_cache:
                 own();store.put(raw_key,saved,new=True,compressed=True)
         else:
             _,receipt,raw=source.history(stock,as_of,cached=valid_history_cache) if valid_history_cache and valid_history_cache.get('_source_history') else source.history(stock,as_of)
             rejected=preserve_rejected(receipt.pop('_rejected_sources',[]))
             if rejected:receipt['rejected_sources']=rejected
-            own()
-            store.put(raw_key,{'receipt':receipt,'raw_base64':base64.b64encode(raw).decode()},new=True,compressed=True)
+            own();store.put(raw_key,{'receipt':receipt,'raw_base64':base64.b64encode(raw).decode()},new=True,compressed=True)
+            original_raw=raw;original_raw_key=raw_key
+            raw,receipt=overlay_final_quote(raw,receipt,stock,as_of,state.get('actual_limits',{}).get(as_of,{}).get(stock['code']),require_final_quote=bool(ctx.get('require_current_final_quote')))
+            if raw!=original_raw:
+                receipt['original_history_raw_key']=original_raw_key
+                raw_key=f'collector/chips/raw/{dataset}/{stock["code"]}-current-quote.json'
+                own();store.put(raw_key,{'receipt':receipt,'raw_base64':base64.b64encode(raw).decode()},new=True,compressed=True)
         model_hash=ctx.get('execution_identity',{}).get('model_implementation_sha256')
         model_cache=valid_history_cache if valid_history_cache and model_hash and valid_history_cache.get('_model_code_sha256')==model_hash else None
         row,value=frame(stock,raw,receipt,days,state['pools'],dataset,state.get('actual_limits'),model_cache,references,state.get('closing_pools'))
@@ -464,16 +493,19 @@ def run(store,*,as_of,max_minutes=285,workers=4):
             state.update(dataset_id=dataset,active_slot=dataset,previous_slot=old_slot,rows={},retry_failed=False)
             state_etag=store.put('collector/chips/state.json',state,match=state_etag,compressed=True)
         if not state or state['as_of']!=as_of:
-            try:stocks,universe_receipts=source.universe()
-            except Exception as exc:
-                stocks,universe_receipts=shared_universe(store,as_of,source)
-                universe_receipts[0]['em_refresh_error']=type(exc).__name__
             from .listing import verified_current
             reconciliation,_=store.get(f'collector/chips/universe-verified/{as_of}.json')
-            verified=verified_current(reconciliation,stocks,as_of)
-            if verified:
+            if reconciliation:
+                # The dated official reconciliation is the primary current
+                # list, including real additions/removals since a site catalog.
+                verified=verified_current(reconciliation,reconciliation.get('stocks',[]),as_of)
                 stocks,receipt=verified
-                universe_receipts.append(receipt)
+                universe_receipts=[receipt]
+            else:
+                try:stocks,universe_receipts=source.universe()
+                except Exception as exc:
+                    stocks,universe_receipts=shared_universe(store,as_of,source)
+                    universe_receipts[0]['em_refresh_error']=type(exc).__name__
             days=last_ten(as_of);pools,pool_receipts=source.pools(days)
             for day in days:
                 pool_key=f'collector/chips/pools/{day}.json'
@@ -513,15 +545,19 @@ def run(store,*,as_of,max_minutes=285,workers=4):
                 if closing_bundle:
                     closing_pools[day]=closing_pool(closing_bundle,day)
                     closing_pool_receipts.append(closing_bundle['receipt'])
-            if as_of not in actual_limits:
-                quotes,limit_receipts=source.actual_limits(stocks,as_of)
+            if as_of not in actual_limits or (isinstance(store,Storage) and not any(q.get('raw_quote_body') for q in actual_limits.get(as_of,{}).values())):
+                quotes,limit_receipts=collect_final_quotes(source,stocks,as_of) if isinstance(store,Storage) else source.actual_limits(stocks,as_of)
                 if quotes:
-                    store.put(f'collector/chips/limits/{as_of}.json',{'quotes':quotes,'receipts':limit_receipts},new=True,compressed=True)
+                    quote_key=f'collector/chips/limits/{as_of}.json'
+                    previous_quotes,quote_etag=store.get(quote_key)
+                    quotes={**(previous_quotes or {}).get('quotes',{}),**quotes}
+                    store.put(quote_key,{'quotes':quotes,'receipts':limit_receipts},match=quote_etag,new=quote_etag is None,compressed=True)
                     actual_limits[as_of]=quotes
             dataset=hashlib.sha256(encoded([as_of,MODEL,identity,stocks,now()])).hexdigest()[:16]
             state={'as_of':as_of,'dataset_id':dataset,'active_slot':dataset,
                 'days':days,'stocks':stocks,'pools':pools,'universe_receipts':universe_receipts,'pool_receipts':pool_receipts,
                 'source_version':source.VERSION,'execution_identity':identity,'actual_limits':actual_limits,'limit_receipts':limit_receipts,
+                'require_current_final_quote':as_of==target_day(),
                 'historical_references':historical_references,'reference_receipts':reference_receipts,
                 'closing_pools':closing_pools,'closing_pool_receipts':closing_pool_receipts,'rows':{},'started_at':now()}
             if current and current['as_of']==as_of:state['previous_slot']=current['active_slot']
@@ -557,6 +593,7 @@ def run(store,*,as_of,max_minutes=285,workers=4):
         ctx={'slot':slot,'dataset':dataset,'days':days,'as_of':as_of,'owner':owner,
              'pools':state['pools'],'actual_limits':state.get('actual_limits',{}),'historical_references':state.get('historical_references',{}),
              'closing_pools':state.get('closing_pools',{}),'execution_identity':identity,
+             'require_current_final_quote':state.get('require_current_final_quote',as_of==target_day()),
              'previous_slot':state.get('previous_slot')}
         cloud=isinstance(store,Storage)
         executor=concurrent.futures.ProcessPoolExecutor(max_workers=workers,initializer=_initialize_worker,initargs=(store.bucket,store.region,ctx)) if cloud else concurrent.futures.ThreadPoolExecutor(max_workers=workers)
@@ -569,7 +606,10 @@ def run(store,*,as_of,max_minutes=285,workers=4):
                     # Same-session repair mostly copies authenticated READY
                     # frames. Retain each worker's source rate limit, without
                     # sleeping for every private cached stock in the parent.
-                    if cloud and not ctx.get('previous_slot'):time.sleep(.8)
+                    # Dated final quotes can extend authenticated prior-session
+                    # raw prefixes without another public history request. Each
+                    # worker still rate-limits any exceptional source fallback.
+                    if cloud and not ctx.get('previous_slot') and not ctx['actual_limits'].get(as_of,{}).get(stock['code'],{}).get('daily_line'):time.sleep(.8)
                     future=pool.submit(_worker_stock,stock) if cloud else pool.submit(_calculate,store,source,stock,ctx)
                     active[future]=stock['code']
             fill();saved_at=time.monotonic()
