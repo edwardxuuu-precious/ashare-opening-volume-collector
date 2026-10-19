@@ -12,7 +12,7 @@ from decimal import Decimal
 from itertools import zip_longest
 from pathlib import Path
 from .calendar import SOURCES,last_ten,sessions
-from .model import MODEL,compare_snapshots,estimate_snapshots,prepare_eastmoney
+from .eastmoney_model import MODEL,compare_snapshots,estimate_snapshots,prepare_eastmoney
 from .screen import board,prefilter
 from .source import Source
 from .listing import trusted_listing
@@ -29,11 +29,13 @@ def implementation_identity():
     """Bind resumed batches and exact model caches to their actual source."""
     root=Path(__file__).parent
     hashes={name:hashlib.sha256((root/name).read_text(encoding='utf-8').replace('\r\n','\n').encode()).hexdigest()
-        for name in ('runner.py','source.py','baostock_history.py','ths_history.py','listing.py','display.py','model.py','screen.py','calendar.py','limit_reference.py')}
+        for name in ('runner.py','source.py','baostock_history.py','ths_history.py','listing.py','display.py','model.py','eastmoney_model.py','screen.py','calendar.py','limit_reference.py')}
     transport=root.parent/'scripts'/'baostock_source.py'
     hashes['baostock_source.py']=hashlib.sha256(transport.read_text(encoding='utf-8').replace('\r\n','\n').encode()).hexdigest()
     adapter_hash=hashlib.sha256(encoded({k:hashes[k] for k in ('source.py','baostock_history.py','ths_history.py','baostock_source.py')})).hexdigest()
-    return {'sha256':hashlib.sha256(encoded(hashes)).hexdigest(),'files':hashes,'history_adapter_sha256':adapter_hash,'baostock_version':'0.9.3'}
+    model_hash=hashlib.sha256(encoded({k:hashes[k] for k in ('model.py','eastmoney_model.py')})).hexdigest()
+    return {'sha256':hashlib.sha256(encoded(hashes)).hexdigest(),'files':hashes,'model_implementation_sha256':model_hash,
+        'history_adapter_sha256':adapter_hash,'baostock_version':'0.9.3'}
 
 def compatible_state(state,identity):
     return (state.get('execution_identity')==identity and state.get('source_version')==Source.VERSION
@@ -173,6 +175,9 @@ def frame(stock,raw,receipt,days,pools,dataset,actual_limits=None,model_state=No
             row['reasons'].append('FIRST_LISTED_SESSION_NO_PREVIOUS_CHIP_COMPARISON')
         else:
             comparison=compare_snapshots(snapshots[days[-2]],snapshots[days[-1]])
+            for day,field in ((days[-2],'previous_share_percent'),(days[-1],'current_same_price_share_percent')):
+                snapshots[day]['comparison_anchor_shares_percent']={r['anchor_price_cny']:r[field] for r in comparison['anchors']}
+                snapshots[day]['comparison_anchor_definition']='Yesterday raw peak +/- half yesterday step; fixed price interval'
             row.update(chip_status='READY',peak_prices_cny=comparison['current_peak_prices_cny'],
                 previous_peak_prices_cny=comparison['previous_peak_prices_cny'],
                 original_peak_changes=[{'price_cny':r['anchor_price_cny'],'previous_share_percent':r['previous_share_percent'],
@@ -270,8 +275,8 @@ def _calculate(store,source,stock,ctx):
                 or previous.get('comparison_status')=='NO_PREVIOUS_LISTED_SESSION'):
                 previous=None
         if (previous and previous.get('as_of')==as_of and previous.get('chip_status')=='READY'
-            and previous.get('model')==MODEL and previous.get('execution_identity',{}).get('files',{}).get('model.py')
-                ==ctx.get('execution_identity',{}).get('files',{}).get('model.py')
+            and previous.get('model')==MODEL and previous.get('execution_identity',{}).get('model_implementation_sha256')
+                ==ctx.get('execution_identity',{}).get('model_implementation_sha256')
             and previous.get('execution_identity',{}).get('history_adapter_sha256')
                 ==ctx.get('execution_identity',{}).get('history_adapter_sha256')):
             # The conjunction is already false at >=10. Reuse only a same-day
@@ -339,7 +344,7 @@ def _calculate(store,source,stock,ctx):
             if rejected:receipt['rejected_sources']=rejected
             own()
             store.put(raw_key,{'receipt':receipt,'raw_base64':base64.b64encode(raw).decode()},new=True,compressed=True)
-        model_hash=ctx.get('execution_identity',{}).get('files',{}).get('model.py')
+        model_hash=ctx.get('execution_identity',{}).get('model_implementation_sha256')
         model_cache=valid_history_cache if valid_history_cache and model_hash and valid_history_cache.get('_model_code_sha256')==model_hash else None
         row,value=frame(stock,raw,receipt,days,state['pools'],dataset,state.get('actual_limits'),model_cache,references,state.get('closing_pools'))
         decoded_screen=json.loads(raw)
@@ -435,9 +440,10 @@ def run(store,*,as_of,max_minutes=285,workers=4):
     lease_etag=store.put('collector/chips/lease.json',{'owner':owner,'expires':lease_expires},match=etag,new=etag is None)
     try:
         current,current_etag=store.get('data/chips/daily/manifest.json')
-        if current and current['as_of']==as_of and current.get('market_complete'):
+        identity=implementation_identity()
+        if current and current['as_of']==as_of and current.get('market_complete') and current.get('execution_identity')==identity:
             return {'outcome':'ALREADY_COMMITTED','as_of':as_of,'market_complete':current['market_complete']}
-        state,state_etag=store.get('collector/chips/state.json');source=Source();identity=implementation_identity()
+        state,state_etag=store.get('collector/chips/state.json');source=Source()
         if current and state and current['dataset_id']==state.get('dataset_id'):
             # A committed but incomplete generation is immutable. Repair into a
             # new generation, keeping the existing publication readable.
@@ -601,6 +607,7 @@ def run(store,*,as_of,max_minutes=285,workers=4):
             'market_complete':ready==len(rows) and counts['UNKNOWN']==0 and not catalog_only,
             'universe_coverage':'OFFICIAL_CURRENT_LIST_RECONCILED' if reconciled else ('SITE_CATALOG_UNVERIFIED' if catalog_only else 'VENDOR_REPORTED_TOTAL_VALIDATED'),
             'execution_identity':identity,'coefficient':2,'unchanged_threshold':None,
+            'model_version':MODEL['version'],'model':MODEL,'history_window_bars':210,
             'generated_at':now(),'calendar_source':SOURCES[0],'calendar_sources':SOURCES,
             'scope':'Current listed SH/SZ/BJ provider universe; historical delistings not included',
             'limit_evidence':'Vendor closing-limit pool matched to exact unadjusted daily close; uncertain candidates remain UNKNOWN',
