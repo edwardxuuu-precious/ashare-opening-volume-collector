@@ -42,6 +42,37 @@ def compatible_state(state,identity):
     return (state.get('execution_identity')==identity and state.get('source_version')==Source.VERSION
         and state.get('active_slot')==state.get('dataset_id') and len(state.get('dataset_id',''))==16)
 
+def compatible_ready_model(previous,identity):
+    """One exact source migration, replayed against every stored snapshot.
+
+    The new source only repairs proven negative final nodes. An older READY
+    result has no negative final nodes; verify that the new full replay is
+    identical before reusing its original calculation identity.
+    """
+    old=previous.get('execution_identity',{});old_files=old.get('files',{});new_files=identity.get('files',{})
+    if old.get('model_implementation_sha256')==identity.get('model_implementation_sha256'):return True
+    if not (old.get('model_implementation_sha256')=='3f4e2515c261ea219b187c9803f73a3460c933c813de889c820cd82111956091'
+        and old_files.get('eastmoney_model.py')=='41f391357dc7b6f52136e137b561c4c795596abb58b8552eb8c7140f58064743'
+        and new_files.get('eastmoney_model.py')=='f95add1f60ec5fe4fdd5c9e9d6ffc8844b91283307b9525c61e8ba18a3529896'
+        and all(old_files.get(name)==new_files.get(name) for name in ('model.py','ohlc4_input.py'))):return False
+    try:
+        from .model import Bar
+        bars=[Bar(h['date'],*(Decimal(h[k]) for k in ('open','high','low','close','volume_shares','amount_cny','turnover_percent'))) for h in previous['history']]
+        targets=sorted(previous['snapshots']);no_trade={d for s in previous['snapshots'].values() for d in s.get('no_trade_confirmation_dates',[])}
+        replay,_=session_snapshots(bars,targets,security_id=previous['security_id'],no_trade=no_trade)
+        for day,snapshot in previous['snapshots'].items():
+            masses=[Decimal(v) for v in snapshot['raw_node_masses']]
+            if len(masses)!=150 or any(not v.is_finite() or v<0 for v in masses):return False
+            if replay[day]['roundoff_repairs']:return False
+            if any(snapshot.get(k)!=v for k,v in replay[day].items() if k!='roundoff_repairs'):return False
+        previous.setdefault('calculation_execution_identity',old)
+        previous['roundoff_compatibility']={'from_model_source_sha256':old_files['eastmoney_model.py'],
+            'to_model_source_sha256':new_files['eastmoney_model.py'],'all_snapshots_fully_replayed':True,
+            'raw_profile_peak_and_input_hash_exact_match':True}
+        for snapshot in previous['snapshots'].values():snapshot['roundoff_repairs']=[]
+        return True
+    except (ValueError,ArithmeticError,KeyError,TypeError):return False
+
 def shared_universe(store,as_of,source=None):
     """Reuse the site's published current-list catalog read-only if EM fails."""
     catalog,etag=store.get('data/stocks.json')
@@ -279,8 +310,7 @@ def _calculate(store,source,stock,ctx):
                 or previous.get('comparison_status')=='NO_PREVIOUS_LISTED_SESSION'):
                 previous=None
         if (previous and previous.get('as_of')==as_of and previous.get('chip_status')=='READY'
-            and previous.get('model')==MODEL and previous.get('execution_identity',{}).get('model_implementation_sha256')
-                ==ctx.get('execution_identity',{}).get('model_implementation_sha256')
+            and previous.get('model')==MODEL
             and previous.get('execution_identity',{}).get('history_adapter_sha256')
                 ==ctx.get('execution_identity',{}).get('history_adapter_sha256')
             and previous.get('execution_identity',{}).get('current_quote_sha256')
@@ -288,7 +318,8 @@ def _calculate(store,source,stock,ctx):
             and previous.get('source',{}).get('current_quote_sha256')
                 ==state.get('actual_limits',{}).get(as_of,{}).get(stock['code'],{}).get('raw_quote_sha256')
             and (not ctx.get('require_current_final_quote') or previous.get('source',{}).get('provider')!='THS_UNADJUSTED'
-                or previous.get('source',{}).get('current_quote_sha256'))):
+                or previous.get('source',{}).get('current_quote_sha256'))
+            and compatible_ready_model(previous,ctx.get('execution_identity',{}))):
             # The conjunction is already false at >=10. Reuse only a same-day
             # READY frame whose row, snapshot and independently dated quote
             # agree; historical limit evidence is retained without upgrading it.

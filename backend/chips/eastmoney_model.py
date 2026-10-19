@@ -60,6 +60,9 @@ def calculate(bars, *, security_id, window_start, window_rows):
     high = max(float(b.high) for b in bars)
     step = max(.01, (high-low)/149)
     raw = [0.0]*NODES
+    low_cent=int(min(b.low for b in bars)*100)
+    span_cent=max(149,int(max(b.high for b in bars)*100)-low_cent)
+    negative_endpoint_events={}
     for bar in bars:
         op, close, hi, lo = (float(x) for x in (bar.open, bar.close, bar.high, bar.low))
         apex = (op+close+hi+lo)/4
@@ -81,10 +84,26 @@ def calculate(bars, *, security_id, window_start, window_rows):
                     shape = height if abs(apex-lo)<1e-8 else (price-lo)/(apex-lo)*height
                 else:
                     shape = height if abs(hi-apex)<1e-8 else (hi-price)/(hi-apex)*height
+                if shape < 0:
+                    edge=bar.low if price<=apex else bar.high
+                    numerator=low_cent*149+span_cent*i
+                    if numerator!=int(edge*100)*149:
+                        raise ValueError('NEGATIVE_SHAPE_WITHOUT_EXACT_ENDPOINT_PROOF')
+                    negative_endpoint_events.setdefault(i,[]).append({'source_date':bar.source_date,
+                        'computed_price_cny':text(price),'exact_endpoint_cny':str(edge),
+                        'grid_numerator':numerator,'grid_denominator':14900,'negative_shape':text(shape)})
                 raw[i] += shape*a
     mass = total(raw)
-    if not mass > 0 or not all(math.isfinite(x) and x >= 0 for x in raw):
+    if not mass > 0 or not all(math.isfinite(x) for x in raw):
         raise ValueError('EMPTY_OR_INVALID_SAMPLED_DISTRIBUTION')
+    roundoff_repairs=[]
+    for i,value in enumerate(raw):
+        if value>=0:continue
+        if i not in negative_endpoint_events:raise ValueError('NEGATIVE_NODE_WITHOUT_EXACT_ENDPOINT_PROOF')
+        roundoff_repairs.append({'node_index':i,'original_raw_mass':text(value),'output_raw_mass':'0',
+            'reason':'EXACT_ZERO_ENDPOINT_WITH_FLOATING_POINT_NEGATIVE_RESIDUAL','events':negative_endpoint_events[i]})
+        raw[i]=0.0
+    if roundoff_repairs:mass=total(raw)
     peak = max(raw)
     peaks = [i for i, value in enumerate(raw) if value == peak]
     shares = [value/mass*100 for value in raw]
@@ -99,6 +118,7 @@ def calculate(bars, *, security_id, window_start, window_rows):
         'price_grid_kind': MODEL['price_grid_kind'],
         'price_grid': {'low_cny': text(low), 'high_cny': text(high), 'step_cny': text(step), 'node_count': NODES},
         'raw_total_mass': text(mass), 'raw_node_masses': [text(x) for x in raw],
+        'roundoff_repairs':roundoff_repairs,
         'peak_node_indices': peaks, 'peak_unrounded_prices_cny': [text(low+step*i) for i in peaks],
         'peak_prices_cny': [display_price(low+step*i) for i in peaks],
         'peak_bin_share_percent': text(peak/mass*100),
