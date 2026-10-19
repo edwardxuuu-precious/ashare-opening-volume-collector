@@ -15,7 +15,7 @@ from .calendar import SOURCES,last_ten,sessions
 from .eastmoney_model import MODEL,compare_snapshots,estimate_snapshots,prepare_eastmoney
 from .screen import board,prefilter
 from .source import Source
-from .current_quote import collect as collect_final_quotes,overlay as overlay_final_quote
+from .current_quote import collect as collect_final_quotes,overlay as overlay_final_quote,renormalize as renormalize_final_quotes
 from .listing import trusted_listing
 from .display import display_frame,response_upper_bound,MAX_BROWSER_PROFILE_BINS
 from .limit_reference import prepared as reference_prepared,closing_pool,fetch_closing_pool,fetch_reference,corroborate_quantity
@@ -30,11 +30,11 @@ def implementation_identity():
     """Bind resumed batches and exact model caches to their actual source."""
     root=Path(__file__).parent
     hashes={name:hashlib.sha256((root/name).read_text(encoding='utf-8').replace('\r\n','\n').encode()).hexdigest()
-        for name in ('runner.py','source.py','baostock_history.py','ths_history.py','listing.py','display.py','model.py','eastmoney_model.py','current_quote.py','screen.py','calendar.py','limit_reference.py')}
+        for name in ('runner.py','source.py','baostock_history.py','ths_history.py','listing.py','display.py','model.py','eastmoney_model.py','ohlc4_input.py','current_quote.py','screen.py','calendar.py','limit_reference.py')}
     transport=root.parent/'scripts'/'baostock_source.py'
     hashes['baostock_source.py']=hashlib.sha256(transport.read_text(encoding='utf-8').replace('\r\n','\n').encode()).hexdigest()
     adapter_hash=hashlib.sha256(encoded({k:hashes[k] for k in ('source.py','baostock_history.py','ths_history.py','baostock_source.py')})).hexdigest()
-    model_hash=hashlib.sha256(encoded({k:hashes[k] for k in ('model.py','eastmoney_model.py')})).hexdigest()
+    model_hash=hashlib.sha256(encoded({k:hashes[k] for k in ('model.py','eastmoney_model.py','ohlc4_input.py')})).hexdigest()
     return {'sha256':hashlib.sha256(encoded(hashes)).hexdigest(),'files':hashes,'model_implementation_sha256':model_hash,
         'history_adapter_sha256':adapter_hash,'current_quote_sha256':hashes['current_quote.py'],'baostock_version':'0.9.3'}
 
@@ -553,6 +553,7 @@ def run(store,*,as_of,max_minutes=285,workers=4):
                     quotes={**(previous_quotes or {}).get('quotes',{}),**quotes}
                     store.put(quote_key,{'quotes':quotes,'receipts':limit_receipts},match=quote_etag,new=quote_etag is None,compressed=True)
                     actual_limits[as_of]=quotes
+            if as_of in actual_limits:actual_limits[as_of]=renormalize_final_quotes(actual_limits[as_of],as_of)
             dataset=hashlib.sha256(encoded([as_of,MODEL,identity,stocks,now()])).hexdigest()[:16]
             state={'as_of':as_of,'dataset_id':dataset,'active_slot':dataset,
                 'days':days,'stocks':stocks,'pools':pools,'universe_receipts':universe_receipts,'pool_receipts':pool_receipts,

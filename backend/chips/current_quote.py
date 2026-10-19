@@ -12,6 +12,7 @@ import re
 from datetime import datetime,timezone
 from decimal import Decimal
 from .model import Bar
+from .ohlc4_input import validate_bar
 
 
 def daily_line(code,as_of,body):
@@ -27,7 +28,7 @@ def daily_line(code,as_of,body):
     if volume==0 and amount==0:return None
     if volume<=0 or amount<=0:raise ValueError('FINAL_QUOTE_VOLUME_AMOUNT_CONFLICT')
     volume_shares=volume if code.startswith(('688','689')) else volume*100
-    Bar(as_of,op,high,low,close,volume_shares,amount,turn).mode()
+    validate_bar(Bar(as_of,op,high,low,close,volume_shares,amount,turn))
     if abs(amount-Decimal(f[37])*10000)>Decimal('10000'):
         raise ValueError('FINAL_QUOTE_PRECISE_AND_ROUNDED_AMOUNT_CONFLICT')
     if Decimal(f[4])<=0:raise ValueError('FINAL_QUOTE_REFERENCE_CLOSE_MISSING')
@@ -55,6 +56,21 @@ def collect(source,stocks,as_of):
                 'provider':'TENCENT_FINAL_QUOTE_WITH_ORIGINAL_BODY','ingested_at':datetime.now(timezone.utc).isoformat()})
         except Exception as exc:receipts.append({'offset':offset,'provider':'TENCENT_FINAL_QUOTE','error':type(exc).__name__})
     return quotes,receipts
+
+
+def renormalize(quotes,as_of):
+    """Rebuild derived lines from original bodies when validation code changes."""
+    result={}
+    for code,quote in quotes.items():
+        q=dict(quote);body=q.get('raw_quote_body')
+        if body:
+            if hashlib.sha256(body.encode('gb18030')).hexdigest()!=q.get('raw_quote_sha256'):
+                raise ValueError('FINAL_QUOTE_BODY_HASH_CONFLICT')
+            q.pop('daily_line',None);q.pop('daily_line_error',None)
+            try:q['daily_line']=daily_line(code,as_of,body)
+            except (ValueError,ArithmeticError) as exc:q['daily_line_error']=str(exc)[:160]
+        result[code]=q
+    return result
 
 
 def overlay(raw,receipt,stock,as_of,quote,*,require_final_quote=False):

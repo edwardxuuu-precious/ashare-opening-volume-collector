@@ -9,7 +9,8 @@ import hashlib
 import json
 import math
 from decimal import Decimal, ROUND_HALF_UP
-from .model import Bar, prepare_eastmoney
+from .model import Bar
+from .ohlc4_input import prepare_eastmoney
 
 VERSION = 'chip-estimate.eastmoney-nodes150.ohlc4.zero-start.decay2.window210.v1'
 WINDOW = 210
