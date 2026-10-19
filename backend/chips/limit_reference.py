@@ -164,6 +164,26 @@ def fetch_reference(source,stock,days,provider=None):
     return bundle
 
 
+def archived_corroboration(bundle,code,days,*,expected_as_of):
+    """Project authenticated older raw evidence onto overlapping sessions only.
+
+    Keep the original request date, URL and body hash. An older request never
+    supplies a row or an absence witness for a newer session.
+    """
+    from .calendar import last_ten
+    if (not isinstance(days,list) or len(days)!=10 or days!=last_ten(days[-1]) or expected_as_of not in days[:-1]
+        or bundle.get('schema')!='stock.chips.limit.sohu.prepared.v1'
+        or bundle.get('as_of')!=expected_as_of):
+        raise ValueError('ARCHIVED_CORROBORATION_DATE_OR_SCHEMA_INVALID')
+    original_days=last_ten(expected_as_of)
+    evidence=prepared(bundle,code,original_days)
+    rows={d:r for d,r in evidence['rows'].items() if d in days}
+    if not rows:raise ValueError('ARCHIVED_CORROBORATION_OVERLAP_EMPTY')
+    return {**evidence,'rows':rows,'archived_request_as_of':expected_as_of,
+        'archived_official_sessions':original_days,'current_overlap_sessions':sorted(rows),
+        'newer_session_absence_is_not_evidence':True}
+
+
 def corroborate_quantity(primary,secondary,lines):
     """Resolve quantity representation conflicts with a second price reference.
 

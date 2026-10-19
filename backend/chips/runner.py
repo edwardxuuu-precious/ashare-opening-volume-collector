@@ -18,7 +18,7 @@ from .source import Source
 from .current_quote import collect as collect_final_quotes,overlay as overlay_final_quote,renormalize as renormalize_final_quotes
 from .listing import trusted_listing
 from .display import display_frame,response_upper_bound,MAX_BROWSER_PROFILE_BINS
-from .limit_reference import prepared as reference_prepared,closing_pool,fetch_closing_pool,fetch_reference,corroborate_quantity
+from .limit_reference import prepared as reference_prepared,closing_pool,fetch_closing_pool,fetch_reference,corroborate_quantity,archived_corroboration
 
 def listing_context(stock):
     return {'listed':stock.get('listed'),'evidence':stock.get('listing_evidence')}
@@ -260,13 +260,27 @@ def _calculate(store,source,stock,ctx):
             and any(e['reason']=='REFERENCE_DAILY_VOLUME_CONFLICT' for e in row['limit_evidence'])):
             try:
                 corroboration_key=f'collector/chips/reference-corroboration/{as_of}/{stock["code"]}.json'
+                primary_references=references
                 bundle,_=store.get(corroboration_key)
                 if bundle is None:
-                    bundle=fetch_reference(source,stock,days,provider='SOHU_REPORTED_DAILY_CHANGE')
-                    own();store.put(corroboration_key,bundle,new=True,compressed=True)
-                secondary=reference_prepared(bundle,stock['code'],days)
-                references=corroborate_quantity(references,secondary,lines)
-                row=prefilter(screen_stock,lines,days,state['pools'],state.get('actual_limits'),references,state.get('closing_pools'))
+                    # Revalidate dated raw archives; never relabel an old URL
+                    # or fill a newer source session from an older request.
+                    for prior_day in reversed(days[:-1]):
+                        prior_key=f'collector/chips/reference-corroboration/{prior_day}/{stock["code"]}.json'
+                        prior,_=store.get(prior_key)
+                        if prior is None:continue
+                        secondary=archived_corroboration(prior,stock['code'],days,expected_as_of=prior_day)
+                        secondary['private_archive_key']=prior_key
+                        references=corroborate_quantity(references,secondary,lines)
+                        row=prefilter(screen_stock,lines,days,state['pools'],state.get('actual_limits'),references,state.get('closing_pools'))
+                        break
+                if row['prefilter_status']=='UNKNOWN' and any(e['reason']=='REFERENCE_DAILY_VOLUME_CONFLICT' for e in row['limit_evidence']):
+                    if bundle is None:
+                        bundle=fetch_reference(source,stock,days,provider='SOHU_REPORTED_DAILY_CHANGE')
+                        own();store.put(corroboration_key,bundle,new=True,compressed=True)
+                    secondary=reference_prepared(bundle,stock['code'],days)
+                    references=corroborate_quantity(primary_references,secondary,lines)
+                    row=prefilter(screen_stock,lines,days,state['pools'],state.get('actual_limits'),references,state.get('closing_pools'))
             except Exception as exc:
                 row['reasons'].append('REFERENCE_QUANTITY_CORROBORATION_ERROR:'+type(exc).__name__)
         return row
