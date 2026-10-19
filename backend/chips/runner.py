@@ -17,6 +17,7 @@ from .screen import board,prefilter
 from .source import Source
 from .listing import trusted_listing
 from .display import display_frame,response_upper_bound,MAX_BROWSER_PROFILE_BINS
+from .limit_reference import prepared as reference_prepared,closing_pool,fetch_closing_pool,fetch_reference,corroborate_quantity
 
 def listing_context(stock):
     return {'listed':stock.get('listed'),'evidence':stock.get('listing_evidence')}
@@ -28,7 +29,7 @@ def implementation_identity():
     """Bind resumed batches and exact model caches to their actual source."""
     root=Path(__file__).parent
     hashes={name:hashlib.sha256((root/name).read_text(encoding='utf-8').replace('\r\n','\n').encode()).hexdigest()
-        for name in ('runner.py','source.py','baostock_history.py','ths_history.py','listing.py','display.py','model.py','screen.py','calendar.py')}
+        for name in ('runner.py','source.py','baostock_history.py','ths_history.py','listing.py','display.py','model.py','screen.py','calendar.py','limit_reference.py')}
     transport=root.parent/'scripts'/'baostock_source.py'
     hashes['baostock_source.py']=hashlib.sha256(transport.read_text(encoding='utf-8').replace('\r\n','\n').encode()).hexdigest()
     adapter_hash=hashlib.sha256(encoded({k:hashes[k] for k in ('source.py','baostock_history.py','ths_history.py','baostock_source.py')})).hexdigest()
@@ -115,20 +116,21 @@ def session_snapshots(bars,targets,*,security_id,no_trade,state=None):
         snapshots[day]=snapshot
     return snapshots,next_state
 
-def frame(stock,raw,receipt,days,pools,dataset,actual_limits=None,model_state=None):
+def frame(stock,raw,receipt,days,pools,dataset,actual_limits=None,model_state=None,reference_evidence=None,closing_pools=None):
     decoded=json.loads(raw)
     lines=(decoded.get('data') or {}).get('klines') or []
     no_trade=decoded.get('confirmed_no_trade_sessions',[])
     screen_stock={**stock,'reference_close_verified':receipt.get('provider')!='THS_UNADJUSTED',
         'confirmed_no_trade_sessions':no_trade}
     row={'security_id':stock['code'],'name':stock['name'],'market':board(stock['code'])[0],
-         **prefilter(screen_stock,lines,days,pools,actual_limits),'chip_status':'MISSING','peak_prices_cny':[],
+         **prefilter(screen_stock,lines,days,pools,actual_limits,reference_evidence,closing_pools),'chip_status':'MISSING','peak_prices_cny':[],
          'previous_peak_prices_cny':[],'original_peak_changes':[]}
     result={'schema':'stock.chips.market.stock.v1','dataset_id':dataset,'as_of':days[-1],
         'security_id':stock['code'],'name':stock['name'],'model':MODEL,'unchanged_threshold':None,
         'listing_context':listing_context(stock),
         'chip_status':'MISSING','snapshots':{},'history':[],'source':receipt,'known_at':None,
         'recorded_at':now(),'historical_PIT_authenticated':False,'reasons':[]}
+    if reference_evidence:result['historical_limit_reference']=reference_evidence
     try:
         model_raw=raw
         if receipt.get('provider') in ('BAOSTOCK_0.9.3','THS_UNADJUSTED'):
@@ -184,6 +186,7 @@ def frame(stock,raw,receipt,days,pools,dataset,actual_limits=None,model_state=No
 def _calculate(store,source,stock,ctx):
     slot,dataset,days,as_of=ctx['slot'],ctx['dataset'],ctx['days'],ctx['as_of']
     state=ctx
+    references=state.get('historical_references',{}).get(stock['code'])
     def own():
         lease,_=store.get('collector/chips/lease.json')
         if not lease or lease.get('owner')!=ctx['owner'] or lease.get('expires',0)<=time.time():
@@ -197,6 +200,36 @@ def _calculate(store,source,stock,ctx):
                 own();store.put(rejected_key,entry,new=True,compressed=True)
             links.append({k:v for k,v in entry.items() if k!='raw_base64'}|{'private_raw_key':rejected_key})
         return links
+    def evaluate(screen_stock,lines):
+        nonlocal references
+        row=prefilter(screen_stock,lines,days,state['pools'],state.get('actual_limits'),references,state.get('closing_pools'))
+        if (isinstance(store,Storage) and row['prefilter_status']=='UNKNOWN' and row.get('close_cny') is not None
+            and Decimal(row['close_cny'])<10 and any(e['reason']=='HISTORICAL_REFERENCE_CLOSE_NOT_VERIFIED' for e in row['limit_evidence'])):
+            try:
+                ref_key=f'collector/chips/reference-daily/{as_of}/{stock["code"]}.json'
+                bundle,_=store.get(ref_key)
+                if bundle is None:
+                    bundle=fetch_reference(source,stock,days)
+                    own();store.put(ref_key,bundle,new=True,compressed=True)
+                references=reference_prepared(bundle,stock['code'],days)
+                row=prefilter(screen_stock,lines,days,state['pools'],state.get('actual_limits'),references,state.get('closing_pools'))
+            except Exception as exc:
+                row['reasons'].append('HISTORICAL_REFERENCE_FETCH_ERROR:'+type(exc).__name__)
+        if (isinstance(store,Storage) and references and references.get('provider')=='BAOSTOCK_0.9.3'
+            and row['prefilter_status']=='UNKNOWN' and row.get('close_cny') is not None and Decimal(row['close_cny'])<10
+            and any(e['reason']=='REFERENCE_DAILY_VOLUME_CONFLICT' for e in row['limit_evidence'])):
+            try:
+                corroboration_key=f'collector/chips/reference-corroboration/{as_of}/{stock["code"]}.json'
+                bundle,_=store.get(corroboration_key)
+                if bundle is None:
+                    bundle=fetch_reference(source,stock,days,provider='SOHU_REPORTED_DAILY_CHANGE')
+                    own();store.put(corroboration_key,bundle,new=True,compressed=True)
+                secondary=reference_prepared(bundle,stock['code'],days)
+                references=corroborate_quantity(references,secondary,lines)
+                row=prefilter(screen_stock,lines,days,state['pools'],state.get('actual_limits'),references,state.get('closing_pools'))
+            except Exception as exc:
+                row['reasons'].append('REFERENCE_QUANTITY_CORROBORATION_ERROR:'+type(exc).__name__)
+        return row
     def publish(value):
         display=display_frame(value)
         exceeds_browser_limit=any(len(s.get('profile',[]))>MAX_BROWSER_PROFILE_BINS for s in display.get('snapshots',{}).values())
@@ -242,16 +275,19 @@ def _calculate(store,source,stock,ctx):
             and previous.get('execution_identity',{}).get('history_adapter_sha256')
                 ==ctx.get('execution_identity',{}).get('history_adapter_sha256')):
             if cached is None:cached,_=store.get(f'collector/chips/model/{stock["code"]}.json')
-            row=previous['screening_row']
-            if cached and cached.get('_source_bundle_sha256')==previous.get('source',{}).get('sha256'):
+            if (cached and cached.get('_source_history')
+                and cached.get('_history_adapter_sha256')==ctx.get('execution_identity',{}).get('history_adapter_sha256')
+                and cached.get('_source_bundle_sha256')==previous.get('source',{}).get('sha256')):
+                row=previous['screening_row']
                 screen_stock={**stock,'reference_close_verified':cached.get('_source_provider')!='THS_UNADJUSTED',
                     'confirmed_no_trade_sessions':cached.get('_confirmed_no_trade_sessions',[])}
-                row.update(prefilter(screen_stock,cached['_source_history'],days,state['pools'],state.get('actual_limits')))
-            previous.update(dataset_id=dataset,recorded_at=now(),reused_from_generation=previous_slot,
-                calculation_execution_identity=previous.get('calculation_execution_identity',previous['execution_identity']),
-                execution_identity=ctx.get('execution_identity'),screening_row=row,listing_context=listing_context(stock))
-            publish(previous)
-            return row
+                row.update(evaluate(screen_stock,cached['_source_history']))
+                if references:previous['historical_limit_reference']=references
+                previous.update(dataset_id=dataset,recorded_at=now(),reused_from_generation=previous_slot,
+                    calculation_execution_identity=previous.get('calculation_execution_identity',previous['execution_identity']),
+                    execution_identity=ctx.get('execution_identity'),screening_row=row,listing_context=listing_context(stock))
+                publish(previous)
+                return row
     try:
         cache_key=f'collector/chips/model/{stock["code"]}.json'
         cache,cache_etag=store.get(cache_key)
@@ -283,7 +319,11 @@ def _calculate(store,source,stock,ctx):
             store.put(raw_key,{'receipt':receipt,'raw_base64':base64.b64encode(raw).decode()},new=True,compressed=True)
         model_hash=ctx.get('execution_identity',{}).get('files',{}).get('model.py')
         model_cache=valid_history_cache if valid_history_cache and model_hash and valid_history_cache.get('_model_code_sha256')==model_hash else None
-        row,value=frame(stock,raw,receipt,days,state['pools'],dataset,state.get('actual_limits'),model_cache)
+        row,value=frame(stock,raw,receipt,days,state['pools'],dataset,state.get('actual_limits'),model_cache,references,state.get('closing_pools'))
+        decoded_screen=json.loads(raw)
+        row.update(evaluate({**stock,'reference_close_verified':receipt.get('provider')!='THS_UNADJUSTED',
+            'confirmed_no_trade_sessions':decoded_screen.get('confirmed_no_trade_sessions',[])},decoded_screen['data']['klines']))
+        if references:value['historical_limit_reference']=references
         if (row['chip_status']=='MISSING' and receipt.get('provider')=='THS_UNADJUSTED'
             and board(stock['code'])[0]!='BSE' and stock.get('listed')!=as_of
             and any(reason.startswith('REQUESTED_SOURCE_DATES_MISSING:') for reason in value['reasons'])):
@@ -301,7 +341,7 @@ def _calculate(store,source,stock,ctx):
                 common=sorted(original_rows.keys()&alternate_rows.keys())[-10:]
                 if not common or any(Decimal(original_rows[d][i])!=Decimal(alternate_rows[d][i]) for d in common for i in (1,2,3,4)):
                     raise ValueError('TRADE_STATUS_FALLBACK_PRICE_CONFLICT')
-                alternate_row,alternate_value=frame(stock,alternate_raw,alternate_receipt,days,state['pools'],dataset,state.get('actual_limits'))
+                alternate_row,alternate_value=frame(stock,alternate_raw,alternate_receipt,days,state['pools'],dataset,state.get('actual_limits'),reference_evidence=references,closing_pools=state.get('closing_pools'))
                 if alternate_row['chip_status']=='READY':
                     alternate_receipt['prior_source_raw_key']=raw_key
                     alternate_receipt['fallback_reason']='PRIOR_PROVIDER_MISSING_REQUESTED_SESSIONS;EXPLICIT_TRADE_STATUS_REQUIRED'
@@ -415,10 +455,36 @@ def run(store,*,as_of,max_minutes=285,workers=4):
                         'receipts':[r for r in pool_receipts if r.get('requested_session')==day]},match=pool_etag,new=pool_etag is None,compressed=True)
                 elif cached_pool and cached_pool.get('date')==day:
                     pools[day]=cached_pool['pool'];pool_receipts+=cached_pool['receipts']
-            actual_limits={};limit_receipts=[]
+            actual_limits={};limit_receipts=[];historical_references={};reference_receipts=[];closing_pools={};closing_pool_receipts=[]
             for day in days:
                 value,_=store.get(f'collector/chips/limits/{day}.json')
                 if value: actual_limits[day]=value['quotes']
+                reference_batch,_=store.get(f'collector/chips/references/{day}.json')
+                if reference_batch:
+                    if reference_batch.get('as_of')!=day or reference_batch.get('schema')!='stock.chips.limit.reference.batch.v1':
+                        raise ValueError('HISTORICAL_REFERENCE_BATCH_IDENTITY_INVALID')
+                    for code,bundle in reference_batch['securities'].items():
+                        reference=reference_prepared(bundle,code,last_ten(day))
+                        prior=historical_references.get(code)
+                        if prior:
+                            for d,r in prior['rows'].items():
+                                if d in reference['rows'] and r!=reference['rows'][d]:
+                                    raise ValueError('HISTORICAL_REFERENCE_SOURCES_CONFLICT')
+                            reference['rows']={**prior['rows'],**reference['rows']}
+                        historical_references[code]=reference
+                    reference_receipts.append({'key':f'collector/chips/references/{day}.json','as_of':day,
+                        'security_count':len(reference_batch['securities']),'sha256':hashlib.sha256(encoded(reference_batch)).hexdigest()})
+                closing_key=f'collector/chips/closing-pools/{day}.json'
+                closing_bundle,_=store.get(closing_key)
+                if closing_bundle is None and isinstance(store,Storage):
+                    try:
+                        closing_bundle=fetch_closing_pool(source,day)
+                        store.put(closing_key,closing_bundle,new=True,compressed=True)
+                    except Exception as exc:
+                        closing_pool_receipts.append({'date':day,'error':type(exc).__name__,'detail':str(exc)[:150]})
+                if closing_bundle:
+                    closing_pools[day]=closing_pool(closing_bundle,day)
+                    closing_pool_receipts.append(closing_bundle['receipt'])
             if as_of not in actual_limits:
                 quotes,limit_receipts=source.actual_limits(stocks,as_of)
                 if quotes:
@@ -427,7 +493,9 @@ def run(store,*,as_of,max_minutes=285,workers=4):
             dataset=hashlib.sha256(encoded([as_of,MODEL,identity,stocks,now()])).hexdigest()[:16]
             state={'as_of':as_of,'dataset_id':dataset,'active_slot':dataset,
                 'days':days,'stocks':stocks,'pools':pools,'universe_receipts':universe_receipts,'pool_receipts':pool_receipts,
-                'source_version':source.VERSION,'execution_identity':identity,'actual_limits':actual_limits,'limit_receipts':limit_receipts,'rows':{},'started_at':now()}
+                'source_version':source.VERSION,'execution_identity':identity,'actual_limits':actual_limits,'limit_receipts':limit_receipts,
+                'historical_references':historical_references,'reference_receipts':reference_receipts,
+                'closing_pools':closing_pools,'closing_pool_receipts':closing_pool_receipts,'rows':{},'started_at':now()}
             if current and current['as_of']==as_of:state['previous_slot']=current['active_slot']
             state_etag=store.put('collector/chips/state.json',state,match=state_etag,new=state_etag is None,compressed=True)
         dataset=state['dataset_id'];slot=state['active_slot'];days=state['days'];done=state['rows']
@@ -459,7 +527,8 @@ def run(store,*,as_of,max_minutes=285,workers=4):
         pending=[s for group in zip_longest(*groups.values()) for s in group if s is not None]
         # Submit only a bounded window so expiry cannot leave thousands of queued reads.
         ctx={'slot':slot,'dataset':dataset,'days':days,'as_of':as_of,'owner':owner,
-             'pools':state['pools'],'actual_limits':state.get('actual_limits',{}),'execution_identity':identity,
+             'pools':state['pools'],'actual_limits':state.get('actual_limits',{}),'historical_references':state.get('historical_references',{}),
+             'closing_pools':state.get('closing_pools',{}),'execution_identity':identity,
              'previous_slot':state.get('previous_slot')}
         cloud=isinstance(store,Storage)
         executor=concurrent.futures.ProcessPoolExecutor(max_workers=workers,initializer=_initialize_worker,initargs=(store.bucket,store.region,ctx)) if cloud else concurrent.futures.ThreadPoolExecutor(max_workers=workers)
@@ -513,7 +582,8 @@ def run(store,*,as_of,max_minutes=285,workers=4):
             'generated_at':now(),'calendar_source':SOURCES[0],'calendar_sources':SOURCES,
             'scope':'Current listed SH/SZ/BJ provider universe; historical delistings not included',
             'limit_evidence':'Vendor closing-limit pool matched to exact unadjusted daily close; uncertain candidates remain UNKNOWN',
-            'universe_receipts':state['universe_receipts'],'pool_receipts':state['pool_receipts']}
+            'universe_receipts':state['universe_receipts'],'pool_receipts':state['pool_receipts'],
+            'reference_receipts':state.get('reference_receipts',[]),'inclusive_closing_pool_receipts':state.get('closing_pool_receipts',[])}
         assert_owned()
         screening={'schema':'stock.chips.market.screen.v1','dataset_id':dataset,'as_of':as_of,'rows':rows,'unchanged_threshold':None}
         manifest['screening_response_upper_bound_bytes']=response_upper_bound(screening)

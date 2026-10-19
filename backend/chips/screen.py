@@ -2,6 +2,7 @@
 from decimal import Decimal, ROUND_HALF_UP, ROUND_FLOOR, ROUND_CEILING
 from .calendar import sessions
 from .listing import trusted_listing
+from .limit_reference import matched
 
 def board(code):
     if code.startswith(('4','8','9')): return 'BSE',Decimal('.30')
@@ -10,7 +11,7 @@ def board(code):
     if code.startswith(('60','00')): return 'MAIN',Decimal('.10')
     raise ValueError('UNSUPPORTED_SECURITY_BOARD')
 
-def closing_limit_state(stock, fields, pool, actual=None):
+def closing_limit_state(stock, fields, pool, actual=None, closing=None):
     """Positive evidence: vendor closing-limit pool AND exact daily-close match.
 
     Negative evidence can exclude a day whose close cannot equal its normal
@@ -32,9 +33,18 @@ def closing_limit_state(stock, fields, pool, actual=None):
             if ordinal<=(1 if market=='BSE' else 5): return 'FAIL','IPO_NO_LIMIT_SESSION'
         if actual and actual.get('date')==day:
             upper=Decimal(actual['upper_limit'])
+            if (reference_verified and Decimal(actual['close'])==close
+                and Decimal(actual['reference_close'])>0 and Decimal(actual['reference_close'])!=reference):
+                return 'UNKNOWN','VENDOR_ACTUAL_REFERENCE_CLOSE_CONFLICT'
             if (upper.is_finite() and upper>0 and Decimal(actual['close'])==close
                 and Decimal(actual['reference_close'])>0 and (not reference_verified or Decimal(actual['reference_close'])==reference)):
                 return ('PASS' if close==upper else 'FAIL'),'VENDOR_ACTUAL_UPPER_LIMIT_MATCHED_DAILY_BAR'
+        if closing and closing.get('date')==day:
+            if (Decimal(closing['close'])==close and reference_verified
+                and abs(Decimal(closing['pct'])-Decimal(fields[8]))<=Decimal('.015')
+                and abs(Decimal(closing['turnover_percent'])-Decimal(fields[10]))<=Decimal('.02')):
+                return 'PASS','INCLUSIVE_CLOSING_LIMIT_POOL_MATCHED_CLOSE_REFERENCE_PERCENT_AND_TURNOVER'
+            return 'UNKNOWN','INCLUSIVE_LIMIT_POOL_DAILY_FIELDS_CONFLICT'
         hit=(pool or {}).get(code)
         if hit:
             # qdate is the upstream latest quote date, not the requested pool
@@ -58,7 +68,7 @@ def closing_limit_state(stock, fields, pool, actual=None):
         return 'UNKNOWN','LIMIT_CANDIDATE_NEEDS_ACTUAL_LIMIT_CONFIRMATION'
     except (ValueError,KeyError,ArithmeticError): return 'UNKNOWN','LIMIT_EVIDENCE_INVALID'
 
-def prefilter(stock, lines, days, pools, actual_limits=None):
+def prefilter(stock, lines, days, pools, actual_limits=None, reference_evidence=None, closing_pools=None):
     if not trusted_listing(stock,days[-1]):stock={**stock,'listing_evidence':None}
     rows={line.split(',')[0]:line.split(',') for line in lines}
     today=rows.get(days[-1]); close=None; hits=[]; unknown=[]; evidence=[]
@@ -77,11 +87,23 @@ def prefilter(stock, lines, days, pools, actual_limits=None):
     for day in days:
         row=rows.get(day)
         actual=(actual_limits or {}).get(day,{}).get(stock['code'])
+        closing=(closing_pools or {}).get(day,{}).get(stock['code'])
+        reference=(reference_evidence or {}).get('rows',{}).get(day)
         listed=trusted_listing(stock,days[-1])
         if listed and day<listed:
             state,reason='FAIL','NOT_YET_LISTED'
         else:
-            state,reason=('FAIL','SOURCE_CONFIRMED_NO_TRADE') if day in no_trade else (closing_limit_state(stock,row,pools.get(day),actual) if row and len(row)==11 else ('UNKNOWN','DAILY_BAR_MISSING'))
+            conflict=matched(reference,row) if reference else None
+            if conflict:state,reason='UNKNOWN',conflict
+            elif reference and reference['tradestatus']=='0':state,reason='FAIL','REFERENCE_SOURCE_CONFIRMED_NO_TRADE'
+            elif reference and day in no_trade:state,reason='UNKNOWN','REFERENCE_TRADE_STATUS_CONFLICT'
+            elif reference:
+                verified=list(row);verified[8]=reference['pctChg']
+                verified[9]=str(Decimal(row[2])-Decimal(reference['preclose']))
+                state,reason=closing_limit_state({**stock,'reference_close_verified':True},verified,pools.get(day),actual,closing)
+                reason='HISTORICAL_REFERENCE_MATCHED_DAILY_OHLC;'+reason
+            else:
+                state,reason=('FAIL','SOURCE_CONFIRMED_NO_TRADE') if day in no_trade else (closing_limit_state(stock,row,pools.get(day),actual,closing) if row and len(row)==11 else ('UNKNOWN','DAILY_BAR_MISSING'))
         evidence.append({'date':day,'status':state,'reason':reason})
         if state=='PASS': hits.append(day)
         if state=='UNKNOWN': unknown.append(day)
