@@ -1,0 +1,430 @@
+{
+  "AWSTemplateFormatVersion": "2010-09-09",
+  "Description": "Stock bounded private collector: no inbound ports, SSM only, 24-hour initial stop guard",
+  "Parameters": {
+    "VpcId": {
+      "Type": "AWS::EC2::VPC::Id"
+    },
+    "SubnetId": {
+      "Type": "AWS::EC2::Subnet::Id"
+    },
+    "DataBucket": {
+      "Type": "String",
+      "Default": "stock-private-access-databucket-bmzud610gtex"
+    },
+    "AmiId": {
+      "Type": "AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>",
+      "Default": "/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64"
+    },
+    "InstanceType": {
+      "Type": "String",
+      "Default": "t3.medium",
+      "AllowedValues": [
+        "t3.small",
+        "t3.medium"
+      ]
+    },
+    "MaxHostHours": {
+      "Type": "Number",
+      "Default": 24,
+      "MinValue": 1,
+      "MaxValue": 24
+    },
+    "BundleKey": {
+      "Type": "String",
+      "Default": "collector/releases/current.tar.gz"
+    },
+    "EnableDailySchedule": {
+      "Type": "String",
+      "Default": "false",
+      "AllowedValues": [
+        "true",
+        "false"
+      ],
+      "Description": "Enable only after source probes and service activation succeed"
+    }
+  },
+  "Resources": {
+    "CollectorRole": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "AssumeRolePolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "ec2.amazonaws.com"
+              },
+              "Action": "sts:AssumeRole"
+            }
+          ]
+        },
+        "ManagedPolicyArns": [
+          "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
+        ],
+        "Policies": [
+          {
+            "PolicyName": "StockCollectorPrivateData",
+            "PolicyDocument": {
+              "Version": "2012-10-17",
+              "Statement": [
+                {
+                  "Effect": "Allow",
+                  "Action": [
+                    "s3:GetObject",
+                    "s3:PutObject"
+                  ],
+                  "Resource": [
+                    {
+                      "Fn::Sub": "arn:aws:s3:::${DataBucket}/data/*"
+                    },
+                    {
+                      "Fn::Sub": "arn:aws:s3:::${DataBucket}/collector/*"
+                    }
+                  ]
+                },
+                {
+                  "Effect": "Allow",
+                  "Action": "s3:DeleteObject",
+                  "Resource": {
+                    "Fn::Sub": "arn:aws:s3:::${DataBucket}/data/????-??-??.json"
+                  }
+                },
+                {
+                  "Effect": "Allow",
+                  "Action": "s3:ListBucket",
+                  "Resource": {
+                    "Fn::Sub": "arn:aws:s3:::${DataBucket}"
+                  },
+                  "Condition": {
+                    "StringLike": {
+                      "s3:prefix": [
+                        "data/*",
+                        "collector/*"
+                      ]
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    "CollectorProfile": {
+      "Type": "AWS::IAM::InstanceProfile",
+      "Properties": {
+        "Roles": [
+          {
+            "Ref": "CollectorRole"
+          }
+        ]
+      }
+    },
+    "CollectorSecurityGroup": {
+      "Type": "AWS::EC2::SecurityGroup",
+      "Properties": {
+        "GroupDescription": "No inbound access; outbound HTTPS/HTTP for public AKShare sources",
+        "VpcId": {
+          "Ref": "VpcId"
+        },
+        "SecurityGroupEgress": [
+          {
+            "IpProtocol": "tcp",
+            "FromPort": 443,
+            "ToPort": 443,
+            "CidrIp": "0.0.0.0/0"
+          },
+          {
+            "IpProtocol": "tcp",
+            "FromPort": 80,
+            "ToPort": 80,
+            "CidrIp": "0.0.0.0/0"
+          },
+          {
+            "IpProtocol": "tcp",
+            "FromPort": 10030,
+            "ToPort": 10030,
+            "CidrIp": "114.94.20.42/32",
+            "Description": "BaoStock public-api.baostock.com DNS verified 2026-09-06"
+          }
+        ]
+      }
+    },
+    "CollectorInstance": {
+      "Type": "AWS::EC2::Instance",
+      "Properties": {
+        "ImageId": {
+          "Ref": "AmiId"
+        },
+        "InstanceType": {
+          "Ref": "InstanceType"
+        },
+        "IamInstanceProfile": {
+          "Ref": "CollectorProfile"
+        },
+        "InstanceInitiatedShutdownBehavior": "stop",
+        "CreditSpecification": {
+          "CPUCredits": "standard"
+        },
+        "MetadataOptions": {
+          "HttpTokens": "required",
+          "HttpEndpoint": "enabled",
+          "HttpPutResponseHopLimit": 1
+        },
+        "NetworkInterfaces": [
+          {
+            "DeviceIndex": "0",
+            "AssociatePublicIpAddress": true,
+            "SubnetId": {
+              "Ref": "SubnetId"
+            },
+            "GroupSet": [
+              {
+                "Ref": "CollectorSecurityGroup"
+              }
+            ]
+          }
+        ],
+        "BlockDeviceMappings": [
+          {
+            "DeviceName": "/dev/xvda",
+            "Ebs": {
+              "Encrypted": true,
+              "VolumeSize": 30,
+              "VolumeType": "gp3",
+              "DeleteOnTermination": true
+            }
+          }
+        ],
+        "Tags": [
+          {
+            "Key": "Name",
+            "Value": "stock-private-collector"
+          },
+          {
+            "Key": "Project",
+            "Value": "Stock"
+          }
+        ],
+        "UserData": {
+          "Fn::Base64": {
+            "Fn::Sub": "#!/bin/bash\nset -euo pipefail\n# Guard is scheduled before package installation; stop, never terminate, preserves EBS.\nshutdown -h +$(( ${MaxHostHours} * 60 ))\ndnf install -y python3 python3-pip tar gzip\nuseradd --system --create-home --home-dir /var/lib/stock-collector stockcollector\nmkdir -p /opt/stock-collector /var/lib/stock-collector\npython3 -m venv /opt/stock-collector/venv\n/opt/stock-collector/venv/bin/pip install --disable-pip-version-check boto3\n/opt/stock-collector/venv/bin/python -c \"import boto3;boto3.client('s3',region_name='${AWS::Region}').download_file('${DataBucket}','${BundleKey}','/tmp/stock-collector.tar.gz')\"\ntar -xzf /tmp/stock-collector.tar.gz -C /opt/stock-collector\n/opt/stock-collector/venv/bin/pip install --disable-pip-version-check -r /opt/stock-collector/requirements.txt\ncat > /etc/stock-collector.env <<'EOF'\nSTOCK_BUCKET=${DataBucket}\nAWS_DEFAULT_REGION=${AWS::Region}\nEOF\nbash /opt/stock-collector/deploy/collector/install-service.sh\nchown -R stockcollector:stockcollector /var/lib/stock-collector\n# Deliberately not started. Operator must confirm real source probes through SSM first.\ntouch /var/lib/stock-collector/bootstrap-complete\n"
+          }
+        }
+      }
+    },
+    "DailyStartRole": {
+      "Type": "AWS::IAM::Role",
+      "Condition": "DailyScheduleEnabled",
+      "Properties": {
+        "AssumeRolePolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "scheduler.amazonaws.com"
+              },
+              "Action": "sts:AssumeRole",
+              "Condition": {
+                "StringEquals": {
+                  "aws:SourceAccount": {
+                    "Ref": "AWS::AccountId"
+                  },
+                  "aws:SourceArn": {
+                    "Fn::GetAtt": [
+                      "DailyScheduleGroup",
+                      "Arn"
+                    ]
+                  }
+                }
+              }
+            }
+          ]
+        },
+        "Policies": [
+          {
+            "PolicyName": "StartOnlyStockCollector",
+            "PolicyDocument": {
+              "Version": "2012-10-17",
+              "Statement": [
+                {
+                  "Effect": "Allow",
+                  "Action": "ec2:StartInstances",
+                  "Resource": {
+                    "Fn::Sub": "arn:aws:ec2:${AWS::Region}:${AWS::AccountId}:instance/${CollectorInstance}"
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    "DailyStartSchedule": {
+      "Type": "AWS::Scheduler::Schedule",
+      "Condition": "DailyScheduleEnabled",
+      "Properties": {
+        "Name": {
+          "Fn::Sub": "${AWS::StackName}-daily"
+        },
+        "Description": "Start the single Stock collector after the A-share close; host stops after collection",
+        "ScheduleExpression": "cron(10 17 ? * MON-FRI *)",
+        "ScheduleExpressionTimezone": "Asia/Shanghai",
+        "FlexibleTimeWindow": {
+          "Mode": "OFF"
+        },
+        "State": "ENABLED",
+        "Target": {
+          "Arn": "arn:aws:scheduler:::aws-sdk:ec2:startInstances",
+          "RoleArn": {
+            "Fn::GetAtt": [
+              "DailyStartRole",
+              "Arn"
+            ]
+          },
+          "Input": {
+            "Fn::Sub": "{\"InstanceIds\":[\"${CollectorInstance}\"]}"
+          },
+          "RetryPolicy": {
+            "MaximumEventAgeInSeconds": 300,
+            "MaximumRetryAttempts": 1
+          }
+        },
+        "GroupName": {
+          "Ref": "DailyScheduleGroup"
+        }
+      }
+    },
+    "DailyScheduleGroup": {
+      "Type": "AWS::Scheduler::ScheduleGroup",
+      "Condition": "DailyScheduleEnabled",
+      "Properties": {
+        "Name": {
+          "Fn::Sub": "${AWS::StackName}"
+        }
+      }
+    },
+    "DailyStopRole": {
+      "Type": "AWS::IAM::Role",
+      "Condition": "DailyScheduleEnabled",
+      "Properties": {
+        "AssumeRolePolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "scheduler.amazonaws.com"
+              },
+              "Action": "sts:AssumeRole",
+              "Condition": {
+                "StringEquals": {
+                  "aws:SourceAccount": {
+                    "Ref": "AWS::AccountId"
+                  },
+                  "aws:SourceArn": {
+                    "Fn::GetAtt": [
+                      "DailyScheduleGroup",
+                      "Arn"
+                    ]
+                  }
+                }
+              }
+            }
+          ]
+        },
+        "Policies": [
+          {
+            "PolicyName": "StopOnlyStockCollector",
+            "PolicyDocument": {
+              "Version": "2012-10-17",
+              "Statement": [
+                {
+                  "Effect": "Allow",
+                  "Action": "ec2:StopInstances",
+                  "Resource": {
+                    "Fn::Sub": "arn:aws:ec2:${AWS::Region}:${AWS::AccountId}:instance/${CollectorInstance}"
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    "DailyStopSchedule": {
+      "Type": "AWS::Scheduler::Schedule",
+      "Condition": "DailyScheduleEnabled",
+      "Properties": {
+        "Name": {
+          "Fn::Sub": "${AWS::StackName}-daily-stop"
+        },
+        "Description": "Independent 22:15 Shanghai cost guard for the single Stock collector",
+        "ScheduleExpression": "cron(15 22 ? * MON-FRI *)",
+        "ScheduleExpressionTimezone": "Asia/Shanghai",
+        "FlexibleTimeWindow": {
+          "Mode": "OFF"
+        },
+        "State": "ENABLED",
+        "Target": {
+          "Arn": "arn:aws:scheduler:::aws-sdk:ec2:stopInstances",
+          "RoleArn": {
+            "Fn::GetAtt": [
+              "DailyStopRole",
+              "Arn"
+            ]
+          },
+          "Input": {
+            "Fn::Sub": "{\"InstanceIds\":[\"${CollectorInstance}\"]}"
+          },
+          "RetryPolicy": {
+            "MaximumEventAgeInSeconds": 300,
+            "MaximumRetryAttempts": 1
+          }
+        },
+        "GroupName": {
+          "Ref": "DailyScheduleGroup"
+        }
+      }
+    }
+  },
+  "Outputs": {
+    "InstanceId": {
+      "Value": {
+        "Ref": "CollectorInstance"
+      }
+    },
+    "RoleArn": {
+      "Value": {
+        "Fn::GetAtt": [
+          "CollectorRole",
+          "Arn"
+        ]
+      }
+    },
+    "SecurityGroupId": {
+      "Value": {
+        "Ref": "CollectorSecurityGroup"
+      }
+    },
+    "DailyScheduleName": {
+      "Condition": "DailyScheduleEnabled",
+      "Value": {
+        "Ref": "DailyStartSchedule"
+      }
+    }
+  },
+  "Conditions": {
+    "DailyScheduleEnabled": {
+      "Fn::Equals": [
+        {
+          "Ref": "EnableDailySchedule"
+        },
+        "true"
+      ]
+    }
+  }
+}

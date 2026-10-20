@@ -1,6 +1,57 @@
-.venv/
-__pycache__/
-*.pyc
+# dependencies
+/node_modules
+/.pnp
+.pnp.*
+.yarn/*
+!.yarn/patches
+!.yarn/plugins
+!.yarn/releases
+!.yarn/versions
+
+# testing
+/coverage
+
+# next.js
+/.next/
+/.vinext/
+/out/
+
+# misc
+.DS_Store
+*.pem
+
+# debug
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# local environment
 .env*
-var/
-outputs/
+
+# deployment and generated files
+.vercel
+next-env.d.ts
+/dist/
+/.wrangler/
+/outputs/
+/var/
+# Local market bodies and collector locks are private runtime inputs.
+/public/data/
+# Compatibility symlinks for an existing local collector; new code uses backend/var.
+/scripts
+/data
+
+/.venv/
+__pycache__/
+*.tsbuildinfo
+
+# Public source repository: local host metadata and credentials
+/.openai/
+/.aws/
+/.playwright*/
+*.pyc
+*.key
+*.pfx
+*.p12
+**/accounts.json
