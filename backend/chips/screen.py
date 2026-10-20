@@ -1,8 +1,42 @@
-"""Two price conditions only. No stability threshold or strategy decision."""
+"""Dated price/limit evidence and explicit chip-price position, without stability."""
 from decimal import Decimal, ROUND_HALF_UP, ROUND_FLOOR, ROUND_CEILING
 from .calendar import sessions
 from .listing import trusted_listing
 from .limit_reference import matched
+
+PRICE_POSITION_RULE = 'CLOSE_GT_ANY_PEAK_OR_MEAN_COST_V1'
+
+def apply_price_position(row, snapshot):
+    """Project the new condition from the sealed current snapshot, without replay.
+
+    Equality fails. Any tied maximum-mass peak may satisfy the peak branch.
+    Missing/invalid operands stay unknown; an established false conjunct still
+    excludes a stock. Original two-condition evidence is retained separately.
+    """
+    def positive(value):
+        try:
+            number = Decimal(value)
+            return number if number.is_finite() and number > 0 else None
+        except (ValueError, TypeError, ArithmeticError):
+            return None
+    close = positive(row.get('close_cny'))
+    valid = bool(snapshot and row.get('chip_status') == 'READY'
+        and positive(snapshot.get('close_cny')) == close and close is not None)
+    mean = positive(snapshot.get('model_mean_cost_cny')) if valid else None
+    raw_peaks = snapshot.get('peak_prices_cny', []) if valid else []
+    peaks = [positive(price) for price in raw_peaks]
+    known_peaks = [price for price in peaks if price is not None]
+    peak_state = ('PASS' if close is not None and any(close > price for price in known_peaks)
+        else 'FAIL' if peaks and len(known_peaks) == len(peaks) else 'UNKNOWN')
+    mean_state = ('PASS' if close > mean else 'FAIL') if mean is not None else 'UNKNOWN'
+    state = ('PASS' if 'PASS' in (peak_state, mean_state)
+        else 'FAIL' if peak_state == mean_state == 'FAIL' else 'UNKNOWN')
+    base = row['prefilter_status']
+    row.update(model_mean_cost_cny=str(mean) if mean is not None else None,
+        above_peak_status=peak_state, above_mean_cost_status=mean_state,
+        price_position_status=state,
+        screen_status='FAIL' if 'FAIL' in (base, state) else 'PASS' if base == state == 'PASS' else 'UNKNOWN')
+    return row
 
 def board(code):
     if code.startswith(('4','8','9')): return 'BSE',Decimal('.30')

@@ -13,7 +13,7 @@ from itertools import zip_longest
 from pathlib import Path
 from .calendar import SOURCES,last_ten,sessions
 from .eastmoney_model import MODEL,compare_snapshots,estimate_snapshots,prepare_eastmoney
-from .screen import board,prefilter
+from .screen import board,prefilter,apply_price_position,PRICE_POSITION_RULE
 from .source import Source
 from .current_quote import collect as collect_final_quotes,overlay as overlay_final_quote,renormalize as renormalize_final_quotes
 from .listing import trusted_listing
@@ -285,6 +285,7 @@ def _calculate(store,source,stock,ctx):
                 row['reasons'].append('REFERENCE_QUANTITY_CORROBORATION_ERROR:'+type(exc).__name__)
         return row
     def publish(value):
+        apply_price_position(value['screening_row'],value.get('snapshots',{}).get(as_of))
         display=display_frame(value)
         exceeds_browser_limit=any(len(s.get('profile',[]))>MAX_BROWSER_PROFILE_BINS for s in display.get('snapshots',{}).values())
         if (display is not value or exceeds_browser_limit) and not display.get('full_precision_frame_private_key'):
@@ -683,14 +684,17 @@ def run(store,*,as_of,max_minutes=285,workers=4):
             save_status('PAUSED_BUDGET');return {'outcome':'CHECKPOINT_SAVED','as_of':as_of,'scanned':len(done),'total':len(state['stocks'])}
         rows=sorted(done.values(),key=lambda r:r['security_id']);counts=Counter(r['prefilter_status'] for r in rows)
         ready=sum(r['chip_status']=='READY' for r in rows)
+        final_counts=Counter(r['screen_status'] for r in rows)
         reconciled=any(r.get('provider')=='OFFICIAL_CURRENT_LIST_RECONCILIATION' for r in state['universe_receipts'])
         catalog_only=any(r.get('provider')=='SITE_PUBLISHED_CURRENT_UNIVERSE' for r in state['universe_receipts']) and not reconciled
         manifest={'schema':'stock.chips.market.manifest.v1','dataset_id':dataset,'active_slot':slot,'as_of':as_of,
             'previous_date':days[-2],'official_sessions':days,'universe_total':len(rows),'scanned_count':len(rows),
             'model_ready_count':ready,'screen_counts':{k:counts[k] for k in ('PASS','FAIL','UNKNOWN')},
+            'price_position_rule':PRICE_POSITION_RULE,
+            'final_screen_counts':{k:final_counts[k] for k in ('PASS','FAIL','UNKNOWN')},
             'display_response_verified_count':sum(0<r.get('display_response_upper_bound_bytes',0)<5900000 for r in rows),
             'max_display_response_upper_bound_bytes':max((r.get('display_response_upper_bound_bytes',0) for r in rows),default=0),
-            'market_complete':ready==len(rows) and counts['UNKNOWN']==0 and not catalog_only,
+            'market_complete':ready==len(rows) and counts['UNKNOWN']==0 and final_counts['UNKNOWN']==0 and not catalog_only,
             'universe_coverage':'OFFICIAL_CURRENT_LIST_RECONCILED' if reconciled else ('SITE_CATALOG_UNVERIFIED' if catalog_only else 'VENDOR_REPORTED_TOTAL_VALIDATED'),
             'execution_identity':identity,'coefficient':2,'unchanged_threshold':None,
             'model_version':MODEL['version'],'model':MODEL,'history_window_bars':210,
@@ -712,7 +716,7 @@ def run(store,*,as_of,max_minutes=285,workers=4):
         assert_owned()
         store.put('data/chips/daily/manifest.json',manifest,match=current_etag,new=current_etag is None)
         save_status('COMMITTED')
-        return {'outcome':'COMMITTED','as_of':as_of,'total':len(rows),'model_ready':ready,'screen_counts':manifest['screen_counts'],'market_complete':manifest['market_complete']}
+        return {'outcome':'COMMITTED','as_of':as_of,'total':len(rows),'model_ready':ready,'screen_counts':manifest['screen_counts'],'final_screen_counts':manifest['final_screen_counts'],'market_complete':manifest['market_complete']}
     finally:
         if 'source' in locals():source.close()
         latest,latest_etag=store.get('collector/chips/lease.json')
