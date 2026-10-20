@@ -15,6 +15,7 @@ from .calendar import SOURCES,last_ten,sessions
 from .eastmoney_model import MODEL,compare_snapshots,estimate_snapshots,prepare_eastmoney
 from .screen import board,prefilter,apply_price_position,PRICE_POSITION_RULE
 from .source import Source
+from .golden import VERSION as GOLDEN_VERSION,grid_row as golden_row,document as golden_document
 from .current_quote import collect as collect_final_quotes,overlay as overlay_final_quote,renormalize as renormalize_final_quotes
 from .listing import trusted_listing
 from .display import display_frame,response_upper_bound,MAX_BROWSER_PROFILE_BINS
@@ -30,7 +31,7 @@ def implementation_identity():
     """Bind resumed batches and exact model caches to their actual source."""
     root=Path(__file__).parent
     hashes={name:hashlib.sha256((root/name).read_text(encoding='utf-8').replace('\r\n','\n').encode()).hexdigest()
-        for name in ('runner.py','source.py','baostock_history.py','ths_history.py','listing.py','display.py','model.py','eastmoney_model.py','ohlc4_input.py','current_quote.py','screen.py','calendar.py','limit_reference.py')}
+        for name in ('runner.py','source.py','baostock_history.py','ths_history.py','listing.py','display.py','model.py','eastmoney_model.py','ohlc4_input.py','current_quote.py','screen.py','calendar.py','limit_reference.py','golden.py')}
     transport=root.parent/'scripts'/'baostock_source.py'
     hashes['baostock_source.py']=hashlib.sha256(transport.read_text(encoding='utf-8').replace('\r\n','\n').encode()).hexdigest()
     adapter_hash=hashlib.sha256(encoded({k:hashes[k] for k in ('source.py','baostock_history.py','ths_history.py','baostock_source.py')})).hexdigest()
@@ -286,6 +287,7 @@ def _calculate(store,source,stock,ctx):
         return row
     def publish(value):
         apply_price_position(value['screening_row'],value.get('snapshots',{}).get(as_of))
+        value['screening_row']['golden_grid']=golden_row(value)
         display=display_frame(value)
         exceeds_browser_limit=any(len(s.get('profile',[]))>MAX_BROWSER_PROFILE_BINS for s in display.get('snapshots',{}).values())
         if (display is not value or exceeds_browser_limit) and not display.get('full_precision_frame_private_key'):
@@ -697,7 +699,7 @@ def run(store,*,as_of,max_minutes=285,workers=4):
             'market_complete':ready==len(rows) and counts['UNKNOWN']==0 and final_counts['UNKNOWN']==0 and not catalog_only,
             'universe_coverage':'OFFICIAL_CURRENT_LIST_RECONCILED' if reconciled else ('SITE_CATALOG_UNVERIFIED' if catalog_only else 'VENDOR_REPORTED_TOTAL_VALIDATED'),
             'execution_identity':identity,'coefficient':2,'unchanged_threshold':None,
-            'model_version':MODEL['version'],'model':MODEL,'history_window_bars':210,
+            'model_version':MODEL['version'],'model':MODEL,'history_window_bars':210,'golden_grid_version':GOLDEN_VERSION,
             'generated_at':now(),'calendar_source':SOURCES[0],'calendar_sources':SOURCES,
             'scope':'Current listed SH/SZ/BJ provider universe; historical delistings not included',
             'limit_evidence':'Vendor closing-limit pool matched to exact unadjusted daily close; uncertain candidates remain UNKNOWN',
@@ -713,6 +715,13 @@ def run(store,*,as_of,max_minutes=285,workers=4):
         if existing_screen is None:
             assert_owned();store.put(screen_key,screening,new=True,compressed=True)
         elif existing_screen!=screening: raise RuntimeError('IMMUTABLE_SCREEN_CONFLICT')
+        golden=golden_document(manifest,[r['golden_grid'] for r in rows])
+        if response_upper_bound(golden)>=5900000:raise ValueError('GOLDEN_SCREEN_EXCEEDS_AUTHENTICATED_API_LIMIT')
+        golden_key=f'data/chips/daily/{slot}/golden.json'
+        existing_golden,_=store.get(golden_key)
+        if existing_golden is None:
+            assert_owned();store.put(golden_key,golden,new=True,compressed=True)
+        elif existing_golden!=golden:raise RuntimeError('IMMUTABLE_GOLDEN_CONFLICT')
         assert_owned()
         store.put('data/chips/daily/manifest.json',manifest,match=current_etag,new=current_etag is None)
         save_status('COMMITTED')

@@ -46,7 +46,7 @@ class ActionsPackagingTests(unittest.TestCase):
         self.assertEqual(len(SOURCES),len(set(SOURCES)))
         self.assertTrue(all(p.startswith(('backend/scripts/','backend/server/','backend/chips/')) and p.endswith('.py') for p in SOURCES))
         self.assertEqual({p for p in SOURCES if p.startswith('backend/chips/')},
-            {'backend/chips/'+name+'.py' for name in ('__init__','calendar','model','eastmoney_model','ohlc4_input','current_quote','probe','runner','screen','source','baostock_history','ths_history','listing','display','limit_reference')})
+            {'backend/chips/'+name+'.py' for name in ('__init__','calendar','model','eastmoney_model','ohlc4_input','current_quote','probe','runner','screen','source','baostock_history','ths_history','listing','display','limit_reference','golden')})
         self.assertIn('backend/scripts/sina_spot.py',SOURCES)
         self.assertIn('backend/scripts/exchange_status.py',SOURCES)
         self.assertNotIn('backend/server/service.py',SOURCES)
