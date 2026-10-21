@@ -94,13 +94,22 @@ def run(s3,bucket,*,as_of=None,source_factory=DailySources,clock=lambda:datetime
                 owned()
                 if time.monotonic()-monotonic>max_seconds:raise TimeoutError('UPDATE_TIME_BUDGET')
                 key=PREFIX+f'source/{target}/{code}.json'
-                cached,_=read(s3,bucket,key)
+                cached,cached_etag=read(s3,bucket,key)
                 if cached:
-                    if cached['symbol']!=code or cached['as_of']!=target:raise ValueError('CACHED_SOURCE_IDENTITY')
-                    rows,receipt,no_trade=cached['history'],cached['source'],cached.get('confirmed_no_trade_sessions',[])
-                    if receipt.get('provider')!='BAOSTOCK_0.9.3':no_trade=[d for d in no_trade if d!=target]
-                    if sha(encoded(rows))!=cached['history_sha256']:raise ValueError('CACHED_HISTORY_HASH')
-                else:
+                    try:
+                        if cached['symbol']!=code or cached['as_of']!=target:raise ValueError('CACHED_SOURCE_IDENTITY')
+                        rows,receipt,no_trade=cached['history'],cached['source'],cached.get('confirmed_no_trade_sessions',[])
+                        if receipt.get('provider')!='BAOSTOCK_0.9.3':no_trade=[d for d in no_trade if d!=target]
+                        if sha(encoded(rows))!=cached['history_sha256']:raise ValueError('CACHED_HISTORY_HASH')
+                        validate(rows)
+                        if len(rows)<60 or (rows[-1]['date']!=target and target not in no_trade):raise ValueError('TARGET_SESSION_NOT_READY')
+                    except (ValueError,KeyError,TypeError,IndexError):
+                        # An old placeholder or invalid cache is a missing
+                        # sample, not a permanent reason to skip fresh reads.
+                        # Replace only its pointer with CAS; original raw
+                        # objects and published datasets remain immutable.
+                        cached=None
+                if not cached:
                     old=None
                     if latest:old,_=read(s3,bucket,PREFIX+latest['dataset_id']+'/'+code+'.json')
                     rows,receipt,raw,no_trade=source.history(code,name,target,previous=old)
@@ -114,7 +123,7 @@ def run(s3,bucket,*,as_of=None,source_factory=DailySources,clock=lambda:datetime
                         if exc.response['Error']['Code']!='PreconditionFailed':raise
                     receipt=dict(receipt,raw_key=raw_key,raw_sha256=sha(raw),captured_at=clock().isoformat())
                     cached=dict(symbol=code,as_of=target,history=rows,source=receipt,history_sha256=sha(encoded(rows)),confirmed_no_trade_sessions=no_trade)
-                    put(s3,bucket,key,cached,IfNoneMatch='*')
+                    put(s3,bucket,key,cached,**({'IfMatch':cached_etag} if cached_etag else {'IfNoneMatch':'*'}))
                 validate(rows)
                 if len(rows)<60 or (rows[-1]['date']!=target and target not in no_trade):raise ValueError('TARGET_SESSION_NOT_READY')
                 value=make_case(code,name,rows,target,receipt)

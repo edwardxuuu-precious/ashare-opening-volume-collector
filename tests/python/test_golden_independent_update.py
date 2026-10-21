@@ -57,6 +57,23 @@ class IndependentUpdate(unittest.TestCase):
         self.assertEqual(result['outcome'],'FAILED');self.assertEqual(result['ready'],0)
         self.assertNotIn(PREFIX+'manifest.json',s.values)
         state,_=read(s,'test',PREFIX+'status.json');self.assertEqual(state['state'],'FAILED')
+    def test_legacy_placeholder_cache_is_refetched_without_reloading_ready_samples(self):
+        from backend.golden.daily import sha,encoded
+        s=Store();run(s,'test',source_factory=Provider,clock=lambda:NOW)
+        key=PREFIX+'source/2026-10-21/000573.json'
+        cached,etag=read(s,'test',key)
+        cached['history']=cached['history'][:-1]
+        cached['history_sha256']=sha(encoded(cached['history']))
+        cached['source']['provider']='THS_UNADJUSTED'
+        cached['confirmed_no_trade_sessions']=['2026-10-21']
+        put(s,'test',key,cached,IfMatch=etag)
+        archive_keys=set(s.values)
+        source=Provider();out=run(s,'test',source_factory=lambda:source,clock=lambda:NOW)
+        self.assertEqual(out['state'],'COMPLETE');self.assertEqual(source.calls,['000573'])
+        repaired,_=read(s,'test',key)
+        self.assertEqual(repaired['history'][-1]['date'],'2026-10-21')
+        self.assertEqual(repaired['confirmed_no_trade_sessions'],[])
+        self.assertTrue(archive_keys.issubset(s.values))
     def test_active_lease_and_older_target_cannot_overwrite(self):
         s=Store();put(s,'test',PREFIX+'update-lease.json',dict(owner='other',expires=NOW.timestamp()+60))
         self.assertEqual(run(s,'test',clock=lambda:NOW)['outcome'],'LEASE_HELD')
