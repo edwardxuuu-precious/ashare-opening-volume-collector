@@ -26,6 +26,7 @@ function Detail({example,user,initialRound,onViewRound}:{example:Example;user:st
  const draft=edits.present,setDraft=(value:ManualDraft)=>dispatch({type:'edit',value}),resetDraft=(value:ManualDraft)=>dispatch({type:'reset',value});
  const [drawing,setDrawing]=useState(false),[field,setField]=useState<SnapMode>('auto'),[showManual,setShowManual]=useState(true);
  useEffect(()=>{if(user)try{localStorage.setItem(key,JSON.stringify(draft));}catch{}},[key,draft,user]);
+ useEffect(()=>{if(initialRound)document.querySelector('.gw-manual-toolbar')?.scrollIntoView({block:'start',behavior:'smooth'});},[initialRound]);
  useEffect(()=>{const keyboard=(e:KeyboardEvent)=>{if(!(e.ctrlKey||e.metaKey)||(e.target as HTMLElement)?.closest('input,select,textarea,[contenteditable="true"]'))return;if(e.key.toLowerCase()==='z'){e.preventDefault();dispatch({type:e.shiftKey?'redo':'undo'});}else if(e.key.toLowerCase()==='y'){e.preventDefault();dispatch({type:'redo'});}};document.addEventListener('keydown',keyboard);return()=>document.removeEventListener('keydown',keyboard);},[]);
  const r=example.result,g=r?.price_groups[group],axis=g?.records[event]??null;
  const lines=[...(showAuto?autoLines(r,mode,axis):[]),...(showManual?manualLines(draft.mode,draft.points):[])];
