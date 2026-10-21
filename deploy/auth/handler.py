@@ -171,7 +171,7 @@ def handler(event, context):
         # Cognito validation. Only the exact twenty symbols may be written.
         annotation = re.fullmatch(r'/data/golden-workbench/annotations/(sh000001|\d{6})\.json', path)
         if annotation and method in ('GET','POST'):
-            from backend.golden.annotations import apply, empty, Conflict, Forbidden
+            from backend.golden.annotations import apply, empty, calibration_context, Conflict, Forbidden
             from backend.golden.watchlist import SYMBOLS
             symbol=annotation.group(1)
             if symbol not in SYMBOLS: return response(404, {'error':'不在固定核对名单中'})
@@ -187,16 +187,35 @@ def handler(event, context):
             if event.get('isBase64Encoded'): body=base64.b64decode(body).decode()
             if len(body.encode())>16000: return response(400,{'error':'保存内容过长'})
             try:
-                updated=apply(document,json.loads(body),user,symbol)
+                payload=json.loads(body);automatic=None
+                if isinstance(payload,dict) and payload.get('kind')=='calibration':
+                    drawing=payload.get('drawing');review=payload.get('review')
+                    if not isinstance(drawing,dict) or not isinstance(review,dict): raise ValueError('CALIBRATION_FIELDS')
+                    dataset=drawing.get('dataset_id')
+                    if not isinstance(dataset,str) or not re.fullmatch(r'[a-f0-9]{16}',dataset): raise ValueError('DATASET')
+                    source=s3.get_object(Bucket=BUCKET,Key=f'data/golden-workbench/{dataset}/{symbol}.json')['Body'].read()
+                    if source[:2]==b'\x1f\x8b': source=gzip.decompress(source)
+                    example=json.loads(source)
+                    if example.get('symbol')!=symbol or example.get('dataset_id')!=dataset or example.get('as_of')!=drawing.get('as_of'): raise ValueError('EXAMPLE_IDENTITY')
+                    candles={r['date']:r for r in example.get('history',[])}
+                    from decimal import Decimal
+                    from backend.golden.annotations import point
+                    if not isinstance(drawing.get('points'),list): raise ValueError('POINTS')
+                    for value in drawing['points']:
+                        p=point(value);bar=candles.get(p['date'])
+                        if not bar or (p['field']!='custom' and Decimal(p['price'])!=Decimal(str(bar[p['field']]))): raise ValueError('POINT_NOT_IN_SAVED_CANDLE')
+                    automatic=calibration_context(example,review.get('auto_mode'),review.get('axis_id'))
+                updated=apply(document,payload,user,symbol,automatic=automatic)
                 s3.put_object(Bucket=BUCKET,Key=key,Body=json.dumps(updated,ensure_ascii=False).encode(),
                     ContentType='application/json; charset=utf-8',**({'IfMatch':obj['ETag']} if obj.get('ETag') else {'IfNoneMatch':'*'}))
                 return data_response(updated,headers.get('accept-encoding',''))
             except Conflict as exc: return response(409,{'error':str(exc)})
             except Forbidden as exc: return response(403,{'error':str(exc)})
-            except ValueError: return response(400,{'error':'画线或核对信息无效，请检查选点与内容'})
+            except (ValueError,KeyError,TypeError): return response(400,{'error':'画线或批注信息无效，请检查选点与内容'})
             except ClientError as exc:
                 if exc.response['Error']['Code'] in ('PreconditionFailed','ConditionalRequestConflict'):
-                    return response(409,{'error':'其他同事刚保存了内容，请刷新后重试；当前草稿仍保留'})
+                    return response(409,{'error':'云端刚有新保存，请刷新后重试；当前草稿仍保留'})
+                if exc.response['Error']['Code']=='NoSuchKey': return response(400,{'error':'本轮自动结果批次不存在，请刷新后重试；当前草稿仍保留'})
                 raise
         if method=='GET' and re.fullmatch(r'/data/golden-workbench/(?:(?:manifest|status)\.json|[a-f0-9]{16}/(?:manifest|sh000001|\d{6})\.json)',path):
             try:

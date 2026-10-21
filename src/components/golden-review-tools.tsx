@@ -1,39 +1,54 @@
 'use client';
-import {useEffect,useState,useRef} from 'react';
+import {useEffect,useLayoutEffect,useState,useRef,useCallback} from 'react';
 import {authFetch} from '@/lib/auth-fetch';
 import {readChip} from '@/lib/chip-read';
-import {reviewLabels,type Annotations,type Drawing,type Example,type ManualPoint} from '@/lib/golden-workbench';
+import {pointLabel,type ManualDraft} from '@/lib/golden-drawing';
+import {reviewLabels,type Annotations,type Drawing,type Example,type ReviewRound} from '@/lib/golden-workbench';
+export {blankDraft,type ManualDraft} from '@/lib/golden-drawing';
 const api=(process.env.NEXT_PUBLIC_DATA_BASE||'').replace(/\/$/,'');
-export type ManualDraft={id:string;title:string;mode:'HL'|'HM';points:ManualPoint[];note:string};
-export const blankDraft=():ManualDraft=>({id:'',title:'我的画格',mode:'HL',points:[],note:''});
-export function GoldenReviewTools({example,user,draft,setDraft,drawing,setDrawing,field,setField,showManual,setShowManual,autoMode,axisId}:{example:Example;user:string;draft:ManualDraft;setDraft:(d:ManualDraft)=>void;drawing:boolean;setDrawing:(v:boolean)=>void;field:string;setField:(s:string)=>void;showManual:boolean;setShowManual:(v:boolean)=>void;autoMode:string;axisId:string}){
-  const [doc,setDoc]=useState<Annotations|null>(null),[error,setError]=useState(''),[message,setMessage]=useState(''),[busy,setBusy]=useState(false);
-  const reviewKey=`golden-review-draft-v1:${user}:${example.dataset_id}:${example.symbol}`;
-  const dirty=useRef(false);
-  const restored=useRef<{review:string;note:string}|null>(null);
-  const [review,setReview]=useState(()=>{try{restored.current=JSON.parse(localStorage.getItem(reviewKey)||'null');}catch{}return restored.current?.review??'UNCERTAIN';}),[note,setNote]=useState(restored.current?.note??''),[expanded,setExpanded]=useState('');
-  useEffect(()=>{if(user)try{localStorage.setItem(reviewKey,JSON.stringify({review,note}));}catch{}},[reviewKey,review,note,user]);
-  const path=`/data/golden-workbench/annotations/${example.symbol}.json`;
-  const load=(hydrate=false)=>{const c=new AbortController();readChip(path,c.signal,v=>v as Annotations).then(v=>{if(c.signal.aborted)return;setDoc(v);setError('');const own=v.reviews.find(r=>r.owner===user&&r.dataset_id===example.dataset_id);if(hydrate&&!restored.current&&!dirty.current&&own){setReview(own.status);setNote(own.note);}}).catch(e=>{if(!c.signal.aborted)setError(e.message);});return()=>c.abort();};
-  useEffect(()=>load(true),[path,user,example.dataset_id]);
-  async function save(payload:object){if(!doc||busy)return;setBusy(true);setMessage('');setError('');try{const response=await authFetch(api+path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({...payload,revision:doc.revision})});const value=await response.json() as Annotations & {error?:string};if(!response.ok)throw Error(value.error||'保存失败');setDoc(value);setMessage('已保存到云端 · 所有登录同事可见');setDrawing(false);}catch(e){setError((e as Error).message);}finally{setBusy(false);}}
-  function saveDrawing(){const id=draft.id||crypto.randomUUID();setDraft({...draft,id});return save({kind:'drawing',drawing:{...draft,id,as_of:example.as_of,dataset_id:example.dataset_id}});}
-  function open(d:Drawing,copy=false){setDraft({id:copy?'':d.id,title:copy?d.title+'（副本）':d.title,mode:d.mode,points:d.points,note:d.note});setShowManual(true);setDrawing(false);}
-  return <div className="gw-tools">
-    <section><div className="gw-panel-title"><h3>手动画格</h3><span>共享保存</span></div><p className="gw-muted">在K线上依次点H和L / M，也可手填价格。紫色线是人工画法。</p>
-      <div className="gw-segment"><button aria-pressed={draft.mode==='HL'} onClick={()=>{setDraft({...draft,mode:'HL'});}}>H/L 逐层平分</button><button aria-pressed={draft.mode==='HM'} onClick={()=>setDraft({...draft,mode:'HM'})}>H/M 等高格子</button></div>
-      <div className="gw-tool-actions"><button className={drawing?'gw-primary':'gw-button'} disabled={!example.history.length} onClick={()=>{setDraft({...draft,id:'',points:[]});setField('high');setDrawing(true);setShowManual(true);document.querySelector('.gw-main-chart .gw-canvas')?.scrollIntoView({block:'center'});}}>{drawing?'重新选择两点':'开始画格'}</button><label><input type="checkbox" checked={showManual} onChange={e=>setShowManual(e.target.checked)}/>显示人工线</label></div>
-      {drawing&&<label className="gw-field">取价字段<select aria-label="人工选点取价字段" value={field} onChange={e=>setField(e.target.value)}>{['high','low','open','close','custom'].map(f=><option key={f} value={f}>{({high:'最高价 High',low:'最低价 Low',open:'开盘价 Open',close:'收盘价 Close',custom:'鼠标自由价位'})[f]}</option>)}</select></label>}
-      {draft.points.map((p,i)=><div className="gw-point-editor" key={i}><b>{i===0?'H':draft.mode==='HL'?'L':'M'}</b><input aria-label={`人工点${i+1}日期`} type="date" value={p.date} max={example.as_of} onChange={e=>setDraft({...draft,points:draft.points.map((v,j)=>i===j?{...v,date:e.target.value,field:'custom'}:v)})}/><input aria-label={`人工点${i+1}价格`} type="number" step="0.01" min="0.000001" value={p.price} onChange={e=>setDraft({...draft,points:draft.points.map((v,j)=>i===j?{...v,field:'custom',price:e.target.value}:v)})}/><small>{p.field}</small></div>)}
-      {draft.points.some(p=>!example.history.some(r=>r.date===p.date))&&<p className="gw-warning">有人工点在当前显示窗口外，保存的日期与价格仍保留。</p>}
-      <label className="gw-field">画法名称<input value={draft.title} maxLength={80} onChange={e=>setDraft({...draft,title:e.target.value})}/></label>
-      <label className="gw-field">选点说明<textarea rows={2} value={draft.note} maxLength={2000} onChange={e=>setDraft({...draft,note:e.target.value})} placeholder="为什么取这根K线、这个价格？"/></label>
-      <button className="gw-primary gw-save" disabled={busy||!doc||!user||draft.points.length!==2||Number(draft.points[0]?.price)<=Number(draft.points[1]?.price)||!draft.title.trim()} onClick={saveDrawing}>{busy?'保存中…':draft.id?'保存我的修改':'保存为共享画法'}</button>
-      <small className="gw-muted">保存后可跨设备打开；修改保留历史版本。自动选点不随人工画线改变。</small>
-    </section>
-    <section><div className="gw-panel-title"><h3>今日核对</h3><span>{example.as_of}</span></div><label className="gw-field">程序画得怎样？<select aria-label="自动画法核对结论" value={review} onChange={e=>{dirty.current=true;setReview(e.target.value);}}>{Object.entries(reviewLabels).map(([k,v])=><option key={k} value={k}>{v}</option>)}</select></label><textarea rows={2} aria-label="每日核对说明" placeholder="指出哪根K线或哪条轴不对" value={note} maxLength={2000} onChange={e=>{dirty.current=true;setNote(e.target.value);}}/><button className="gw-button gw-save" disabled={busy||!doc||!user} onClick={()=>save({kind:'review',as_of:example.as_of,dataset_id:example.dataset_id,status:review,note,axis_id:axisId,auto_mode:autoMode})}>保存本日核对</button><small className="gw-muted">记录当前日期、批次及浏览的中轴候选。</small></section>
-    {(error||message)&&<div className={error?'gw-warning':'gw-success'} role={error?'alert':'status'}>{error||message}{error&&<button className="gw-link" onClick={()=>load(false)}>刷新云端记录，保留草稿</button>}</div>}
-    <section><div className="gw-panel-title"><h3>同事的画法</h3><span>{doc?.drawings.length??'—'}份</span></div>{doc?.drawings.slice().reverse().map(d=><div className="gw-saved" key={d.id}><b>{d.title}</b><span>{d.owner} · {new Date(d.updated_at).toLocaleString('zh-CN')}</span><small>{d.mode} · H {d.points[0].price} / {d.mode==='HL'?'L':'M'} {d.points[1].price}</small><p>{d.note}</p><div><button className="gw-link" onClick={()=>open(d,d.owner!==user)}>{d.owner===user?'打开 / 修改':'查看并复制'}</button><button className="gw-link" onClick={()=>setExpanded(expanded===d.id?'':d.id)}>历史版本 {d.history?.length??0}</button></div>{expanded===d.id&&<div>{d.history?.map((h,i)=><button className="gw-version" key={i} onClick={()=>open({...h,history:[]} as Drawing,true)}>{new Date(h.updated_at).toLocaleString('zh-CN')} · {h.points.map(p=>p.price).join(' / ')} → 复制</button>)}</div>}</div>)}{doc&&!doc.drawings.length&&<p className="gw-muted">还没有共享画法。画好后点保存，同事即可打开。</p>}</section>
-    <section><h3>核对记录</h3>{doc?.reviews.slice().reverse().slice(0,20).map((r,i)=><div className="gw-saved" key={i}><b>{r.as_of} · {reviewLabels[r.status]}</b><span>{r.owner}</span><p>{r.note||'未填写说明'}</p></div>)}</section>
-  </div>;
+const time=(value:string)=>new Date(value).toLocaleString('zh-CN',{timeZone:'Asia/Shanghai',hour12:false});
+export function GoldenReviewTools({example,user,draft,setDraft,resetDraft,setDrawing,setShowManual,autoMode,axisId,initialRound,onViewRound}:{example:Example;user:string;draft:ManualDraft;setDraft:(d:ManualDraft)=>void;resetDraft:(d:ManualDraft)=>void;setDrawing:(v:boolean)=>void;setShowManual:(v:boolean)=>void;autoMode:string;axisId:string;initialRound?:ReviewRound|null;onViewRound:(r:ReviewRound)=>void}){
+ const [doc,setDoc]=useState<Annotations|null>(null),[error,setError]=useState(''),[message,setMessage]=useState(''),[busy,setBusy]=useState(false),[expanded,setExpanded]=useState('');
+ const lock=useRef(false),dirty=useRef(false);
+ const liveDraft=useRef(draft);useLayoutEffect(()=>{liveDraft.current=draft;},[draft]);
+ const reviewKey=`golden-review-draft-v1:${user}:${example.dataset_id}:${example.symbol}`;
+ const [restored]=useState<{review:string;note:string}|null>(()=>{try{return JSON.parse(localStorage.getItem(reviewKey)||'null');}catch{return null;}});
+ const [review,setReview]=useState(initialRound?.status??restored?.review??'UNCERTAIN'),[note,setNote]=useState(initialRound?.note??restored?.note??'');
+ useEffect(()=>{if(user)try{localStorage.setItem(reviewKey,JSON.stringify({review,note}));}catch{}},[reviewKey,review,note,user]);
+ const path=`/data/golden-workbench/annotations/${example.symbol}.json`;
+ const load=useCallback((hydrate=false)=>{const c=new AbortController();readChip(path,c.signal,v=>v as Annotations).then(v=>{if(c.signal.aborted)return;setDoc(v);setError('');const own=v.reviews.find(r=>r.owner===user&&r.dataset_id===example.dataset_id);if(hydrate&&!initialRound&&!restored&&!dirty.current&&own){setReview(own.status);setNote(own.note);}}).catch(e=>{if(!c.signal.aborted)setError(e.message);});return()=>c.abort();},[path,user,example.dataset_id,initialRound,restored]);
+ useEffect(()=>load(true),[load]);
+ async function save(withDrawing:boolean){
+  if(!doc||lock.current)return;lock.current=true;setBusy(true);setError('');setMessage('');
+  const id=draft.id||crypto.randomUUID();
+  if(withDrawing&&!draft.id)setDraft({...draft,id});
+  const payload=withDrawing?{kind:'calibration',drawing:{...draft,id,as_of:example.as_of,dataset_id:example.dataset_id},review:{status:review,note,axis_id:axisId,auto_mode:autoMode}}:{kind:'review',as_of:example.as_of,dataset_id:example.dataset_id,status:review,note,axis_id:axisId,auto_mode:autoMode};
+  try{
+   const response=await authFetch(api+path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({...payload,revision:doc.revision})});
+   const value=await response.json() as Annotations&{error?:string};if(!response.ok)throw Error(value.error||'保存失败');
+   setDoc(value);
+   const sent={...draft,id},unchanged=JSON.stringify({...liveDraft.current,id})===JSON.stringify(sent)&&(!liveDraft.current.id||liveDraft.current.id===id);
+   if(withDrawing&&unchanged){resetDraft(sent);setDrawing(false);}
+   setMessage(withDrawing?(unchanged?'本轮画线与批注已保存，自动结果和人工点位已留存。':'上一轮快照已保存；保存期间的新调整仍保留在当前草稿。'):'本轮批注已保存，未关联人工画线。');
+  }catch(e){setError((e as Error).message);}finally{lock.current=false;setBusy(false);}
+ }
+ function open(d:Drawing,copy=false){resetDraft({id:copy?'':d.id,title:copy?d.title+'（副本）':d.title,mode:d.mode,points:d.points,note:d.note});setShowManual(true);setDrawing(false);setMessage('已打开人工画线，可直接拖动图上锚点。');document.querySelector('.gw-manual-toolbar')?.scrollIntoView({block:'center',behavior:'smooth'});}
+ const valid=draft.points.length===2&&draft.points.every(p=>Number(p.price)>0&&p.date<=example.as_of)&&Number(draft.points[0]?.price)>Number(draft.points[1]?.price)&&!!draft.title.trim();
+ const rounds=(doc?.reviews??[]).flatMap(r=>[...(r.history??[]),r].map((v,i)=>({...v,number:i+1}))).sort((a,b)=>b.updated_at.localeCompare(a.updated_at)||(Number(b.round_id?.split(':').at(-1))||0)-(Number(a.round_id?.split(':').at(-1))||0));
+ return <div className="gw-tools">
+  <section className="gw-calibration-editor"><div className="gw-panel-title"><h3>校准批注</h3><span>{example.as_of}</span></div><p className="gw-muted">画线 → 批注 → 保存一轮 → 调整后继续比对。</p>
+   <label className="gw-field">画线名称<input value={draft.title} maxLength={80} onChange={e=>setDraft({...draft,title:e.target.value})}/></label>
+   <label className="gw-field">选点依据<textarea rows={2} value={draft.note} maxLength={2000} onChange={e=>setDraft({...draft,note:e.target.value})} placeholder="为什么选这根K线、这个价格？"/></label>
+   <label className="gw-field">本轮对比结论<select aria-label="自动画法核对结论" value={review} onChange={e=>{dirty.current=true;setReview(e.target.value);}}>{Object.entries(reviewLabels).map(([k,v])=><option key={k} value={k}>{v}</option>)}</select></label>
+   <label className="gw-field">本轮批注<textarea rows={3} aria-label="本轮校准批注" placeholder="自动线与人工线哪里不同？下一轮要调整什么？" value={note} maxLength={2000} onChange={e=>{dirty.current=true;setNote(e.target.value);}}/></label>
+   <button className="gw-primary gw-save" disabled={busy||!doc||!user||!valid} onClick={()=>save(true)}>{busy?'保存中…':'保存本轮画线与批注'}</button>
+   <button className="gw-link" disabled={busy||!doc||!user} onClick={()=>save(false)}>仅保存批注</button>
+   <small className="gw-muted">每轮保留画线、批注与当时的自动结果。所有登录用户共享可见。</small>
+   <details className="gw-exact-points"><summary>精确编辑点位 {draft.points.length}/2</summary>{draft.points.map((p,i)=><div className="gw-point-editor" key={i}><b>{i===0?'H':draft.mode==='HL'?'L':'M'}</b><input aria-label={`人工点${i+1}日期`} type="date" value={p.date} max={example.as_of} onChange={e=>setDraft({...draft,points:draft.points.map((v,j)=>i===j?{...v,date:e.target.value,field:'custom'}:v)})}/><input aria-label={`人工点${i+1}价格`} type="number" step="0.0001" min="0.00000001" value={p.price} onChange={e=>setDraft({...draft,points:draft.points.map((v,j)=>i===j?{...v,field:'custom',price:e.target.value}:v)})}/><small>{pointLabel(p.field)}</small></div>)}</details>
+   {draft.points.some(p=>!example.history.some(r=>r.date===p.date))&&<p className="gw-warning">有人工点在当前行情范围外，保存的日期与价格仍保留。</p>}
+  </section>
+  {(error||message)&&<div className={error?'gw-warning':'gw-success'} role={error?'alert':'status'}>{error||message}{error&&<button className="gw-link" onClick={()=>load(false)}>刷新云端记录，保留草稿</button>}</div>}
+  <section><div className="gw-panel-title"><h3>多轮校准记录</h3><span>{rounds.length}轮</span></div>{rounds.slice(0,50).map((r,i)=><article className="gw-round" key={r.round_id??`${r.owner}:${r.dataset_id}:${r.updated_at}:${i}`}><div className="gw-round-heading"><b>第{r.number}轮 · {reviewLabels[r.status]}</b><span>{r.as_of}</span></div><small>{r.owner} · {time(r.updated_at)} · 北京时间</small><p>{r.note||'未填写批注'}</p>{r.drawing_snapshot?<><div className="gw-round-points"><span>人工 H <b>{r.drawing_snapshot.points[0].price}</b></span><span>{r.drawing_snapshot.mode==='HL'?'L':'M'} <b>{r.drawing_snapshot.points[1].price}</b></span></div><p className="gw-muted">自动{r.auto_context?.auto_mode??r.auto_mode??'—'} · H {r.auto_context?.H?.price??'待核'} / {r.auto_context?.auto_mode==='HL'?'L '+(r.auto_context?.L?.price??'待核'):'M '+(r.auto_context?.M?.price??'未选')} · 批次 {r.dataset_id.slice(0,8)}</p><button className="gw-link" onClick={()=>onViewRound(r)}>回看本轮并继续校准 ↗</button></>:<small className="gw-muted">仅批注，未关联人工画线</small>}</article>)}{doc&&!rounds.length&&<p className="gw-muted">保存第一轮后，可在这里逐轮回看和继续调整。</p>}</section>
+  <section><div className="gw-panel-title"><h3>已保存人工画线</h3><span>{doc?.drawings.length??'—'}份</span></div>{doc?.drawings.slice().reverse().map(d=><div className="gw-saved" key={d.id}><b>{d.title}</b><span>{d.owner} · {time(d.updated_at)}</span><small>{d.mode} · H {d.points[0].price} / {d.mode==='HL'?'L':'M'} {d.points[1].price}</small><p>{d.note}</p><div><button className="gw-link" onClick={()=>open(d,d.owner!==user)}>{d.owner===user?'打开 / 修改':'查看并复制'}</button><button className="gw-link" onClick={()=>setExpanded(expanded===d.id?'':d.id)}>历史版本 {d.history?.length??0}</button></div>{expanded===d.id&&<div>{d.history?.map((h,i)=><button className="gw-version" key={i} onClick={()=>open({...h,history:[]} as Drawing,true)}>{time(h.updated_at)} · {h.points.map(p=>p.price).join(' / ')} → 复制</button>)}</div>}</div>)}{doc&&!doc.drawings.length&&<p className="gw-muted">尚无已保存人工画线。</p>}</section>
+ </div>;
 }

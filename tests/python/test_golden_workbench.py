@@ -1,7 +1,7 @@
 import _bootstrap
 import copy,json,unittest
 from datetime import date,timedelta
-from backend.golden.annotations import empty,apply,Conflict,Forbidden
+from backend.golden.annotations import empty,apply,calibration_context,Conflict,Forbidden
 from backend.golden.automatic import evaluate
 from backend.golden.daily import make_case
 from backend.golden.watchlist import WATCHLIST,SYMBOLS
@@ -39,6 +39,29 @@ class DrawingSecurity(unittest.TestCase):
         payload=dict(revision=0,kind='review',as_of='2020-01-05',dataset_id='a'*16,status='M_ISSUE',note='wrong',axis_id='M:2020-01-04:15.00',auto_mode='HM')
         doc=apply(empty('600519'),payload,'alice','600519')
         self.assertEqual(doc['reviews'][0]['owner'],'alice');self.assertEqual(doc['reviews'][0]['axis_id'],payload['axis_id'])
+    def test_calibration_rounds_keep_exact_drawing_and_trusted_auto_snapshot(self):
+        source=dict(symbol='600519',dataset_id='a'*16,as_of='2020-01-05',policy_sha256='f'*64,result=dict(H={'price':'21','date':'2020-01-01'},L=None,price_groups=[]))
+        context=calibration_context(source,'HL','')
+        payload=dict(kind='calibration',revision=0,drawing=self.payload()['drawing'],review=dict(status='H_ISSUE',note='round one',axis_id='',auto_mode='HL'))
+        first=apply(empty('600519'),payload,'alice','600519',now='2020-01-05T16:00:00Z',automatic=context)
+        self.assertEqual(first['revision'],1)
+        payload['revision']=1;payload['drawing']['points'][1]['price']='11';payload['review']['note']='round two'
+        second=apply(first,payload,'alice','600519',now='2020-01-05T17:00:00Z',automatic=context)
+        self.assertEqual(second['revision'],2)
+        review=second['reviews'][0];old=review['history'][0]
+        self.assertEqual(old['note'],'round one');self.assertEqual(old['drawing_snapshot']['points'][1]['price'],'10')
+        self.assertEqual(review['drawing_snapshot']['points'][1]['price'],'11')
+        self.assertEqual(old['auto_context']['H']['price'],'21');self.assertIsNone(review['auto_context']['L'])
+        self.assertNotEqual(old['round_id'],review['round_id'])
+        self.assertEqual(first['drawings'][0]['points'][1]['price'],'10')
+        # A failed combined save must not leave only the drawing modified.
+        before=copy.deepcopy(second);payload['revision']=2;payload['review']['note']='x'*2001
+        with self.assertRaises(ValueError):apply(second,payload,'alice','600519',automatic=context)
+        self.assertEqual(second,before)
+    def test_calibration_cannot_accept_unverified_auto_context_or_unknown_axis(self):
+        payload=dict(kind='calibration',revision=0,drawing=self.payload()['drawing'],review=dict(status='UNCERTAIN',note='',axis_id='',auto_mode='HL'))
+        with self.assertRaises(ValueError):apply(empty('600519'),payload,'alice','600519')
+        with self.assertRaises(ValueError):calibration_context(dict(result={}), 'HM','unknown')
 
 
 class DailyExamples(unittest.TestCase):

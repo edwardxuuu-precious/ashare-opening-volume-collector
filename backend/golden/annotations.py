@@ -37,7 +37,19 @@ def point(v):
     return dict(v)
 
 
-def apply(document, payload, user, symbol, now=None):
+def calibration_context(example, mode, axis_id):
+    """Trusted context derived from the immutable published example, not UI claims."""
+    if mode not in ('HL','HM') or not isinstance(axis_id,str): raise ValueError('AUTO_CONTEXT')
+    result=example.get('result') or {}
+    axis=next((a for g in result.get('price_groups',[]) for a in g['records'] if a['id']==axis_id),None)
+    if axis_id and axis is None: raise ValueError('AXIS_NOT_IN_SAVED_EXAMPLE')
+    return dict(symbol=example['symbol'],dataset_id=example['dataset_id'],as_of=example['as_of'],
+        policy_sha256=example['policy_sha256'],auto_mode=mode,axis_id=axis_id,
+        H=result.get('H'),L=result.get('L'),
+        M={k:axis[k] for k in ('id','price','B_conditional')} if mode=='HM' and axis else None)
+
+
+def apply(document, payload, user, symbol, now=None, automatic=None):
     # Pure validation and CAS revision check; the S3 ETag is checked separately.
     if document.get('schema')!=SCHEMA or document.get('symbol')!=symbol or symbol not in SYMBOLS: raise ValueError('DOCUMENT')
     if not isinstance(payload,dict) or type(payload.get('revision')) is not int: raise ValueError('REVISION')
@@ -46,6 +58,21 @@ def apply(document, payload, user, symbol, now=None):
     result=copy.deepcopy(document)
     stamp=now or datetime.now(timezone.utc).isoformat()
     kind=payload.get('kind')
+    if kind=='calibration':
+        if set(payload)!={'kind','revision','drawing','review'}: raise ValueError('CALIBRATION_FIELDS')
+        drawing,review=payload['drawing'],payload['review']
+        if not isinstance(drawing,dict) or not isinstance(review,dict) or set(review)!={'status','note','axis_id','auto_mode'}: raise ValueError('CALIBRATION_FIELDS')
+        if not automatic or automatic['symbol']!=symbol or automatic['dataset_id']!=drawing.get('dataset_id') or automatic['as_of']!=drawing.get('as_of') or automatic['axis_id']!=review['axis_id'] or automatic['auto_mode']!=review['auto_mode']: raise ValueError('CALIBRATION_SOURCE')
+        # Validate both edits using the existing contracts. The gateway writes
+        # the resulting document once, under its original S3 ETag.
+        drawn=apply(document,dict(kind='drawing',revision=document['revision'],drawing=drawing),user,symbol,stamp)
+        updated=apply(drawn,dict(kind='review',revision=drawn['revision'],as_of=drawing['as_of'],dataset_id=drawing['dataset_id'],**review),user,symbol,stamp)
+        saved=next(d for d in updated['drawings'] if d['id']==drawing['id'])
+        current=next(r for r in updated['reviews'] if r['owner']==user and r['dataset_id']==drawing['dataset_id'])
+        current.update(round_id=f"{symbol}:{document['revision']+1}",drawing_snapshot=copy.deepcopy({k:v for k,v in saved.items() if k!='history'}),auto_context=copy.deepcopy(automatic))
+        updated['revision']=document['revision']+1
+        if len(json.dumps(updated,ensure_ascii=False).encode())>MAX_BYTES: raise ValueError('ANNOTATION_DOCUMENT_FULL')
+        return updated
     if kind=='drawing':
         value=payload.get('drawing')
         if not isinstance(value,dict) or set(value)!={'id','title','mode','points','note','as_of','dataset_id'}: raise ValueError('DRAWING_FIELDS')

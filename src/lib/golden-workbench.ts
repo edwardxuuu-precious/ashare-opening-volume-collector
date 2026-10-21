@@ -7,7 +7,10 @@ export type WatchManifest={schema:string;version:string;dataset_id:string;source
 export type Example={schema:string;dataset_id:string;symbol:string;name:string;kind:'INDEX'|'EQUITY';as_of:string;history:DailyCandle[];window_start:string|null;last_bar_date:string|null;freshness:string;error:string|null;result:AutoResult|null;source?:{provider?:string;captured_at?:string}|null};
 export type ManualPoint={date:string;field:string;price:string};
 export type Drawing={id:string;title:string;mode:'HL'|'HM';points:ManualPoint[];note:string;as_of:string;dataset_id:string;owner:string;updated_at:string;created_at:string;history:Omit<Drawing,'history'>[]};
-export type Review={owner:string;as_of:string;dataset_id:string;status:string;note:string;updated_at:string};
+export type DrawingSnapshot=Omit<Drawing,'history'>;
+export type AutoContext={symbol:string;dataset_id:string;as_of:string;policy_sha256:string;auto_mode:'HL'|'HM';axis_id:string;H:Anchor|null;L:Anchor|null;M: {id:string;price:string;B_conditional:string}|null};
+export type ReviewRound={owner:string;as_of:string;dataset_id:string;status:string;note:string;updated_at:string;axis_id?:string;auto_mode?:'HL'|'HM';round_id?:string;drawing_snapshot?:DrawingSnapshot;auto_context?:AutoContext};
+export type Review=ReviewRound&{history?:ReviewRound[]};
 export type Annotations={schema:string;symbol:string;revision:number;drawings:Drawing[];reviews:Review[]};
 export type PriceLine={price:number;label:string;manual?:boolean};
 const record=(v:unknown):Record<string,unknown>=>{if(!v||typeof v!=='object'||Array.isArray(v))throw Error('核对数据格式错误');return v as Record<string,unknown>;};
