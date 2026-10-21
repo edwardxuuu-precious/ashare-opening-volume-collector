@@ -167,6 +167,45 @@ def handler(event, context):
             return response(401, {'error': '请先登录'}, [cookie(ACCESS)])
         if method == 'GET' and path == '/auth/me':
             return response(200, {'username': user})
+        # Daily visual-review data and shared annotations stay behind the same
+        # Cognito validation. Only the exact twenty symbols may be written.
+        annotation = re.fullmatch(r'/data/golden-workbench/annotations/(sh000001|\d{6})\.json', path)
+        if annotation and method in ('GET','POST'):
+            from backend.golden.annotations import apply, empty, Conflict, Forbidden
+            from backend.golden.watchlist import SYMBOLS
+            symbol=annotation.group(1)
+            if symbol not in SYMBOLS: return response(404, {'error':'不在固定核对名单中'})
+            key=path.lstrip('/')
+            try:
+                obj=s3.get_object(Bucket=BUCKET,Key=key)
+                document=json.loads(obj['Body'].read())
+            except ClientError as exc:
+                if exc.response['Error']['Code']!='NoSuchKey': raise
+                obj={};document=empty(symbol)
+            if method=='GET': return data_response(document,headers.get('accept-encoding',''))
+            body=event.get('body','')
+            if event.get('isBase64Encoded'): body=base64.b64decode(body).decode()
+            if len(body.encode())>16000: return response(400,{'error':'保存内容过长'})
+            try:
+                updated=apply(document,json.loads(body),user,symbol)
+                s3.put_object(Bucket=BUCKET,Key=key,Body=json.dumps(updated,ensure_ascii=False).encode(),
+                    ContentType='application/json; charset=utf-8',**({'IfMatch':obj['ETag']} if obj.get('ETag') else {'IfNoneMatch':'*'}))
+                return data_response(updated,headers.get('accept-encoding',''))
+            except Conflict as exc: return response(409,{'error':str(exc)})
+            except Forbidden as exc: return response(403,{'error':str(exc)})
+            except ValueError: return response(400,{'error':'画线或核对信息无效，请检查选点与内容'})
+            except ClientError as exc:
+                if exc.response['Error']['Code'] in ('PreconditionFailed','ConditionalRequestConflict'):
+                    return response(409,{'error':'其他同事刚保存了内容，请刷新后重试；当前草稿仍保留'})
+                raise
+        if method=='GET' and re.fullmatch(r'/data/golden-workbench/(?:manifest\.json|[a-f0-9]{16}/(?:manifest|sh000001|\d{6})\.json)',path):
+            try:
+                obj=s3.get_object(Bucket=BUCKET,Key=path.lstrip('/')); raw=obj['Body'].read()
+                if raw[:2]==b'\x1f\x8b': raw=gzip.decompress(raw)
+                return data_response(json.loads(raw),headers.get('accept-encoding',''))
+            except ClientError as exc:
+                if exc.response['Error']['Code']=='NoSuchKey': return response(404,{'error':'该日期的核对结果尚未发布'})
+                raise
         historical = re.fullmatch(r'/data/chips/daily/([a-f0-9]{16})/(\d{6})/history/(\d{4}-\d{2}-\d{2})\.json', path)
         if method == 'GET' and historical:
             from backend.chips.history import load_history, load_history_batch, ImmutableHistoryStore

@@ -8,7 +8,8 @@ import zipfile
 ROOT=Path(__file__).resolve().parents[2]
 MODULES=('backend/__init__.py','backend/chips/__init__.py','backend/chips/model.py',
          'backend/chips/ohlc4_input.py','backend/chips/eastmoney_model.py',
-         'backend/chips/calendar.py','backend/chips/history.py')
+         'backend/chips/calendar.py','backend/chips/history.py',
+         'backend/golden/__init__.py','backend/golden/watchlist.py','backend/golden/annotations.py')
 
 
 def inline_handler():

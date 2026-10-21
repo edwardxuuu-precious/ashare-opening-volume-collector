@@ -1,0 +1,39 @@
+'use client';
+import {useEffect,useState,useRef} from 'react';
+import {authFetch} from '@/lib/auth-fetch';
+import {readChip} from '@/lib/chip-read';
+import {reviewLabels,type Annotations,type Drawing,type Example,type ManualPoint} from '@/lib/golden-workbench';
+const api=(process.env.NEXT_PUBLIC_DATA_BASE||'').replace(/\/$/,'');
+export type ManualDraft={id:string;title:string;mode:'HL'|'HM';points:ManualPoint[];note:string};
+export const blankDraft=():ManualDraft=>({id:'',title:'我的画格',mode:'HL',points:[],note:''});
+export function GoldenReviewTools({example,user,draft,setDraft,drawing,setDrawing,field,setField,showManual,setShowManual,autoMode,axisId}:{example:Example;user:string;draft:ManualDraft;setDraft:(d:ManualDraft)=>void;drawing:boolean;setDrawing:(v:boolean)=>void;field:string;setField:(s:string)=>void;showManual:boolean;setShowManual:(v:boolean)=>void;autoMode:string;axisId:string}){
+  const [doc,setDoc]=useState<Annotations|null>(null),[error,setError]=useState(''),[message,setMessage]=useState(''),[busy,setBusy]=useState(false);
+  const reviewKey=`golden-review-draft-v1:${user}:${example.dataset_id}:${example.symbol}`;
+  const dirty=useRef(false);
+  const restored=useRef<{review:string;note:string}|null>(null);
+  const [review,setReview]=useState(()=>{try{restored.current=JSON.parse(localStorage.getItem(reviewKey)||'null');}catch{}return restored.current?.review??'UNCERTAIN';}),[note,setNote]=useState(restored.current?.note??''),[expanded,setExpanded]=useState('');
+  useEffect(()=>{if(user)try{localStorage.setItem(reviewKey,JSON.stringify({review,note}));}catch{}},[reviewKey,review,note,user]);
+  const path=`/data/golden-workbench/annotations/${example.symbol}.json`;
+  const load=(hydrate=false)=>{const c=new AbortController();readChip(path,c.signal,v=>v as Annotations).then(v=>{if(c.signal.aborted)return;setDoc(v);setError('');const own=v.reviews.find(r=>r.owner===user&&r.dataset_id===example.dataset_id);if(hydrate&&!restored.current&&!dirty.current&&own){setReview(own.status);setNote(own.note);}}).catch(e=>{if(!c.signal.aborted)setError(e.message);});return()=>c.abort();};
+  useEffect(()=>load(true),[path,user,example.dataset_id]);
+  async function save(payload:object){if(!doc||busy)return;setBusy(true);setMessage('');setError('');try{const response=await authFetch(api+path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({...payload,revision:doc.revision})});const value=await response.json() as Annotations & {error?:string};if(!response.ok)throw Error(value.error||'保存失败');setDoc(value);setMessage('已保存到云端 · 所有登录同事可见');setDrawing(false);}catch(e){setError((e as Error).message);}finally{setBusy(false);}}
+  function saveDrawing(){const id=draft.id||crypto.randomUUID();setDraft({...draft,id});return save({kind:'drawing',drawing:{...draft,id,as_of:example.as_of,dataset_id:example.dataset_id}});}
+  function open(d:Drawing,copy=false){setDraft({id:copy?'':d.id,title:copy?d.title+'（副本）':d.title,mode:d.mode,points:d.points,note:d.note});setShowManual(true);setDrawing(false);}
+  return <div className="gw-tools">
+    <section><div className="gw-panel-title"><h3>手动画格</h3><span>共享保存</span></div><p className="gw-muted">在K线上依次点H和L / M，也可手填价格。紫色线是人工画法。</p>
+      <div className="gw-segment"><button aria-pressed={draft.mode==='HL'} onClick={()=>{setDraft({...draft,mode:'HL'});}}>H/L 逐层平分</button><button aria-pressed={draft.mode==='HM'} onClick={()=>setDraft({...draft,mode:'HM'})}>H/M 等高格子</button></div>
+      <div className="gw-tool-actions"><button className={drawing?'gw-primary':'gw-button'} disabled={!example.history.length} onClick={()=>{setDraft({...draft,id:'',points:[]});setField('high');setDrawing(true);setShowManual(true);document.querySelector('.gw-main-chart .gw-canvas')?.scrollIntoView({block:'center'});}}>{drawing?'重新选择两点':'开始画格'}</button><label><input type="checkbox" checked={showManual} onChange={e=>setShowManual(e.target.checked)}/>显示人工线</label></div>
+      {drawing&&<label className="gw-field">取价字段<select aria-label="人工选点取价字段" value={field} onChange={e=>setField(e.target.value)}>{['high','low','open','close','custom'].map(f=><option key={f} value={f}>{({high:'最高价 High',low:'最低价 Low',open:'开盘价 Open',close:'收盘价 Close',custom:'鼠标自由价位'})[f]}</option>)}</select></label>}
+      {draft.points.map((p,i)=><div className="gw-point-editor" key={i}><b>{i===0?'H':draft.mode==='HL'?'L':'M'}</b><input aria-label={`人工点${i+1}日期`} type="date" value={p.date} max={example.as_of} onChange={e=>setDraft({...draft,points:draft.points.map((v,j)=>i===j?{...v,date:e.target.value,field:'custom'}:v)})}/><input aria-label={`人工点${i+1}价格`} type="number" step="0.01" min="0.000001" value={p.price} onChange={e=>setDraft({...draft,points:draft.points.map((v,j)=>i===j?{...v,field:'custom',price:e.target.value}:v)})}/><small>{p.field}</small></div>)}
+      {draft.points.some(p=>!example.history.some(r=>r.date===p.date))&&<p className="gw-warning">有人工点在当前显示窗口外，保存的日期与价格仍保留。</p>}
+      <label className="gw-field">画法名称<input value={draft.title} maxLength={80} onChange={e=>setDraft({...draft,title:e.target.value})}/></label>
+      <label className="gw-field">选点说明<textarea rows={2} value={draft.note} maxLength={2000} onChange={e=>setDraft({...draft,note:e.target.value})} placeholder="为什么取这根K线、这个价格？"/></label>
+      <button className="gw-primary gw-save" disabled={busy||!doc||!user||draft.points.length!==2||Number(draft.points[0]?.price)<=Number(draft.points[1]?.price)||!draft.title.trim()} onClick={saveDrawing}>{busy?'保存中…':draft.id?'保存我的修改':'保存为共享画法'}</button>
+      <small className="gw-muted">保存后可跨设备打开；修改保留历史版本。自动选点不随人工画线改变。</small>
+    </section>
+    <section><div className="gw-panel-title"><h3>今日核对</h3><span>{example.as_of}</span></div><label className="gw-field">程序画得怎样？<select aria-label="自动画法核对结论" value={review} onChange={e=>{dirty.current=true;setReview(e.target.value);}}>{Object.entries(reviewLabels).map(([k,v])=><option key={k} value={k}>{v}</option>)}</select></label><textarea rows={2} aria-label="每日核对说明" placeholder="指出哪根K线或哪条轴不对" value={note} maxLength={2000} onChange={e=>{dirty.current=true;setNote(e.target.value);}}/><button className="gw-button gw-save" disabled={busy||!doc||!user} onClick={()=>save({kind:'review',as_of:example.as_of,dataset_id:example.dataset_id,status:review,note,axis_id:axisId,auto_mode:autoMode})}>保存本日核对</button><small className="gw-muted">记录当前日期、批次及浏览的中轴候选。</small></section>
+    {(error||message)&&<div className={error?'gw-warning':'gw-success'} role={error?'alert':'status'}>{error||message}{error&&<button className="gw-link" onClick={()=>load(false)}>刷新云端记录，保留草稿</button>}</div>}
+    <section><div className="gw-panel-title"><h3>同事的画法</h3><span>{doc?.drawings.length??'—'}份</span></div>{doc?.drawings.slice().reverse().map(d=><div className="gw-saved" key={d.id}><b>{d.title}</b><span>{d.owner} · {new Date(d.updated_at).toLocaleString('zh-CN')}</span><small>{d.mode} · H {d.points[0].price} / {d.mode==='HL'?'L':'M'} {d.points[1].price}</small><p>{d.note}</p><div><button className="gw-link" onClick={()=>open(d,d.owner!==user)}>{d.owner===user?'打开 / 修改':'查看并复制'}</button><button className="gw-link" onClick={()=>setExpanded(expanded===d.id?'':d.id)}>历史版本 {d.history?.length??0}</button></div>{expanded===d.id&&<div>{d.history?.map((h,i)=><button className="gw-version" key={i} onClick={()=>open({...h,history:[]} as Drawing,true)}>{new Date(h.updated_at).toLocaleString('zh-CN')} · {h.points.map(p=>p.price).join(' / ')} → 复制</button>)}</div>}</div>)}{doc&&!doc.drawings.length&&<p className="gw-muted">还没有共享画法。画好后点保存，同事即可打开。</p>}</section>
+    <section><h3>核对记录</h3>{doc?.reviews.slice().reverse().slice(0,20).map((r,i)=><div className="gw-saved" key={i}><b>{r.as_of} · {reviewLabels[r.status]}</b><span>{r.owner}</span><p>{r.note||'未填写说明'}</p></div>)}</section>
+  </div>;
+}
