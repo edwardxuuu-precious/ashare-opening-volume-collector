@@ -62,6 +62,3 @@ jobs:
       - name: Bounded source health check
         if: inputs.mode == 'probe'
         run: python -m backend.chips.probe
-      - name: Update the twenty golden drawing review examples
-        if: inputs.mode != 'probe'
-        run: python -m backend.golden.daily --bucket "$STOCK_BUCKET"

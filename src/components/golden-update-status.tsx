@@ -1,0 +1,7 @@
+'use client';
+import {chinaTime,goldenPresentation,type GoldenUpdateStatus} from '@/lib/golden-update-status';
+import type {WatchManifest} from '@/lib/golden-workbench';
+export function GoldenUpdateStrip({status,latest,viewDate,viewDatasetId,viewGeneratedAt,error,onRefresh}:{status:GoldenUpdateStatus|null;latest:WatchManifest|null;viewDate?:string;viewDatasetId?:string;viewGeneratedAt?:string;error:string;onRefresh:()=>void}){
+ const view=goldenPresentation(status,latest),{state,newData}=view;
+ return <section className="gw-update-strip" aria-label="每日自动更新状态"><div className="gw-update-top"><div><span>最新日线日期</span><strong>{view.date??'—'}</strong></div><div className={`gw-update-badge gw-update-${state.tone}`} role="status">{state.label}</div><div><span>数据更新时间 · 北京时间</span><b>{chinaTime(view.generated_at)}</b></div><div><span>最近检查 · 北京时间</span><b>{chinaTime(status?.updated_at)}</b></div></div><p>交易日15:45首次更新，16:15 / 17:15 / 20:15自动补跑；仅更新这20个样本，独立于全市场筹码任务。{viewDate&&(viewDate!==view.date||viewDatasetId!==latest?.dataset_id)&&<em>当前查看 {viewDate} · {chinaTime(viewGeneratedAt).slice(11,19)} 的历史批次。</em>}{newData&&<button onClick={onRefresh}>新数据已就绪，刷新查看 →</button>}</p>{(error||view.status?.error)&&<p className="gw-warning">{error||view.status?.error}</p>}{view.status&&view.status.missing.length>0&&<details><summary>尚待补齐的样本（{view.status.missing.length}）</summary><p>{view.status.missing.map(m=>m.name).join('、')}。尚未取得目标交易日行情，不计入已完成。</p></details>}</section>;
+}

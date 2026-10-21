@@ -1,0 +1,51 @@
+name: After-close twenty golden drawing samples
+on:
+  workflow_dispatch:
+    inputs:
+      as_of:
+        description: Completed trading session YYYY-MM-DD, empty selects latest
+        type: string
+  schedule:
+    # Shanghai 15:45 first update; 16:15, 17:15 and 20:15 bounded catch-ups.
+    # Independent of the long whole-market chip workflow.
+    - cron: '45 7 * * 1-5'
+    - cron: '15 8,9,12 * * 1-5'
+permissions:
+  contents: read
+concurrency:
+  group: stock-golden-review-writer
+  cancel-in-progress: false
+jobs:
+  golden:
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'workflow_dispatch' || vars.DISABLE_GOLDEN_UPDATE != 'true')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      AWS_EC2_METADATA_DISABLED: 'true'
+      AWS_DEFAULT_REGION: us-east-1
+      STOCK_BUCKET: ${{ vars.STOCK_BUCKET }}
+      STOCK_AS_OF: ${{ inputs.as_of }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.11'
+      - run: pip install 'boto3>=1.40,<2' 'baostock==0.9.3'
+      - uses: aws-actions/configure-aws-credentials@ff717079ee2060e4bcee96c4779b553acc87447c
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          role-duration-seconds: 3600
+          role-session-name: golden-${{ github.run_id }}
+          aws-region: us-east-1
+      - name: Refresh twenty samples and publish visible update status
+        shell: bash
+        run: |
+          set -euo pipefail
+          args=()
+          if [ -n "$STOCK_AS_OF" ]; then args+=(--as-of "$STOCK_AS_OF"); fi
+          python -m backend.golden.update --bucket "$STOCK_BUCKET" "${args[@]}"

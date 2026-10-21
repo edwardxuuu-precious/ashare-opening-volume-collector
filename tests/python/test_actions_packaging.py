@@ -49,10 +49,12 @@ class ActionsPackagingTests(unittest.TestCase):
             {'backend/chips/'+name+'.py' for name in ('__init__','calendar','model','eastmoney_model','ohlc4_input','current_quote','probe','runner','screen','source','baostock_history','ths_history','listing','display','limit_reference','golden')})
         self.assertIn('backend/scripts/sina_spot.py',SOURCES)
         self.assertEqual({p for p in SOURCES if p.startswith('backend/golden/')},
-            {'backend/golden/'+name+'.py' for name in ('__init__','anchors','automatic','watchlist','daily','annotations')})
+            {'backend/golden/'+name+'.py' for name in ('__init__','anchors','automatic','watchlist','daily','annotations','sources','update')})
         root=Path(__file__).resolve().parents[2]
         self.assertEqual((root/'.github/workflows/chips.yml').read_text(),(root/'deploy/actions/workflows/chips.yml').read_text())
-        self.assertIn('python -m backend.golden.daily --bucket "$STOCK_BUCKET"',(root/'.github/workflows/chips.yml').read_text())
+        self.assertNotIn('backend.golden.daily',(root/'.github/workflows/chips.yml').read_text())
+        self.assertEqual((root/'.github/workflows/golden.yml').read_text(),(root/'deploy/actions/workflows/golden.yml').read_text())
+        self.assertIn('backend.golden.update',(root/'.github/workflows/golden.yml').read_text())
         self.assertIn('backend/scripts/exchange_status.py',SOURCES)
         self.assertNotIn('backend/server/service.py',SOURCES)
         self.assertNotIn('deploy/auth/accounts.py',SOURCES)

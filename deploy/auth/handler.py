@@ -198,7 +198,7 @@ def handler(event, context):
                 if exc.response['Error']['Code'] in ('PreconditionFailed','ConditionalRequestConflict'):
                     return response(409,{'error':'其他同事刚保存了内容，请刷新后重试；当前草稿仍保留'})
                 raise
-        if method=='GET' and re.fullmatch(r'/data/golden-workbench/(?:manifest\.json|[a-f0-9]{16}/(?:manifest|sh000001|\d{6})\.json)',path):
+        if method=='GET' and re.fullmatch(r'/data/golden-workbench/(?:(?:manifest|status)\.json|[a-f0-9]{16}/(?:manifest|sh000001|\d{6})\.json)',path):
             try:
                 obj=s3.get_object(Bucket=BUCKET,Key=path.lstrip('/')); raw=obj['Body'].read()
                 if raw[:2]==b'\x1f\x8b': raw=gzip.decompress(raw)

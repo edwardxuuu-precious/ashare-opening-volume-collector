@@ -20,7 +20,7 @@ VERSION='golden-workbench.auto20.v1'
 def encoded(v): return json.dumps(v,ensure_ascii=False,separators=(',',':')).encode()
 def sha(v): return hashlib.sha256(v).hexdigest()
 def implementation():
-    return sha(b''.join((Path(__file__).parent/n).read_text(encoding='utf-8').replace('\r\n','\n').encode() for n in ('daily.py','watchlist.py','anchors.py','automatic.py')))
+    return sha(b''.join((Path(__file__).parent/n).read_text(encoding='utf-8').replace('\r\n','\n').encode() for n in ('daily.py','watchlist.py','anchors.py','automatic.py','sources.py','update.py')))
 
 
 def read(s3,bucket,key):
@@ -91,6 +91,8 @@ def publish(s3,bucket,index_reader=index_history):
     if latest and latest.get('source_dataset_id')==source['dataset_id'] and latest.get('implementation_sha256')==identity and all(not r.get('error') and (r['symbol']!='sh000001' or r['freshness']=='CURRENT') for r in latest['rows']):
         return dict(outcome='ALREADY_CURRENT',as_of=latest['as_of'],dataset_id=latest['dataset_id'])
     as_of=source['as_of'];cases=[]
+    if latest and latest['as_of']>as_of:
+        return dict(outcome='NEWER_INDEPENDENT_BATCH_EXISTS',as_of=latest['as_of'],dataset_id=latest['dataset_id'])
     for code,name in WATCHLIST:
         try:
             if code=='sh000001':
@@ -118,7 +120,21 @@ def publish(s3,bucket,index_reader=index_history):
                 as_of=as_of,last_bar_date=None,freshness='UNKNOWN',calculation_rows=0,window_start=None,
                 history=[],result=None,error=type(exc).__name__+':'+str(exc)[:160],source=None)
         cases.append(value)
+    # The legacy chip-dependent entry point is retained only for old callers.
+    # New scheduled publication goes through the independent 20-example runner.
+    current,_=read(s3,bucket,'data/chips/daily/manifest.json')
+    if current['dataset_id']!=source['dataset_id']: raise ValueError('SOURCE_ADVANCED_RETRY_NEXT_RUN')
+    return publish_cases(s3,bucket,source,cases)
+
+
+def publish_cases(s3,bucket,source,cases):
+    as_of=source['as_of'];identity=implementation()
+    latest,etag=read(s3,bucket,PREFIX+'manifest.json')
+    if latest and latest['as_of']>as_of: raise ValueError('WOULD_REPLACE_NEWER_GOLDEN_DATE')
+    if len(cases)!=20 or [v['symbol'] for v in cases]!=[v[0] for v in WATCHLIST]: raise ValueError('EXACT_TWENTY_CASES_REQUIRED')
     dataset=sha(encoded(dict(source=source['dataset_id'],implementation=identity,cases=cases)))[:16]
+    if latest and latest['dataset_id']==dataset:
+        return dict(outcome='ALREADY_CURRENT',as_of=as_of,dataset_id=dataset)
     summaries=[]
     for case in cases:
         case.update(schema='stock.golden.example.v1',dataset_id=dataset,version=VERSION,policy_sha256=policy_sha())
@@ -131,9 +147,10 @@ def publish(s3,bucket,index_reader=index_history):
             dict(history=case['history'][-60:],H=r['H'] if r else None,L=r['L'] if r else None,
                 M_count=len(r['price_groups']) if r else 0,formation_count=r['retained_current_H_records'] if r else 0))
     archive=[a for a in (latest or {}).get('archives',[]) if a['dataset_id']!=dataset]
-    archive.append(dict(as_of=as_of,dataset_id=dataset))
+    stamp=datetime.now(timezone.utc).isoformat()
+    archive.append(dict(as_of=as_of,dataset_id=dataset,generated_at=stamp))
     manifest=dict(schema='stock.golden.watchlist.v1',version=VERSION,dataset_id=dataset,source_dataset_id=source['dataset_id'],
-        as_of=as_of,generated_at=datetime.now(timezone.utc).isoformat(),implementation_sha256=identity,
+        as_of=as_of,generated_at=stamp,implementation_sha256=identity,
         policy=POLICY,policy_sha256=policy_sha(),calculation_window=60,rows=summaries,archives=archive,
         owner_fidelity='NOT_VERIFIED',automatic_axis_winner=None,trading_rules=None)
     previous_manifest,_=read(s3,bucket,PREFIX+dataset+'/manifest.json')
@@ -141,10 +158,6 @@ def publish(s3,bucket,index_reader=index_history):
     else:
         if previous_manifest['rows']!=manifest['rows'] or previous_manifest['implementation_sha256']!=identity: raise ValueError('IMMUTABLE_MANIFEST_CONFLICT')
         manifest=previous_manifest
-    # Re-read the input publication before replacing latest. If another chip
-    # batch arrived meanwhile, do not publish a stale pointer over it.
-    current,_=read(s3,bucket,'data/chips/daily/manifest.json')
-    if current['dataset_id']!=source['dataset_id']: raise ValueError('SOURCE_ADVANCED_RETRY_NEXT_RUN')
     put(s3,bucket,PREFIX+'manifest.json',manifest,**({'IfMatch':etag} if etag else {'IfNoneMatch':'*'}))
     return dict(outcome='PUBLISHED',as_of=as_of,dataset_id=dataset,examples=len(cases),
         available=sum(c['result'] is not None for c in cases),H=sum(bool(c['H']) for c in summaries),HL=sum(bool(c['H'] and c['L']) for c in summaries))
