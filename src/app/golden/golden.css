@@ -11,3 +11,5 @@
 @media(prefers-reduced-motion:reduce){.gw-site button,.gw-site summary{transition:none;scroll-behavior:auto}}
 .gw-workspace{overflow-y:auto;scrollbar-width:thin}.gw-detail-layout{min-height:480px;flex:1 0 480px}@media(max-width:760px){.gw-detail-layout{min-height:500px;flex-basis:500px}}
 .gw-chart-toolbar select,.gw-manual-toolbar select{width:auto;flex:none}
+/* Keep toolbar controls compact regardless of shared chip-page stylesheet order. */
+.chip-site.gw-site select{min-height:0}.gw-site .gw-chart-toolbar select,.gw-site .gw-manual-toolbar select{width:auto;flex:none;min-height:28px;height:28px;padding:4px 6px;font-size:11px}.gw-site .gw-page-bar select{min-height:28px}@media(max-width:760px){.gw-site .gw-chart-toolbar select,.gw-site .gw-manual-toolbar select{font-size:10px;padding:4px}}
