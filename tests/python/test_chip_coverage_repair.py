@@ -175,7 +175,7 @@ class CoverageRepair(unittest.TestCase):
 
     def test_verified_first_listing_has_current_chips_without_fabricating_previous(self):
         raw=json.dumps({'rc':0,'data':{'code':STOCK['code'],'klines':[
-            DAYS[-1]+',5,5,5.1,4.9,10,5000,,0,0,2.5']}}).encode()
+            DAYS[-1]+',15,15,15.1,14.9,10,15000,,0,0,2.5']}}).encode()
         stock={**STOCK,'listed':DAYS[-1]}
         unverified,_=frame(stock,raw,{'provider':'THS_UNADJUSTED'},DAYS,{},'INVENTED')
         self.assertEqual(unverified['chip_status'],'MISSING')
@@ -214,7 +214,9 @@ class CoverageRepair(unittest.TestCase):
         def context(slot,previous=None):return {'slot':slot,'dataset':slot,'days':DAYS,'as_of':DAYS[-1],
             'owner':owner,'pools':{d:HIT for d in DAYS},'actual_limits':{},'execution_identity':identity,'previous_slot':previous}
         old='1111111111111111'
-        self.assertEqual(_calculate(store,FakeSource(),STOCK,context(old))['prefilter_status'],'PASS')
+        original=_calculate(store,FakeSource(),STOCK,context(old))
+        self.assertEqual(original['prefilter_status'],'FAIL')
+        self.assertTrue(original['recent_limit_up_dates'])
         listed={**STOCK,'listed':DAYS[-2],'listing_evidence':{'security_id':STOCK['code'],
             'listed':DAYS[-2],'as_of':DAYS[-1],'provider':'OFFICIAL_CURRENT_LIST_RECONCILIATION','sha256':'a'*64}}
         refreshed=_calculate(store,FakeSource(),listed,context('2222222222222222',old))
@@ -235,7 +237,7 @@ class CoverageRepair(unittest.TestCase):
         class FirstDaySource(FakeSource):
             def history(self,stock,day):
                 raw=json.dumps({'rc':0,'data':{'code':stock['code'],'klines':[
-                    DAYS[-1]+',5,5,5.1,4.9,10,5000,,0,0,2.5']}}).encode()
+                    DAYS[-1]+',15,15,15.1,14.9,10,15000,,0,0,2.5']}}).encode()
                 return json.loads(raw),{'sha256':hashlib.sha256(raw).hexdigest()},raw
         old='1111111111111111'
         self.assertEqual(_calculate(store,FirstDaySource(),stock,context(old))['chip_status'],'READY')

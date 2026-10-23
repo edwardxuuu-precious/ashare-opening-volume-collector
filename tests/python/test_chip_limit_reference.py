@@ -10,8 +10,8 @@ from test_chip_daily_v1 import DAYS,STOCK,FakeSource,Memory
 from backend.chips.runner import run,_calculate
 
 def bundle():
-    # A verified ex-rights reference of 4.00 must not be replaced by yesterday's 5.00.
-    rows=[[DAYS[-1],'sz.'+STOCK['code'],'4.30','4.40','4.20','4.40','4.00','1000','4300','3','1.0','1','10.000000','1']]
+    # A verified ex-rights reference of 40.00 must not be replaced by yesterday's 50.00.
+    rows=[[DAYS[-1],'sz.'+STOCK['code'],'43.00','44.00','42.00','44.00','40.00','1000','43000','3','1.0','1','10.000000','1']]
     _,raw=normalize(STOCK,rows,DAYS[-1],DAYS[0])
     return {'schema':'stock.chips.limit.reference.prepared.v1','security_id':STOCK['code'],'as_of':DAYS[-1],
         'official_sessions':DAYS,'published':False,'raw_base64':base64.b64encode(raw).decode(),
@@ -19,9 +19,22 @@ def bundle():
             'adjustflag':'3','url':'https://www.baostock.com/helpDocsHome?file=stockKData.md','ingested_at':'2026-10-19T01:00:00Z'}}
 
 class LimitReference(unittest.TestCase):
+    def setUp(self):
+        # Keep evidence tests in the new eligible range and retain a tick-valid limit candidate.
+        import test_chip_daily_v1 as fixtures
+        lines=[]
+        for line in fixtures.LINES:
+            fields=line.split(',')
+            for i in (1,2,3,4,6):fields[i]=str(D(fields[i])*10)
+            fields[9]=str(D(fields[2])-(D(fields[2])/D('1.1')).quantize(D('.01')))
+            lines.append(','.join(fields))
+        hit=copy.deepcopy(fixtures.HIT)
+        for row in hit.values():row['p']*=10;row['amount']*=10
+        for name,value in (('LINES',lines),('HIT',hit)):
+            guard=patch('test_chip_daily_v1.'+name,value);guard.start();self.addCleanup(guard.stop)
     def archived_sohu(self):
         day=DAYS[-2];code=STOCK['code']
-        raw=json.dumps([{'status':0,'code':'cn_'+code,'hq':[[day,'4.00','4.00','0.00','0.00%','4.00','4.00','10','0.400','-']]}]).encode()
+        raw=json.dumps([{'status':0,'code':'cn_'+code,'hq':[[day,'40.00','40.00','0.00','0.00%','40.00','40.00','10','4.000','-']]}]).encode()
         return {'schema':'stock.chips.limit.sohu.prepared.v1','security_id':code,'as_of':day,'official_sessions':last_ten(day),'published':False,
             'raw_base64':base64.b64encode(raw).decode(),'receipt':{'provider':'SOHU_REPORTED_DAILY_CHANGE',
             'url':f'https://q.stock.sohu.com/hisHq?code=cn_{code}&end={day.replace("-","")}',
@@ -33,7 +46,7 @@ class LimitReference(unittest.TestCase):
         self.assertEqual(b,before);self.assertEqual(s['archived_request_as_of'],DAYS[-2])
         self.assertEqual(s['source_sha256'],b['receipt']['sha256']);self.assertEqual(s['source_url'],b['receipt']['url'])
         self.assertEqual(s['current_overlap_sessions'],[DAYS[-2]]);self.assertNotIn(DAYS[-1],s['rows'])
-        lines=[f'{DAYS[-2]},4.00,4.00,4.00,4.00,10,4000,,,,1',f'{DAYS[-1]},4.00,4.40,4.40,4.00,10,4300,,,,1']
+        lines=[f'{DAYS[-2]},40.00,40.00,40.00,40.00,10,40000,,,,1',f'{DAYS[-1]},40.00,44.00,44.00,40.00,10,43000,,,,1']
         row=prefilter({**STOCK,'reference_close_verified':False},lines,DAYS,{},reference_evidence=s)
         self.assertEqual(row['prefilter_status'],'UNKNOWN');self.assertEqual(row['limit_evidence'][-1]['status'],'UNKNOWN')
 
@@ -50,10 +63,10 @@ class LimitReference(unittest.TestCase):
 
     def test_runner_uses_old_raw_overlap_without_new_network_or_relabelling(self):
         b=self.archived_sohu();raw=json.dumps([{'status':0,'code':'cn_'+STOCK['code'],
-            'hq':[[DAYS[-2],'4.50','4.50','0.00','0.00%','4.50','4.50','100','4.500','-']]}]).encode()
+            'hq':[[DAYS[-2],'45.00','45.00','0.00','0.00%','45.00','45.00','100','45.000','-']]}]).encode()
         b.update(raw_base64=base64.b64encode(raw).decode());b['receipt'].update(sha256=hashlib.sha256(raw).hexdigest(),bytes=len(raw))
-        primary={'provider':'BAOSTOCK_0.9.3','rows':{d:{'date':d,'tradestatus':'1','isST':'0','open':'4.50','high':'4.50',
-            'low':'4.50','close':'4.50','preclose':'4.50','pctChg':'0','volume':'10001' if d==DAYS[-2] else '10000','amount':'45000'} for d in DAYS}}
+        primary={'provider':'BAOSTOCK_0.9.3','rows':{d:{'date':d,'tradestatus':'1','isST':'0','open':'45.00','high':'45.00',
+            'low':'45.00','close':'45.00','preclose':'45.00','pctChg':'0','volume':'10001' if d==DAYS[-2] else '10000','amount':'450000'} for d in DAYS}}
         store=Memory();owner='INVENTED_ARCHIVE_TEST';slot='invented-archive-replay'
         store.put('collector/chips/lease.json',{'owner':owner,'expires':time.time()+600})
         old_key=f'collector/chips/reference-corroboration/{DAYS[-2]}/{STOCK["code"]}.json';store.put(old_key,b)
@@ -72,8 +85,8 @@ class LimitReference(unittest.TestCase):
 
     def test_ex_rights_reference_and_inclusive_st_pool_restore_positive(self):
         ref=prepared(bundle(),STOCK['code'],DAYS)
-        line=f'{DAYS[-1]},4.30,4.40,4.40,4.20,10,4300,,0,-.60,1.0'
-        closing={DAYS[-1]:{STOCK['code']:{'date':DAYS[-1],'close':'4.40','pct':'10','turnover_percent':'1'}}}
+        line=f'{DAYS[-1]},43.00,44.00,44.00,42.00,10,43000,,0,-.60,1.0'
+        closing={DAYS[-1]:{STOCK['code']:{'date':DAYS[-1],'close':'44.00','pct':'10','turnover_percent':'1'}}}
         stock={**STOCK,'reference_close_verified':False}
         self.assertEqual(prefilter(stock,[line],DAYS,{})['prefilter_status'],'UNKNOWN')
         result=prefilter(stock,[line],DAYS,{},reference_evidence=ref,closing_pools=closing)
@@ -84,25 +97,25 @@ class LimitReference(unittest.TestCase):
         b=bundle();b['receipt']['sha256']='0'*64
         with self.assertRaisesRegex(ValueError,'HASH'):prepared(b,STOCK['code'],DAYS)
         ref=prepared(bundle(),STOCK['code'],DAYS)
-        line=f'{DAYS[-1]},4.30,4.39,4.40,4.20,10,4300,,0,-.61,1.0'
+        line=f'{DAYS[-1]},43.00,43.90,44.00,42.00,10,43000,,0,-.61,1.0'
         r=prefilter({**STOCK,'reference_close_verified':False},[line],DAYS,{},reference_evidence=ref)
         self.assertEqual(r['prefilter_status'],'UNKNOWN');self.assertIn('REFERENCE_DAILY_OHLC_CONFLICT',[e['reason'] for e in r['limit_evidence']])
 
     def test_explicit_no_trade_resolves_gap_but_never_erases_traded_candle(self):
         ref={'rows':{d:{'tradestatus':'0'} for d in DAYS[1:]}}
-        line=f'{DAYS[0]},4.30,4.30,4.30,4.30,10,4300,,0,0,1.0'
+        line=f'{DAYS[0]},43.00,43.00,43.00,43.00,10,43000,,0,0,1.0'
         r=prefilter({**STOCK,'confirmed_no_trade_sessions':DAYS[1:]},[line],DAYS,{},reference_evidence=ref)
-        self.assertEqual(r['close_cny'],'4.30');self.assertEqual(r['prefilter_status'],'FAIL')
+        self.assertEqual(r['close_cny'],'43.00');self.assertEqual(r['prefilter_status'],'FAIL')
         self.assertEqual(matched({'tradestatus':'0'},line.split(',')),'REFERENCE_TRADE_STATUS_CONFLICT')
 
     def test_sohu_reported_change_is_used_instead_of_previous_close(self):
-        code='920010';raw=json.dumps([{'status':0,'code':'cn_'+code,'hq':[[DAYS[-1],'4.30','4.40','0.40','10.00%','4.20','4.40','10','0.430','-']]}]).encode()
+        code='920010';raw=json.dumps([{'status':0,'code':'cn_'+code,'hq':[[DAYS[-1],'43.00','44.00','4.00','10.00%','42.00','44.00','10','4.300','-']]}]).encode()
         b={'schema':'stock.chips.limit.sohu.prepared.v1','security_id':code,'as_of':DAYS[-1],'official_sessions':DAYS,'published':False,
             'raw_base64':base64.b64encode(raw).decode(),'receipt':{'provider':'SOHU_REPORTED_DAILY_CHANGE','url':'https://q.stock.sohu.com/hisHq?code=cn_920010&end=20261016',
             'sha256':hashlib.sha256(raw).hexdigest(),'bytes':len(raw),'ingested_at':'2026-10-19T01:00:00Z'}}
         r=prepared(b,code,DAYS)['rows'][DAYS[-1]]
-        self.assertEqual(r['preclose'],'4.00')
-        self.assertIsNone(matched(r,[DAYS[-1],'4.30','4.40','4.40','4.20','10.47','4308','','','','']))
+        self.assertEqual(r['preclose'],'40.00')
+        self.assertIsNone(matched(r,[DAYS[-1],'43.00','44.00','44.00','42.00','10.47','43008','','','','']))
         wrong=copy.deepcopy(b);wrong['security_id']='920011'
         with self.assertRaisesRegex(ValueError,'REQUEST_IDENTITY'):prepared(wrong,'920011',DAYS)
 
@@ -120,7 +133,7 @@ class LimitReference(unittest.TestCase):
 
     def test_quantity_corroboration_requires_exact_independent_reference_agreement(self):
         p=prepared(bundle(),STOCK['code'],DAYS);day=DAYS[-1]
-        line=','.join([day,'4.30','4.40','4.40','4.20','10.05','4300','','','','1.0'])
+        line=','.join([day,'43.00','44.00','44.00','42.00','10.05','43000','','','','1.0'])
         primary_before=copy.deepcopy(p)
         row={**p['rows'][day],'volume':'1000','volume_tolerance_shares':'100','amount_tolerance_cny':'10'}
         s={'provider':'SOHU_REPORTED_DAILY_CHANGE','rows':{day:row},'source_sha256':'2'*64}
@@ -135,31 +148,31 @@ class LimitReference(unittest.TestCase):
 
     def test_dated_actual_price_witness_survives_unrelated_quantity_difference(self):
         ref=prepared(bundle(),STOCK['code'],DAYS);day=DAYS[-1]
-        line=','.join([day,'4.30','4.40','4.40','4.20','10.05','4300','','','','1.0'])
-        actual={'date':day,'close':'4.40','reference_close':'4.00','upper_limit':'4.40'}
+        line=','.join([day,'43.00','44.00','44.00','42.00','10.05','43000','','','','1.0'])
+        actual={'date':day,'close':'44.00','reference_close':'40.00','upper_limit':'44.00'}
         def check(r=ref,a=actual,l=line,stock=STOCK):
             return prefilter(stock,[l],DAYS,{},actual_limits={day:{STOCK['code']:a}},reference_evidence=r)['limit_evidence'][-1]
         self.assertEqual(check()['status'],'PASS')
         self.assertIn('ACTUAL_PRICE_WITNESS_WITH_SEPARATE_VOLUME_DIFFERENCE',check()['reason'])
         self.assertEqual(check(a={**actual,'upper_limit':'4.41'})['status'],'FAIL')
-        for field,value in (('date',DAYS[-2]),('reference_close','4.01'),('close','4.39')):
+        for field,value in (('date',DAYS[-2]),('reference_close','4.01'),('close','43.90')):
             self.assertEqual(check(a={**actual,field:value})['status'],'UNKNOWN')
-        self.assertEqual(check(l=line.replace('4.30','4.31',1))['status'],'UNKNOWN')
+        self.assertEqual(check(l=line.replace('43.00','43.10',1))['status'],'UNKNOWN')
         paused=copy.deepcopy(ref);paused['rows'][day]['tradestatus']='0'
         self.assertEqual(check(r=paused)['status'],'UNKNOWN')
         self.assertEqual(check(stock={**STOCK,'confirmed_no_trade_sessions':[day]})['status'],'UNKNOWN')
-        non_limit=copy.deepcopy(ref);non_limit['rows'][day].update(close='4.30',high='4.40')
-        self.assertEqual(check(r=non_limit,a={},l=line.replace(',4.40,4.40,',',4.30,4.40,'))['status'],'UNKNOWN')
+        non_limit=copy.deepcopy(ref);non_limit['rows'][day].update(close='43.00',high='44.00')
+        self.assertEqual(check(r=non_limit,a={},l=line.replace(',44.00,44.00,',',43.00,44.00,'))['status'],'UNKNOWN')
 
-    def test_same_session_high_price_exclusion_requires_matching_dated_quote(self):
+    def test_same_session_low_price_exclusion_requires_matching_dated_quote(self):
         import test_chip_daily_v1 as fixtures
         class NoPool(FakeSource):
             def pools(self,days):return {d:None for d in days},[]
-        cases=(('13.50',DAYS[-1],'13.50',None,True),('13.50',DAYS[-2],'13.50',None,False),
-            ('13.50',DAYS[-1],'13.51',None,False),('10.00',DAYS[-1],'10.00',None,True),
-            ('9.99',DAYS[-1],'9.99',None,False),('13.50',DAYS[-1],'13.50','13.49',False))
-        for price,quote_date,quote_close,snapshot_close,fast in cases:
-            lines=[l.replace('4.50',price).replace('45000',str(D(price)*10000)) for l in fixtures.LINES]
+        cases=(('13.50',DAYS[-1],'13.50',None,False,'UNKNOWN'),('13.50',DAYS[-2],'13.50',None,False,'FAIL'),
+            ('13.50',DAYS[-1],'13.51',None,False,'FAIL'),('10.00',DAYS[-1],'10.00',None,True,'FAIL'),
+            ('9.99',DAYS[-1],'9.99',None,True,'FAIL'),('9.99',DAYS[-2],'9.99',None,False,'FAIL'),('9.99',DAYS[-1],'9.98',None,False,'FAIL'),('13.50',DAYS[-1],'13.50','13.49',False,'UNKNOWN'))
+        for price,quote_date,quote_close,snapshot_close,fast,expected in cases:
+            lines=[l.replace('45.00',price).replace('450000',str(D(price)*10000)) for l in fixtures.LINES]
             with self.subTest(price=price,quote_date=quote_date,quote_close=quote_close,snapshot_close=snapshot_close):
                 store=Memory();FakeSource.calls=0
                 with patch('test_chip_daily_v1.LINES',lines),patch('backend.chips.runner.Source',NoPool):
@@ -177,7 +190,7 @@ class LimitReference(unittest.TestCase):
                         'owner':'INVENTED_TEST','actual_limits':{DAYS[-1]:{STOCK['code']:{'date':quote_date,'close':quote_close,
                             'reference_close':str(D(price)-D('.41')),'upper_limit':'999.99'}}}}
                     row=_calculate(store,FakeSource(),STOCK,ctx)
-                self.assertEqual(row['prefilter_status'],'FAIL')
+                self.assertEqual(row['prefilter_status'],expected)
                 self.assertEqual(model_key not in reads,fast)
                 self.assertEqual(FakeSource.calls,1 if fast else 2)
                 value=store.data['data/chips/daily/invented-next/'+STOCK['code']+'.json']

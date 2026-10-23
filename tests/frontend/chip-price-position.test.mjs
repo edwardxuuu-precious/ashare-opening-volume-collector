@@ -22,8 +22,8 @@ test('missing chip evidence stays unknown, while a known false conjunct excludes
 });
 test('real daily reader rejects forged position matches, altered counts, and unsupported policy identity',()=>{
  const days=['2026-09-28','2026-09-29','2026-09-30','2026-10-08','2026-10-09','2026-10-12','2026-10-13','2026-10-14','2026-10-15','2026-10-16'];
- const m={schema:'stock.chips.market.manifest.v1',dataset_id:'0123456789abcdef',active_slot:'0123456789abcdef',as_of:days.at(-1),previous_date:days.at(-2),official_sessions:days,universe_total:1,scanned_count:1,model_ready_count:1,screen_counts:{PASS:1,FAIL:0,UNKNOWN:0},market_complete:true,coefficient:2,unchanged_threshold:null,price_position_rule:chipPricePositionRule,final_screen_counts:{PASS:0,FAIL:1,UNKNOWN:0}};
- const manifest=parseMarketManifest(m),row=projected(base()),screen={dataset_id:m.dataset_id,as_of:m.as_of,rows:[row]};
+ const m={schema:'stock.chips.market.manifest.v1',price_filter_rule:'CLOSE_GT_10_CNY_V1',dataset_id:'0123456789abcdef',active_slot:'0123456789abcdef',as_of:days.at(-1),previous_date:days.at(-2),official_sessions:days,universe_total:1,scanned_count:1,model_ready_count:1,screen_counts:{PASS:1,FAIL:0,UNKNOWN:0},market_complete:true,coefficient:2,unchanged_threshold:null,price_position_rule:chipPricePositionRule,final_screen_counts:{PASS:0,FAIL:1,UNKNOWN:0}};
+ const manifest=parseMarketManifest(m),row=projected({...base(),close_cny:'15',peak_prices_cny:['15.2'],model_mean_cost_cny:'15.3'}),screen={dataset_id:m.dataset_id,as_of:m.as_of,rows:[row]};
  assert.equal(parseMarketScreen(screen,manifest)[0].screen_status,'FAIL');
  assert.throws(()=>parseMarketScreen({...screen,rows:[{...row,screen_status:'PASS'}]},manifest));
  assert.throws(()=>parseMarketScreen({...screen,rows:[{...row,above_mean_cost_status:'PASS'}]},manifest));

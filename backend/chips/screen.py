@@ -5,6 +5,7 @@ from .listing import trusted_listing
 from .limit_reference import matched
 
 PRICE_POSITION_RULE = 'CLOSE_GT_ANY_PEAK_OR_MEAN_COST_V1'
+PRICE_FILTER_RULE = 'CLOSE_GT_10_CNY_V1'
 
 def apply_price_position(row, snapshot):
     """Project the new condition from the sealed current snapshot, without replay.
@@ -155,7 +156,7 @@ def prefilter(stock, lines, days, pools, actual_limits=None, reference_evidence=
         evidence.append({'date':day,'status':state,'reason':reason})
         if state=='PASS': hits.append(day)
         if state=='UNKNOWN': unknown.append(day)
-    status='FAIL' if close is not None and close>=10 else ('PASS' if close is not None and hits else ('FAIL' if close is not None and not unknown else 'UNKNOWN'))
+    status='FAIL' if close is not None and close<=10 else ('PASS' if close is not None and hits else ('FAIL' if close is not None and not unknown else 'UNKNOWN'))
     return {'close_cny':str(close) if close is not None else None,'prefilter_status':status,
             'recent_limit_up_dates':hits,'limit_evidence':evidence,
             'last_trade_close_date':carried_date,
