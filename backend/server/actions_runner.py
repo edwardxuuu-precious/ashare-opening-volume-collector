@@ -36,7 +36,8 @@ import cloud_worker as worker
 from reconciliation import PRICE_REQUIRED_FROM, STATUS_EXPLANATION_REQUIRED_FROM, VERIFICATION_VERSION
 from import_checkpoint_batch import strict_json, valid_date, record_disposition
 from publisher_state import canonical, file_digest
-from universe_cache import validate_universe
+from universe_cache import _market as market_for_code, validate_universe
+from failure_status import publish_restore_failure_status
 
 ARCHIVE_KEY = 'collector/checkpoint.tar.gz'
 STATE_KEY = 'collector/actions-state.json'
@@ -276,17 +277,27 @@ def validate_tree(out, minimum_universe=1000):
     valid_date(calendar.get('calendarAsOf'))
     dates = validate_dates(calendar.get('tradingDates', []))
     legacy_rows = 0
+    archived_dates = {}
     for path in sorted((out/'checkpoint').glob('*.json')):
         record = strict_json(path.read_bytes())
         code = path.stem
-        if not isinstance(record, dict) or record.get('code') != code or code not in universe:
-            raise RestoreError('Checkpoint identity differs from universe')
+        if not CP_NAME.fullmatch('checkpoint/'+path.name) or not isinstance(record, dict) or record.get('code') != code:
+            raise RestoreError('Checkpoint identity differs from filename')
+        expected_market = market_for_code(code)
         if record.get('fetchStatus') not in ('ok','error','pending') or not isinstance(record.get('days'), dict) or not record['days']:
             raise RestoreError('Checkpoint status/days are invalid')
+        for row in (record, *record['days'].values()):
+            if isinstance(row, dict) and 'market' in row and row['market'] != expected_market:
+                raise RestoreError('Checkpoint market differs from its code')
         # Unlike a supplementary import, restoring a backup preserves real failed attempts.
+        # A SHA-bound archive can retain checkpoints after its current-list snapshot
+        # changes. Validate each archived identity independently; this singleton is
+        # only a content-validation scope, never a current collection membership.
         candidate = dict(record, fetchStatus='ok', fetchedOn=record.get('fetchedOn', calendar['calendarAsOf']))
-        record_disposition(candidate, code, universe, [],
+        record_disposition(candidate, code, {code}, [],
                            allowed_versions={2, VERIFICATION_VERSION})
+        if code not in universe:
+            archived_dates[code] = set(record['days'])
         changed = 0
         for row in record['days'].values():
             if row.get('verificationVersion') == 2:
@@ -309,8 +320,15 @@ def validate_tree(out, minimum_universe=1000):
                 raise RestoreError('Unsupported daily state')
             allowed = set(value['dates'])
             for code, pending in value['pending'].items():
-                if code not in universe or not set(validate_dates(pending)) <= allowed:
+                pending_dates = set(validate_dates(pending))
+                if not pending_dates <= allowed:
                     raise RestoreError('Unknown pending stock/date')
+                # Preserve a frozen historical queue only for exact stock-days
+                # already present in a strictly validated archived checkpoint.
+                # Daily collection rebuilds its dispatch state from the current
+                # catalog, so this does not grant membership to new collection.
+                if code not in universe and (code not in archived_dates or not pending_dates <= archived_dates[code]):
+                    raise RestoreError('Unknown historical pending stock/date')
     journal = out/'daily-attempts.jsonl'
     if journal.exists():
         with journal.open('rb') as stream:
@@ -753,15 +771,25 @@ def run(args, client, *, executor=spawn_worker, minimum_universe=1000):
         try:fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
         except BlockingIOError:raise LeaseBusy('Local runner is already active')
         lease = None
+        primary_failure = False
         try:
             if args.mode != 'probe':
                 lease = Lease(client,args.bucket).acquire(args.max_minutes*60+15*60)
             backfill_range = ((args.backfill_from, args.backfill_to)
                               if args.mode == 'price_backfill' else None)
-            report = restore(client,args.bucket,root,getattr(args,'expected_checkpoint_sha256',None),minimum_universe=minimum_universe,
-                review_dates=getattr(args,'review_dates',None) if args.mode == 'review' else None,
-                phase=getattr(args,'phase',None),target_date=getattr(args,'target_date',None),
-                backfill_range=backfill_range)
+            try:
+                report = restore(client,args.bucket,root,getattr(args,'expected_checkpoint_sha256',None),minimum_universe=minimum_universe,
+                    review_dates=getattr(args,'review_dates',None) if args.mode == 'review' else None,
+                    phase=getattr(args,'phase',None),target_date=getattr(args,'target_date',None),
+                    backfill_range=backfill_range)
+            except ValueError as exc:
+                if lease is not None:
+                    publish_restore_failure_status(LeasedClient(client, lease), args.bucket,
+                        mode=args.mode, stage='restore', error_type='RestoreError',
+                        updated_at=worker.now())
+                if not isinstance(exc, RestoreError):
+                    raise RestoreError('Checkpoint validation failed during restore') from exc
+                raise
             result = dict(mode=args.mode,restoredCheckpoints=report['checkpointCount'],restoredDates=report['restoredDates'])
             if args.mode == 'probe':
                 return dict(result,status='validated',outcome='validated',upstreamRequests=0,productionWrites=0)
@@ -876,9 +904,18 @@ def run(args, client, *, executor=spawn_worker, minimum_universe=1000):
                 completedStocks=current.get('completedStocks',0),totalStocks=current.get('totalStocks',0),
                 reviewId=current.get('reviewId'),reviewCompleted=current.get('reviewCompleted'),
                 pendingStockDates=current.get('pendingStockDates'))
+        except BaseException:
+            primary_failure = True
+            raise
         finally:
             if lease is not None:
-                lease.release()
+                # Keep the primary failure and its private cause chain. A cleanup
+                # failure must still fail a run that otherwise succeeded.
+                try:
+                    lease.release()
+                except Exception:
+                    if not primary_failure:
+                        raise
 
 
 def main():

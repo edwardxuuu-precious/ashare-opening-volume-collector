@@ -13,7 +13,7 @@ SOURCES = [
         'backfill_quotes', 'sina_daily', 'sina_spot', 'refresh', 'no_trade_evidence',
         'exchange_status')
 ] + ['backend/server/' + name + '.py' for name in (
-    'cloud_worker', 'publisher_state', 'actions_runner', 'import_checkpoint_batch', 'refresh_worker')] + [
+    'cloud_worker', 'publisher_state', 'actions_runner', 'import_checkpoint_batch', 'refresh_worker', 'failure_status')] + [
     'backend/chips/' + name + '.py' for name in ('__init__','calendar','model','eastmoney_model','ohlc4_input','current_quote','probe','runner','screen','source','baostock_history','ths_history','listing','display','limit_reference','golden')]
 SOURCES += ['backend/golden/' + name + '.py' for name in ('__init__','anchors','automatic','watchlist','daily','annotations','sources','update')]
 SECRET_PATTERNS = [r'AKIA[0-9A-Z]{16}', r'ASIA[0-9A-Z]{16}',
