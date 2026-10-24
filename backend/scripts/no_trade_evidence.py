@@ -221,3 +221,46 @@ def explanation(code, day):
 
 def valid_notice(value, code):
     return isinstance(value, dict) and value.get('code') == code and value == evidence(code, value.get('date'))
+
+
+# These current official records were read on Oct23 and reviewed on Oct24.
+# Only the six exact prelisting stock-days below were reviewed. They do not
+# establish a historical market-membership list or extend company notices.
+REVIEWED_LISTING_RECORDS = {
+    '301718': dict(kind='exchange_listing_record', provider='szse', code='301718',
+        listingDate='2026-10-22',
+        sourceUrl='https://www.szse.cn/market/product/stock/list/index.html',
+        sourceArtifactUrl='https://www.szse.cn/api/report/ShowReport?SHOWTYPE=xlsx&CATALOGID=1110&TABKEY=tab1',
+        sourceSha256='1e06c3103208c398a227302a677c27de53e44b3f04b9a12fd256e2fce89ff193',
+        reviewedDates=('2026-10-20', '2026-10-21')),
+    '920285': dict(kind='exchange_listing_record', provider='bse', code='920285',
+        listingDate='2026-10-23', sourceUrl='https://www.bse.cn/nq/listedcompany.html',
+        sourceArtifactUrl='https://www.bse.cn/nq/listedcompany.html',
+        sourceSha256='eedd520158dd57b85931924a046e75f28d7813ccd08a6ee02f2256450013fa06',
+        reviewedDates=('2026-10-20', '2026-10-21', '2026-10-22')),
+    '920296': dict(kind='exchange_listing_record', provider='bse', code='920296',
+        listingDate='2026-10-21', sourceUrl='https://www.bse.cn/nq/listedcompany.html',
+        sourceArtifactUrl='https://www.bse.cn/nq/listedcompany.html',
+        sourceSha256='eedd520158dd57b85931924a046e75f28d7813ccd08a6ee02f2256450013fa06',
+        reviewedDates=('2026-10-20',)),
+}
+
+
+def reviewed_listing_evidence(code, day):
+    """Return reviewed listing facts through the existing exact-day validator."""
+    record = REVIEWED_LISTING_RECORDS.get(code)
+    if not record or day not in record['reviewedDates']:
+        return None
+    from .exchange_status import listing_evidence
+    proof = listing_evidence({code: record}, code, day)
+    if proof is None:
+        return None
+    exchange = '深圳证券交易所' if record['provider'] == 'szse' else '北京证券交易所'
+    proof.update(sourceSha256=record['sourceSha256'], sourceArtifactUrl=record['sourceArtifactUrl'],
+        sourceObservedOn='2026-10-23', reviewedAt='2026-10-24',
+        specialStatus=_special('not_yet_listed', '尚未上市',
+            f'{exchange}官方上市记录确认该股上市日期为{record["listingDate"]}；'
+            f'目标交易日{day}早于上市日，尚未上市，无该A股交易。',
+            day, exchange+'官方股票上市记录',
+            f'股票{code}上市日期记录（{record["listingDate"]}）', record['sourceArtifactUrl']))
+    return proof

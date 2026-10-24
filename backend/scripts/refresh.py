@@ -105,8 +105,12 @@ def retry_due(attempt, now):
 
 
 def ready(code, day, phase, attempt, now, status_evidence=None):
-    from .no_trade_evidence import evidence
+    from .no_trade_evidence import evidence, reviewed_listing_evidence
     from .exchange_status import valid_exchange_evidence
+    if phase != 'opening' and reviewed_listing_evidence(code, day):
+        # A reviewed date can avoid another quote request, but this new branch
+        # does not reopen or clear a previously committed source hold.
+        return not source_held(attempt, code, day)
     confirmed = (evidence(code, day) is not None or
                  valid_exchange_evidence(status_evidence, code))
     return (phase != 'opening' and confirmed) or retry_due(attempt, now)
@@ -212,9 +216,19 @@ def fetch(task):
     status_evidence = task[6] if len(task) >= 7 else None
     snapshot_supplied = len(task) == 6 or (len(task) >= 7 and snapshot is not None)
     code = item['code']; symbol = collect.market(code).lower() + code
-    from .no_trade_evidence import evidence, explanation
+    from .no_trade_evidence import evidence, explanation, reviewed_listing_evidence
     from .exchange_status import valid_exchange_evidence, valid_historical_no_trade
     notice = evidence(code, day)
+    listing = reviewed_listing_evidence(code, day)
+    if not notice and phase != 'opening' and listing:
+        observations = [previous, snapshot] if isinstance(snapshot, dict) else [previous]
+        amounts = [opening, *(row.get(field) for row in observations for field in ('first15Volume', 'dailyVolume'))]
+        if (previous.get('status') != 'missing' or previous.get('ratio') is not None or
+                any(value is not None and (not volume(value) or value > 0) for value in amounts) or
+                any(any(row.get(field) is not None for field in PRICE_FIELDS) or
+                    validate_price_row(row) == 'available' for row in observations)):
+            raise ValueError('Reviewed listing evidence conflicts with saved trading observations')
+        notice = listing
     # Price backfill already stores exact stock/date listing and suspension
     # evidence. Reuse that proof after a stale core checkpoint marked it missing;
     # never turn positive core observations into no-trade from an old proof.
