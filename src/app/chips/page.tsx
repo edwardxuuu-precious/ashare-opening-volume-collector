@@ -21,11 +21,12 @@ export const dynamic='force-static';
 const labels={PASS:'三项条件入选',FAIL:'筛选条件未满足',UNKNOWN:'筛选条件待核实'};
 const noSubscribe=()=>()=>{},zeroVersion=()=>0;
 type Progress={state:string;as_of:string;universe_total:number;scanned_count:number;model_ready_count:number;updated_at:string};
-function progress(v:unknown):Progress{const x=v as Progress;if(!x||!Number.isSafeInteger(x.scanned_count)||!Number.isSafeInteger(x.universe_total)||x.scanned_count<0||x.scanned_count>x.universe_total||typeof x.state!=='string')throw Error('每日计算状态无效。');return x;}
+function progress(v:unknown):Progress{const x=v as Progress;if(!x||!Number.isSafeInteger(x.scanned_count)||!Number.isSafeInteger(x.universe_total)||x.scanned_count<0||x.scanned_count>x.universe_total||!Number.isSafeInteger(x.model_ready_count)||x.model_ready_count<0||x.model_ready_count>x.universe_total||typeof x.state!=='string')throw Error('每日计算状态无效。');return x;}
 export default function ChipsPage(){
   const [manifest,setManifest]=useState<MarketManifest|null>(null),[rows,setRows]=useState<MarketScreenRow[]|null>(null),[run,setRun]=useState<Progress|null>(null);
   const [code,setCode]=useState(''),[stock,setStock]=useState<MarketStock|null>(null),[error,setError]=useState(''),[detailError,setDetailError]=useState('');
   const [filter,setFilter]=useState<MarketState|'ALL'>('PASS'),[search,setSearch]=useState(''),[page,setPage]=useState(0),[retry,setRetry]=useState(0),[loaded,setLoaded]=useState(false);
+  const [loadingStage,setLoadingStage]=useState<'manifest'|'screening'>('manifest');
   const [historyDate,setHistoryDate]=useState<string|null>(null),[chartPeriod,setChartPeriod]=useState(120);
   const listArea=useRef<HTMLDivElement>(null);
   const preload=useMemo(()=>manifest?createChipStockPreload((value,signal)=>readChip(`/data/chips/daily/${manifest.active_slot}/${value}.json`,signal,v=>parseMarketStock(v,value,manifest)),prepareChipLocalHistory,5,value=>Object.keys(value.frames).length>0):null,[manifest]);
@@ -33,10 +34,10 @@ export default function ChipsPage(){
   useSyncExternalStore(preload?.subscribe??noSubscribe,preload?.version??zeroVersion,zeroVersion);
   useEffect(()=>()=>intent?.clear(),[intent]);
   useEffect(()=>()=>preload?.clear(),[preload]);
-  useEffect(()=>{const c=new AbortController();setLoaded(false);setManifest(null);setRows(null);setStock(null);setHistoryDate(null);setError('');
-    const status=readChip('/data/chips/daily/status.json',c.signal,progress).then(v=>{if(!c.signal.aborted)setRun(v);}).catch(()=>{});
-    const data=readChip('/data/chips/daily/manifest.json',c.signal,parseMarketManifest).then(async m=>{const r=await readChip(`/data/chips/daily/${m.active_slot}/screening.json`,c.signal,v=>parseMarketScreen(v,m));if(!c.signal.aborted){setManifest(m);setRows(r);setCode(previous=>initialWorkbenchStock(r,previous));}}).catch(e=>{if(!c.signal.aborted)setError(e.message);});
-    Promise.allSettled([status,data]).then(()=>{if(!c.signal.aborted)setLoaded(true);});return()=>c.abort();
+  useEffect(()=>{const c=new AbortController();setLoaded(false);setLoadingStage('manifest');setManifest(null);setRows(null);setRun(null);setStock(null);setHistoryDate(null);setError('');
+    void readChip('/data/chips/daily/status.json',c.signal,progress).then(v=>{if(!c.signal.aborted)setRun(v);}).catch(()=>{});
+    void readChip('/data/chips/daily/manifest.json',c.signal,parseMarketManifest).then(async m=>{if(c.signal.aborted)return;setLoadingStage('screening');const r=await readChip(`/data/chips/daily/${m.active_slot}/screening.json`,c.signal,v=>parseMarketScreen(v,m));if(!c.signal.aborted){setManifest(m);setRows(r);setCode(previous=>initialWorkbenchStock(r,previous));}}).catch(e=>{if(!c.signal.aborted)setError(e.message);}).finally(()=>{if(!c.signal.aborted)setLoaded(true);});
+    return()=>c.abort();
   },[retry]);
   useEffect(()=>{
     if(!preload)return;
@@ -102,12 +103,12 @@ export default function ChipsPage(){
             <span className="cw-stock-line"><span className="cw-code">{r.security_id}</span>{preloadStatus?<span className="chip-stock-cached" data-preload-status={preloadStatus} title={chipStockPreloadHints[preloadStatus]} aria-live="polite">{chipStockPreloadLabels[preloadStatus]}</span>:<span className={`cw-row-state cw-row-${chipScreenState(r).toLowerCase()}`}>{chipScreenState(r)==='PASS'?'三项条件入选':chipScreenState(r)==='UNKNOWN'?'条件待核实':'条件未满足'}</span>}</span>
             {r.chip_status==='MISSING'&&<span className="cw-row-warning">筹码待补齐</span>}{r.last_trade_close_date&&<span className="cw-row-warning">收盘沿用 {r.last_trade_close_date}</span>}
           </button>;})}
-          {!shown.length&&<p className="cw-list-empty">{!loaded?'正在读取每日名单…':error||'当前范围没有结果。'}</p>}
+          {!shown.length&&<p className="cw-list-empty">{error||(!loaded?'正在读取每日名单…':'当前范围没有结果。')}</p>}
         </div>
         <div className="cw-list-footer"><div className="cw-pagination"><span>{page+1} / {Math.max(1,Math.ceil(matched.length/100))}页</span><button aria-label="上一页" title="上一页" disabled={page===0} onClick={()=>setPage(p=>p-1)}>‹</button><button aria-label="下一页" title="下一页" disabled={(page+1)*100>=matched.length} onClick={()=>setPage(p=>p+1)}>›</button></div><p>↑ ↓ 换股 <span>← → 换交易日</span></p><small title="停留600毫秒后准备；快速划过取消，连续悬停触发至少间隔2秒。">悬停预加载 · 最多缓存5只</small></div>
       </aside>
       <section className="cw-workspace chip-detail" aria-label="个股K线与筹码详情">
-        {!manifest&&<div className="cw-empty" role="status"><h2>每日筹码筛选</h2><p>{!loaded?'正在读取每日计算结果…':error||'首批每日计算尚未完成。'}</p>{run&&<p>{run.as_of} · 已处理 {run.scanned_count.toLocaleString()} / {run.universe_total.toLocaleString()}只</p>}<button className="chip-site-link" onClick={()=>setRetry(v=>v+1)}>重新读取</button></div>}
+        {!manifest&&<div className="cw-empty" role="status"><h2>每日筹码筛选</h2><p role={error?'alert':undefined}>{error||(!loaded?(loadingStage==='manifest'?'正在读取已发布筹码目录…':'正在读取本批筛选名单…'):'首批每日计算尚未完成。')}</p>{run&&<p>{run.as_of} · 已扫描 {run.scanned_count.toLocaleString()} / {run.universe_total.toLocaleString()}只 · 筹码可用 {run.model_ready_count.toLocaleString()} / {run.universe_total.toLocaleString()}只</p>}<button className="chip-site-link" disabled={!loaded} onClick={()=>setRetry(v=>v+1)}>重新读取</button></div>}
         {manifest&&!code&&<div className="cw-empty"><h2>选择一只股票开始研究</h2><p>左侧名单支持搜索、悬停预加载与方向键切换。</p></div>}
         {manifest&&code&&!selectedStock&&<div className="cw-detail-loading"><h2>{selectedRow?.name} <small>{code}</small></h2>{detailError?<p role="alert" className="chip-site-error">{detailError}</p>:<p role="status">正在读取日K线、成交量和筹码分布…</p>}</div>}
         {selectedStock&&preload&&<>
