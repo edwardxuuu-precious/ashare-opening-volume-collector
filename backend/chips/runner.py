@@ -4,7 +4,7 @@ No opening-volume collector state is read or changed. Real data stays in private
 S3. The currently committed slot remains readable until manifest-last commit.
 """
 from __future__ import annotations
-import argparse,base64,concurrent.futures,gzip,hashlib,json,os,time,uuid
+import argparse,base64,concurrent.futures,gzip,hashlib,json,os,re,time,uuid
 from copy import deepcopy
 from collections import Counter
 from datetime import datetime,timedelta,timezone
@@ -19,10 +19,14 @@ from .golden import VERSION as GOLDEN_VERSION,grid_row as golden_row,document as
 from .current_quote import collect as collect_final_quotes,overlay as overlay_final_quote,renormalize as renormalize_final_quotes
 from .listing import trusted_listing
 from .display import display_frame,response_upper_bound,MAX_BROWSER_PROFILE_BINS
+from .history import archive_keys
 from .limit_reference import prepared as reference_prepared,closing_pool,fetch_closing_pool,fetch_reference,corroborate_quantity,archived_corroboration
 
 def listing_context(stock):
     return {'listed':stock.get('listed'),'evidence':stock.get('listing_evidence')}
+
+class _ArchiveConflict(RuntimeError):
+    pass
 
 def now(): return datetime.now(timezone.utc).isoformat()
 def encoded(v): return json.dumps(v,ensure_ascii=False,separators=(',',':')).encode()
@@ -285,6 +289,51 @@ def _calculate(store,source,stock,ctx):
             except Exception as exc:
                 row['reasons'].append('REFERENCE_QUANTITY_CORROBORATION_ERROR:'+type(exc).__name__)
         return row
+    def preserve_archive(value,cached=None):
+        """Bind reused frames to verified final bytes before their lineage changes."""
+        expected=value.get('source',{}).get('sha256')
+        if (not re.fullmatch('[0-9]{6}',stock['code']) or value.get('security_id')!=stock['code']):
+            raise RuntimeError('SOURCE_ARCHIVE_IDENTITY_MISMATCH')
+        if not isinstance(expected,str) or not re.fullmatch('[a-f0-9]{64}',expected):
+            raise RuntimeError('SOURCE_ARCHIVE_HASH_REQUIRED')
+        pattern=rf'collector/chips/raw/(?:[a-f0-9]{{16}}|repair-\d{{4}}-\d{{2}}-\d{{2}})/{stock["code"]}(?:-current-quote|-[a-f0-9]{{16}})?\.json'
+        checked={}
+        def verified(key):
+            if not isinstance(key,str) or not re.fullmatch(pattern,key):return False
+            if key in checked:return checked[key]
+            saved,_=store.get(key)
+            checked[key]=False
+            if not saved or saved.get('receipt',{}).get('sha256')!=expected:return False
+            try:
+                text=saved['raw_base64']
+                if not isinstance(text,str) or len(text)>3*1024*1024:
+                    raise ValueError('ARCHIVE_BOUND')
+                raw=base64.b64decode(text,validate=True)
+                decoded=json.loads(raw)
+            except (KeyError,TypeError,ValueError) as exc:
+                raise RuntimeError('SOURCE_ARCHIVE_BYTES_INVALID') from exc
+            if hashlib.sha256(raw).hexdigest()!=expected:
+                raise RuntimeError('SOURCE_ARCHIVE_RAW_HASH_MISMATCH')
+            if (not isinstance(decoded,dict) or not isinstance(decoded.get('data'),dict)
+                or decoded['data'].get('code')!=stock['code']
+                or saved['receipt'].get('provider','EASTMONEY')!=value['source'].get('provider','EASTMONEY')):
+                raise RuntimeError('SOURCE_ARCHIVE_IDENTITY_MISMATCH')
+            checked[key]=True
+            return True
+        key=value.get('source',{}).get('same_session_cached_raw_key')
+        if verified(key):return cached
+        if cached is None:cached,_=store.get(f'collector/chips/model/{stock["code"]}.json')
+        identity=ctx.get('execution_identity',{})
+        if (not cached or cached.get('security_id')!=stock['code']
+            or cached.get('_calculated_as_of')!=as_of
+            or cached.get('_source_bundle_sha256')!=expected
+            or not identity.get('history_adapter_sha256') or not identity.get('model_implementation_sha256')
+            or cached.get('_history_adapter_sha256')!=identity['history_adapter_sha256']
+            or cached.get('_model_code_sha256')!=identity['model_implementation_sha256']
+            or not verified(cached.get('_source_raw_key'))):
+            raise RuntimeError('SOURCE_ARCHIVE_BINDING_UNAVAILABLE')
+        value['source']={**value['source'],'same_session_cached_raw_key':cached['_source_raw_key']}
+        return cached
     def publish(value):
         apply_price_position(value['screening_row'],value.get('snapshots',{}).get(as_of))
         value['screening_row']['golden_grid']=golden_row(value)
@@ -337,6 +386,7 @@ def _calculate(store,source,stock,ctx):
             and (not ctx.get('require_current_final_quote') or previous.get('source',{}).get('provider')!='THS_UNADJUSTED'
                 or previous.get('source',{}).get('current_quote_sha256'))
             and compatible_ready_model(previous,ctx.get('execution_identity',{}))):
+            cached=preserve_archive(previous,cached)
             # The conjunction is already false at <=10. Reuse only a same-day
             # READY frame whose row, snapshot and independently dated quote
             # agree; historical limit evidence is retained without upgrading it.
@@ -423,11 +473,14 @@ def _calculate(store,source,stock,ctx):
                 own();store.put(raw_key,{'receipt':receipt,'raw_base64':base64.b64encode(raw).decode()},new=True,compressed=True)
         model_hash=ctx.get('execution_identity',{}).get('model_implementation_sha256')
         model_cache=valid_history_cache if valid_history_cache and model_hash and valid_history_cache.get('_model_code_sha256')==model_hash else None
+        if hashlib.sha256(raw).hexdigest()!=receipt['sha256'] or json.loads(raw)['data']['code']!=stock['code']:
+            raise ValueError('RAW_HASH_OR_IDENTITY_MISMATCH')
         row,value=frame(stock,raw,receipt,days,state['pools'],dataset,state.get('actual_limits'),model_cache,references,state.get('closing_pools'))
         decoded_screen=json.loads(raw)
         row.update(evaluate({**stock,'reference_close_verified':receipt.get('provider')!='THS_UNADJUSTED',
             'confirmed_no_trade_sessions':decoded_screen.get('confirmed_no_trade_sessions',[])},decoded_screen['data']['klines']))
         if references:value['historical_limit_reference']=references
+        final_wrapper=None
         if (row['chip_status']=='MISSING' and receipt.get('provider')=='THS_UNADJUSTED'
             and board(stock['code'])[0]!='BSE' and stock.get('listed')!=as_of
             and any(reason.startswith('REQUESTED_SOURCE_DATES_MISSING:') for reason in value['reasons'])):
@@ -447,12 +500,33 @@ def _calculate(store,source,stock,ctx):
                     raise ValueError('TRADE_STATUS_FALLBACK_PRICE_CONFLICT')
                 alternate_row,alternate_value=frame(stock,alternate_raw,alternate_receipt,days,state['pools'],dataset,state.get('actual_limits'),reference_evidence=references,closing_pools=state.get('closing_pools'))
                 if alternate_row['chip_status']=='READY':
+                    final_wrapper=deepcopy(alternate) if alternate else {
+                        'receipt':deepcopy(alternate_receipt),'raw_base64':base64.b64encode(alternate_raw).decode()}
                     alternate_receipt['prior_source_raw_key']=raw_key
                     alternate_receipt['fallback_reason']='PRIOR_PROVIDER_MISSING_REQUESTED_SESSIONS;EXPLICIT_TRADE_STATUS_REQUIRED'
                     row,value,receipt,raw,raw_key=alternate_row,alternate_value,alternate_receipt,alternate_raw,alternate_key
                 else:value['trade_status_fallback_reasons']=alternate_value['reasons']
             except Exception as exc:
                 value['trade_status_fallback_error']={'error':type(exc).__name__,'detail':str(exc)[:200]}
+        if hashlib.sha256(raw).hexdigest()!=receipt['sha256'] or json.loads(raw)['data']['code']!=stock['code']:
+            raise ValueError('RAW_HASH_OR_IDENTITY_MISMATCH')
+        if final_wrapper is not None and row['chip_status']=='READY' and raw_key not in archive_keys({
+            'security_id':stock['code'],'source':{'same_session_cached_raw_key':raw_key}}):
+            alias=f'collector/chips/raw/{dataset}/{stock["code"]}-{receipt["sha256"][:16]}.json'
+            existing,_=store.get(alias)
+            if existing is None:
+                own();store.put(alias,final_wrapper,new=True,compressed=True)
+            else:
+                try:
+                    saved_raw=base64.b64decode(existing['raw_base64'],validate=True)
+                    valid=(existing==final_wrapper and existing['receipt']['sha256']==receipt['sha256']
+                        and hashlib.sha256(saved_raw).hexdigest()==receipt['sha256'])
+                except (KeyError,TypeError,ValueError):valid=False
+                if not valid:raise _ArchiveConflict('IMMUTABLE_SOURCE_ARCHIVE_ALIAS_CONFLICT')
+            raw_key=alias
+        receipt={**receipt,'same_session_cached_raw_key':
+            original_raw_key if same_session_cache and raw==original_raw else raw_key}
+        value['source']=receipt
         next_state=value.pop('_model_state',None)
         if next_state:
             next_state.update(_source_history=json.loads(raw)['data']['klines'],_source_provider=receipt.get('provider','EASTMONEY'),
@@ -461,6 +535,8 @@ def _calculate(store,source,stock,ctx):
         if next_state and (not cache or next_state['last_date']>=cache['last_date']):
             own()
             store.put(cache_key,next_state,match=cache_etag,new=cache_etag is None,compressed=True)
+    except _ArchiveConflict:
+        raise
     except Exception as e:
         row={'security_id':stock['code'],'name':stock['name'],'market':board(stock['code'])[0],
             'close_cny':None,'prefilter_status':'UNKNOWN','recent_limit_up_dates':[],
