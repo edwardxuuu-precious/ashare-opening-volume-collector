@@ -25,7 +25,7 @@ function progress(v:unknown):Progress{const x=v as Progress;if(!x||!Number.isSaf
 export default function ChipsPage(){
   const [manifest,setManifest]=useState<MarketManifest|null>(null),[rows,setRows]=useState<MarketScreenRow[]|null>(null),[run,setRun]=useState<Progress|null>(null);
   const [code,setCode]=useState(''),[stock,setStock]=useState<MarketStock|null>(null),[error,setError]=useState(''),[detailError,setDetailError]=useState('');
-  const [filter,setFilter]=useState<MarketState|'ALL'>('PASS'),[search,setSearch]=useState(''),[page,setPage]=useState(0),[retry,setRetry]=useState(0),[loaded,setLoaded]=useState(false);
+  const [filter,setFilter]=useState<MarketState|'ALL'>('UNKNOWN'),[search,setSearch]=useState(''),[page,setPage]=useState(0),[retry,setRetry]=useState(0),[loaded,setLoaded]=useState(false);
   const [loadingStage,setLoadingStage]=useState<'manifest'|'screening'>('manifest');
   const [historyDate,setHistoryDate]=useState<string|null>(null),[chartPeriod,setChartPeriod]=useState(120);
   const listArea=useRef<HTMLDivElement>(null);

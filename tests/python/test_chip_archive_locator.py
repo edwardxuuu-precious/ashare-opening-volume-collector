@@ -134,7 +134,7 @@ class ArchiveLocator(unittest.TestCase):
                     self.assertEqual(_calculate(self.store, NoSource(), STOCK, current)['chip_status'], 'READY')
                     value = self.published(slot)
                     self.assertEqual(value['snapshots'], original['snapshots'])
-                    self.assertEqual('price_exclusion_reuse' in value, excluded)
+                    self.assertNotIn('price_exclusion_reuse', value)
                     self.assertEqual(value['source']['original_history_raw_key'], original['source']['original_history_raw_key'])
                     previous = slot
                 raw, key = load_archive(self.store, 'INVENTED', value)
@@ -144,13 +144,13 @@ class ArchiveLocator(unittest.TestCase):
                 self.assertEqual(replay['comparison_status'], 'READY')
                 self.assertEqual(replay['input_archive_key'], key)
 
-    def test_good_locator_needs_one_raw_read_and_no_discovery_cache_read(self):
+    def test_good_locator_needs_one_raw_read_and_model_cache_for_rescreen(self):
         ctx = self.make_ready(price_excluded=True)
         raw_key = f'collector/chips/raw/{FIRST}/{CODE}.json'
         self.store.reads.clear()
         _calculate(self.store, NoSource(), STOCK, {**ctx, 'slot': SECOND, 'dataset': SECOND, 'previous_slot': FIRST})
         self.assertEqual(self.store.reads.count(raw_key), 1)
-        self.assertNotIn(f'collector/chips/model/{CODE}.json', self.store.reads)
+        self.assertEqual(self.store.reads.count(f'collector/chips/model/{CODE}.json'), 1)
         self.assertEqual(self.published(SECOND)['source']['same_session_cached_raw_key'], raw_key)
 
     def test_unbound_cache_cannot_repair_legacy_prefix_or_request_a_source(self):
