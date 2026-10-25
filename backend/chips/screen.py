@@ -4,13 +4,14 @@ from .calendar import sessions
 from .listing import trusted_listing
 from .limit_reference import matched
 
-PRICE_POSITION_RULE = 'CLOSE_GT_ANY_PEAK_OR_MEAN_COST_V1'
-PRICE_FILTER_RULE = 'CLOSE_GT_10_CNY_V1'
+PRICE_POSITION_RULE = 'CLOSE_GT_MEAN_COST_V2'
+PRICE_FILTER_RULE = 'NO_ABSOLUTE_PRICE_FILTER_V1'
+CHIP_UNCHANGED_RULE = 'TOP_PEAK_UNCHANGED_MANUAL_REVIEW_V1'
 
 def apply_price_position(row, snapshot):
     """Project the new condition from the sealed current snapshot, without replay.
 
-    Equality fails. Any tied maximum-mass peak may satisfy the peak branch.
+    Equality fails. Peak comparison is diagnostic and cannot replace mean cost.
     Missing/invalid operands stay unknown; an established false conjunct still
     excludes a stock. Original two-condition evidence is retained separately.
     """
@@ -30,13 +31,12 @@ def apply_price_position(row, snapshot):
     peak_state = ('PASS' if close is not None and any(close > price for price in known_peaks)
         else 'FAIL' if peaks and len(known_peaks) == len(peaks) else 'UNKNOWN')
     mean_state = ('PASS' if close > mean else 'FAIL') if mean is not None else 'UNKNOWN'
-    state = ('PASS' if 'PASS' in (peak_state, mean_state)
-        else 'FAIL' if peak_state == mean_state == 'FAIL' else 'UNKNOWN')
+    state = mean_state
     base = row['prefilter_status']
     row.update(model_mean_cost_cny=str(mean) if mean is not None else None,
         above_peak_status=peak_state, above_mean_cost_status=mean_state,
-        price_position_status=state,
-        screen_status='FAIL' if 'FAIL' in (base, state) else 'PASS' if base == state == 'PASS' else 'UNKNOWN')
+        price_position_status=state, chip_unchanged_status='UNKNOWN',
+        screen_status='FAIL' if 'FAIL' in (base, state) else 'UNKNOWN')
     return row
 
 def board(code):
@@ -156,7 +156,7 @@ def prefilter(stock, lines, days, pools, actual_limits=None, reference_evidence=
         evidence.append({'date':day,'status':state,'reason':reason})
         if state=='PASS': hits.append(day)
         if state=='UNKNOWN': unknown.append(day)
-    status='FAIL' if close is not None and close<=10 else ('PASS' if close is not None and hits else ('FAIL' if close is not None and not unknown else 'UNKNOWN'))
+    status='PASS' if close is not None and hits else ('FAIL' if close is not None and not unknown else 'UNKNOWN')
     return {'close_cny':str(close) if close is not None else None,'prefilter_status':status,
             'recent_limit_up_dates':hits,'limit_evidence':evidence,
             'last_trade_close_date':carried_date,

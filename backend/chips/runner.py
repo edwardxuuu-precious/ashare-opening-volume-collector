@@ -13,7 +13,7 @@ from itertools import zip_longest
 from pathlib import Path
 from .calendar import SOURCES,last_ten,sessions
 from .eastmoney_model import MODEL,compare_snapshots,estimate_snapshots,prepare_eastmoney
-from .screen import board,prefilter,apply_price_position,PRICE_POSITION_RULE,PRICE_FILTER_RULE
+from .screen import board,prefilter,apply_price_position,PRICE_POSITION_RULE,PRICE_FILTER_RULE,CHIP_UNCHANGED_RULE
 from .source import Source
 from .golden import VERSION as GOLDEN_VERSION,grid_row as golden_row,document as golden_document
 from .current_quote import collect as collect_final_quotes,overlay as overlay_final_quote,renormalize as renormalize_final_quotes
@@ -249,7 +249,7 @@ def _calculate(store,source,stock,ctx):
         nonlocal references
         row=prefilter(screen_stock,lines,days,state['pools'],state.get('actual_limits'),references,state.get('closing_pools'))
         if (isinstance(store,Storage) and row['prefilter_status']=='UNKNOWN' and row.get('close_cny') is not None
-            and Decimal(row['close_cny'])>10 and any(e['reason']=='HISTORICAL_REFERENCE_CLOSE_NOT_VERIFIED' for e in row['limit_evidence'])):
+            and any(e['reason']=='HISTORICAL_REFERENCE_CLOSE_NOT_VERIFIED' for e in row['limit_evidence'])):
             try:
                 ref_key=f'collector/chips/reference-daily/{as_of}/{stock["code"]}.json'
                 bundle,_=store.get(ref_key)
@@ -261,7 +261,7 @@ def _calculate(store,source,stock,ctx):
             except Exception as exc:
                 row['reasons'].append('HISTORICAL_REFERENCE_FETCH_ERROR:'+type(exc).__name__)
         if (isinstance(store,Storage) and references and references.get('provider')=='BAOSTOCK_0.9.3'
-            and row['prefilter_status']=='UNKNOWN' and row.get('close_cny') is not None and Decimal(row['close_cny'])>10
+            and row['prefilter_status']=='UNKNOWN' and row.get('close_cny') is not None
             and any(e['reason']=='REFERENCE_DAILY_VOLUME_CONFLICT' for e in row['limit_evidence'])):
             try:
                 corroboration_key=f'collector/chips/reference-corroboration/{as_of}/{stock["code"]}.json'
@@ -387,28 +387,6 @@ def _calculate(store,source,stock,ctx):
                 or previous.get('source',{}).get('current_quote_sha256'))
             and compatible_ready_model(previous,ctx.get('execution_identity',{}))):
             cached=preserve_archive(previous,cached)
-            # The conjunction is already false at <=10. Reuse only a same-day
-            # READY frame whose row, snapshot and independently dated quote
-            # agree; historical limit evidence is retained without upgrading it.
-            quote=state.get('actual_limits',{}).get(as_of,{}).get(stock['code'])
-            price_excluded=False
-            if not listing_changed and quote and quote.get('date')==as_of and previous['screening_row']['prefilter_status']=='FAIL':
-                try:
-                    close=Decimal(quote['close'])
-                    price_excluded=(close.is_finite() and 0<close<=10
-                        and close==Decimal(previous['screening_row']['close_cny'])
-                        and close==Decimal(previous['snapshots'][as_of]['close_cny']))
-                except (KeyError,ValueError,ArithmeticError):pass
-            if price_excluded:
-                row=previous['screening_row']
-                previous.update(dataset_id=dataset,recorded_at=now(),reused_from_generation=previous_slot,
-                    calculation_execution_identity=previous.get('calculation_execution_identity',previous['execution_identity']),
-                    execution_identity=ctx.get('execution_identity'),screening_row=row,
-                    price_exclusion_reuse={'date':as_of,'close_cny':str(close),
-                        'quote_private_key':f'collector/chips/limits/{as_of}.json',
-                        'reason':'DATED_QUOTE_ROW_AND_SNAPSHOT_AGREE_CLOSE_AT_MOST_10'})
-                publish(previous)
-                return row
             if cached is None:cached,_=store.get(f'collector/chips/model/{stock["code"]}.json')
             if (cached and cached.get('_source_history')
                 and cached.get('_history_adapter_sha256')==ctx.get('execution_identity',{}).get('history_adapter_sha256')
@@ -549,8 +527,7 @@ def _calculate(store,source,stock,ctx):
                 close,upper=Decimal(quote['close']),Decimal(quote['upper_limit'])
                 if close.is_finite() and upper.is_finite() and close>0:
                     row['close_cny']=str(close)
-                    if close<=10:row['prefilter_status']='FAIL'
-                    elif upper>0 and close==upper:
+                    if upper>0 and close==upper:
                         row['prefilter_status']='PASS';row['recent_limit_up_dates']=[as_of]
                     row['reasons'].append('LATEST_CLOSE_FROM_VERIFIED_DATED_TENCENT_QUOTE;HISTORICAL_OHLC_MISSING')
             except (ArithmeticError,ValueError):pass
@@ -594,7 +571,8 @@ def run(store,*,as_of,max_minutes=285,workers=4):
     try:
         current,current_etag=store.get('data/chips/daily/manifest.json')
         identity=implementation_identity()
-        if current and current['as_of']==as_of and current.get('market_complete') and current.get('execution_identity')==identity:
+        if (current and current['as_of']==as_of and (current.get('market_complete') or current.get('calculation_complete'))
+            and current.get('execution_identity')==identity):
             return {'outcome':'ALREADY_COMMITTED','as_of':as_of,'market_complete':current['market_complete']}
         state,state_etag=store.get('collector/chips/state.json');source=Source()
         if current and state and current['dataset_id']==state.get('dataset_id'):
@@ -769,10 +747,14 @@ def run(store,*,as_of,max_minutes=285,workers=4):
             'previous_date':days[-2],'official_sessions':days,'universe_total':len(rows),'scanned_count':len(rows),
             'model_ready_count':ready,'screen_counts':{k:counts[k] for k in ('PASS','FAIL','UNKNOWN')},
             'price_position_rule':PRICE_POSITION_RULE,'price_filter_rule':PRICE_FILTER_RULE,
+            'chip_unchanged_rule':CHIP_UNCHANGED_RULE,
             'final_screen_counts':{k:final_counts[k] for k in ('PASS','FAIL','UNKNOWN')},
             'display_response_verified_count':sum(0<r.get('display_response_upper_bound_bytes',0)<5900000 for r in rows),
             'max_display_response_upper_bound_bytes':max((r.get('display_response_upper_bound_bytes',0) for r in rows),default=0),
             'market_complete':ready==len(rows) and counts['UNKNOWN']==0 and final_counts['UNKNOWN']==0 and not catalog_only,
+            # Pending human review is not missing source data to recalculate.
+            'calculation_complete':ready==len(rows) and counts['UNKNOWN']==0
+                and all(r['price_position_status']!='UNKNOWN' for r in rows) and not catalog_only,
             'universe_coverage':'OFFICIAL_CURRENT_LIST_RECONCILED' if reconciled else ('SITE_CATALOG_UNVERIFIED' if catalog_only else 'VENDOR_REPORTED_TOTAL_VALIDATED'),
             'execution_identity':identity,'coefficient':2,'unchanged_threshold':None,
             'model_version':MODEL['version'],'model':MODEL,'history_window_bars':210,'golden_grid_version':GOLDEN_VERSION,

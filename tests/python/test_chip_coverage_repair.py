@@ -215,7 +215,7 @@ class CoverageRepair(unittest.TestCase):
             'owner':owner,'pools':{d:HIT for d in DAYS},'actual_limits':{},'execution_identity':identity,'previous_slot':previous}
         old='1111111111111111'
         original=_calculate(store,FakeSource(),STOCK,context(old))
-        self.assertEqual(original['prefilter_status'],'FAIL')
+        self.assertEqual(original['prefilter_status'],'PASS')
         self.assertTrue(original['recent_limit_up_dates'])
         listed={**STOCK,'listed':DAYS[-2],'listing_evidence':{'security_id':STOCK['code'],
             'listed':DAYS[-2],'as_of':DAYS[-1],'provider':'OFFICIAL_CURRENT_LIST_RECONCILIATION','sha256':'a'*64}}

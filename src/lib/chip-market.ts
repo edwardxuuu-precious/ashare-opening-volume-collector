@@ -1,7 +1,7 @@
 import { chipNumber, parseChipSample, type ChipSample, type ChipSnapshot } from './chips.ts';
-import {chipPricePositionRule,validateChipPricePosition} from './chip-price-position.ts';
+import {chipPricePositionRule,chipUnchangedRule,validateChipPricePosition} from './chip-price-position.ts';
 
-export const chipPriceFilterRule = 'CLOSE_GT_10_CNY_V1';
+export const chipPriceFilterRule = 'NO_ABSOLUTE_PRICE_FILTER_V1';
 export type MarketState = 'PASS' | 'FAIL' | 'UNKNOWN';
 export type DailyCandle = { date: string; open: string; high: string; low: string; close: string; volume_shares: string; amount_cny: string; turnover_percent: string };
 export type MarketManifest = {
@@ -9,9 +9,11 @@ export type MarketManifest = {
   as_of: string; previous_date: string; official_sessions: string[];
   universe_total: number; scanned_count: number; model_ready_count: number;
   screen_counts: Record<MarketState, number>; market_complete: boolean; coefficient: 2;
+  calculation_complete?: boolean;
   unchanged_threshold: null; generated_at: string; calendar_source: string;
   model_version?: string; history_window_bars?: number;
   price_filter_rule: typeof chipPriceFilterRule;
+  chip_unchanged_rule: typeof chipUnchangedRule;
   price_position_rule?:typeof chipPricePositionRule;final_screen_counts?:Record<MarketState,number>;
   universe_coverage?: 'SITE_CATALOG_UNVERIFIED'|'VENDOR_REPORTED_TOTAL_VALIDATED'|'OFFICIAL_CURRENT_LIST_RECONCILED';
 };
@@ -22,6 +24,7 @@ export type MarketScreenRow = {
   prefilter_status: MarketState; recent_limit_up_dates: string[];
   model_mean_cost_cny?:string|null;above_peak_status?:MarketState;above_mean_cost_status?:MarketState;
   price_position_status?:MarketState;screen_status?:MarketState;
+  chip_unchanged_status?:'UNKNOWN';
   chip_status: 'READY' | 'MISSING'; peak_prices_cny: string[]; previous_peak_prices_cny: string[];
   original_peak_changes: { price_cny: string; previous_share_percent: string; current_share_percent: string; change_percentage_points: string }[];
   reasons: string[];
@@ -39,7 +42,8 @@ const day = (v: unknown): v is string => typeof v === 'string' && /^\d{4}-\d{2}-
 const count = (v: unknown): v is number => typeof v === 'number' && Number.isSafeInteger(v) && v >= 0;
 export function parseMarketManifest(input: unknown): MarketManifest {
   const v = obj(input), c = obj(v.screen_counts);
-  if(v.price_filter_rule!==chipPriceFilterRule) throw Error('价格条件已改为收盘价严格高于10元，等待符合新规则的每日批次。');
+  if(v.price_filter_rule!==chipPriceFilterRule || v.price_position_rule!==chipPricePositionRule || v.chip_unchanged_rule!==chipUnchangedRule)
+    throw Error('筛选已取消价格门槛，仅保留近10交易日涨停、收盘高于平均成本、顶格未动；等待符合新规则的每日批次。');
   if (v.schema !== 'stock.chips.market.manifest.v1' || !/^[0-9a-f]{16}$/.test(String(v.dataset_id)) || v.active_slot!==v.dataset_id
     || !day(v.as_of) || !day(v.previous_date) || v.previous_date >= v.as_of || v.coefficient !== 2 || v.unchanged_threshold !== null
     || !Array.isArray(v.official_sessions) || v.official_sessions.length !== 10 || !v.official_sessions.every(day)
@@ -66,7 +70,7 @@ export function parseMarketScreen(input: unknown, manifest: MarketManifest): Mar
       || !Array.isArray(r.peak_prices_cny) || !Array.isArray(r.previous_peak_prices_cny) || !Array.isArray(r.original_peak_changes) || !Array.isArray(r.reasons)) throw Error('筛选行格式不正确。');
     if (r.close_cny !== null && chipNumber(r.close_cny) <= 0) throw Error('收盘价不正确。');
     if (r.last_trade_close_date != null && (!day(r.last_trade_close_date) || r.last_trade_close_date >= manifest.as_of)) throw Error('沿用收盘价的最后交易日不正确。');
-    if (r.prefilter_status==='PASS' && (r.close_cny===null || chipNumber(r.close_cny)<=10 || !r.recent_limit_up_dates.length)) throw Error('入选行缺少两项明确条件。');
+    if (r.prefilter_status==='PASS' && (r.close_cny===null || !r.recent_limit_up_dates.length)) throw Error('涨停初筛缺少明确收盘价或涨停证据。');
     if(manifest.price_position_rule){
       if(!r.peak_prices_cny.every(p=>typeof p==='string'&&Number.isFinite(Number(p))&&Number(p)>0))throw Error('主峰价格不正确。');
       validateChipPricePosition(r as unknown as MarketScreenRow);finalCounts[r.screen_status as MarketState]++;

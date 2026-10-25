@@ -164,22 +164,19 @@ class LimitReference(unittest.TestCase):
         non_limit=copy.deepcopy(ref);non_limit['rows'][day].update(close='43.00',high='44.00')
         self.assertEqual(check(r=non_limit,a={},l=line.replace(',44.00,44.00,',',43.00,44.00,'))['status'],'UNKNOWN')
 
-    def test_same_session_low_price_exclusion_requires_matching_dated_quote(self):
-        import test_chip_daily_v1 as fixtures
+    def test_old_low_price_failure_cannot_reuse_price_exclusion_shortcut(self):
         class NoPool(FakeSource):
             def pools(self,days):return {d:None for d in days},[]
-        cases=(('13.50',DAYS[-1],'13.50',None,False,'UNKNOWN'),('13.50',DAYS[-2],'13.50',None,False,'FAIL'),
-            ('13.50',DAYS[-1],'13.51',None,False,'FAIL'),('10.00',DAYS[-1],'10.00',None,True,'FAIL'),
-            ('9.99',DAYS[-1],'9.99',None,True,'FAIL'),('9.99',DAYS[-2],'9.99',None,False,'FAIL'),('9.99',DAYS[-1],'9.98',None,False,'FAIL'),('13.50',DAYS[-1],'13.50','13.49',False,'UNKNOWN'))
-        for price,quote_date,quote_close,snapshot_close,fast,expected in cases:
-            lines=[l.replace('45.00',price).replace('450000',str(D(price)*10000)) for l in fixtures.LINES]
-            with self.subTest(price=price,quote_date=quote_date,quote_close=quote_close,snapshot_close=snapshot_close):
+        for price in ('9.99','10.00','10.01','13.50'):
+            with self.subTest(price=price):
+                lines=[f'{d},{price},{price},{price},{price},100,{D(price)*10000},0,10.02,0.41,1.00' for d in DAYS]
+                pool={STOCK['code']:{'p':int(D(price)*1000),'zdp':10.02,'amount':float(D(price)*10000)}}
                 store=Memory();FakeSource.calls=0
                 with patch('test_chip_daily_v1.LINES',lines),patch('backend.chips.runner.Source',NoPool):
                     run(store,as_of=DAYS[-1],max_minutes=2,workers=1)
                     state=store.data['collector/chips/state.json'];prior=state['dataset_id']
-                    if snapshot_close:
-                        store.data[f'data/chips/daily/{prior}/'+STOCK['code']+'.json']['snapshots'][DAYS[-1]]['close_cny']=snapshot_close
+                    # Model a legacy row excluded only by its absolute price.
+                    store.data[f'data/chips/daily/{prior}/'+STOCK['code']+'.json']['screening_row']['prefilter_status']='FAIL'
                     model_key='collector/chips/model/'+STOCK['code']+'.json'
                     del store.data[model_key];del store.version[model_key]
                     store.data['collector/chips/lease.json']={'owner':'INVENTED_TEST','expires':time.time()+600}
@@ -187,12 +184,58 @@ class LimitReference(unittest.TestCase):
                     def get(key):reads.append(key);return original_get(key)
                     store.get=get
                     ctx={**state,'slot':'invented-next','dataset':'invented-next','previous_slot':prior,
-                        'owner':'INVENTED_TEST','actual_limits':{DAYS[-1]:{STOCK['code']:{'date':quote_date,'close':quote_close,
-                            'reference_close':str(D(price)-D('.41')),'upper_limit':'999.99'}}}}
+                        'owner':'INVENTED_TEST','pools':{DAYS[-1]:pool},
+                        'actual_limits':{DAYS[-1]:{STOCK['code']:{'date':DAYS[-1],'close':price,
+                            'reference_close':str(D(price)-D('.41')),'upper_limit':price}}}}
                     row=_calculate(store,FakeSource(),STOCK,ctx)
-                self.assertEqual(row['prefilter_status'],expected)
-                self.assertEqual(model_key not in reads,fast)
-                self.assertEqual(FakeSource.calls,1 if fast else 2)
+                self.assertEqual(row['prefilter_status'],'PASS')
+                self.assertIn(model_key,reads)
+                self.assertEqual(FakeSource.calls,2)
                 value=store.data['data/chips/daily/invented-next/'+STOCK['code']+'.json']
-                self.assertEqual(value.get('price_exclusion_reuse') is not None,fast)
-                self.assertEqual(value['unchanged_threshold'],None)
+                self.assertNotIn('price_exclusion_reuse',value)
+                self.assertEqual(value['screening_row']['chip_unchanged_status'],'UNKNOWN')
+                self.assertIsNone(value['unchanged_threshold'])
+
+    def test_low_price_can_fetch_missing_historical_reference(self):
+        class UnknownReference(FakeSource):
+            def history(self,*args):
+                value,receipt,raw=super().history(*args)
+                return value,{**receipt,'provider':'THS_UNADJUSTED'},raw
+        price='4.50'
+        lines=[f'{d},{price},{price},{price},{price},100,45000,0,0,0,1.00' for d in DAYS]
+        primary={'provider':'INVENTED_REFERENCE','rows':{d:{'date':d,'tradestatus':'1','isST':'0',
+            'open':price,'high':price,'low':price,'close':price,'preclose':price,
+            'pctChg':'0','volume':'10000','amount':'45000'} for d in DAYS}}
+        store=Memory();owner='INVENTED_LOW_PRICE';slot='invented-low-reference'
+        store.put('collector/chips/lease.json',{'owner':owner,'expires':time.time()+600})
+        ctx={'slot':slot,'dataset':slot,'days':DAYS,'as_of':DAYS[-1],'owner':owner,'pools':{},'actual_limits':{}}
+        with patch('test_chip_daily_v1.LINES',lines),patch('backend.chips.runner.Storage',Memory),\
+            patch('backend.chips.runner.fetch_reference',return_value={'fixture':'INVENTED'}) as fetch,\
+            patch('backend.chips.runner.reference_prepared',return_value=primary):
+            row=_calculate(store,UnknownReference(),STOCK,ctx)
+        fetch.assert_called_once()
+        self.assertEqual(row['close_cny'],price)
+        self.assertEqual(row['prefilter_status'],'FAIL')
+        self.assertNotIn('LIMIT_HISTORY_INCOMPLETE',row['reasons'])
+
+    def test_low_price_volume_conflict_can_use_archived_corroboration(self):
+        price='4.50';code=STOCK['code'];day=DAYS[-2]
+        lines=[f'{d},{price},{price},{price},{price},100,45000,0,0,0,1.00' for d in DAYS]
+        primary={'provider':'BAOSTOCK_0.9.3','rows':{d:{'date':d,'tradestatus':'1','isST':'0',
+            'open':price,'high':price,'low':price,'close':price,'preclose':price,'pctChg':'0',
+            'volume':'10001' if d==day else '10000','amount':'45000'} for d in DAYS}}
+        b=self.archived_sohu();raw=json.dumps([{'status':0,'code':'cn_'+code,
+            'hq':[[day,price,price,'0.00','0.00%',price,price,'100','4.500','-']]}]).encode()
+        b['raw_base64']=base64.b64encode(raw).decode();b['receipt'].update(sha256=hashlib.sha256(raw).hexdigest(),bytes=len(raw))
+        store=Memory();owner='INVENTED_LOW_VOLUME';slot='invented-low-volume'
+        store.put('collector/chips/lease.json',{'owner':owner,'expires':time.time()+600})
+        store.put(f'collector/chips/reference-corroboration/{day}/{code}.json',b)
+        ctx={'slot':slot,'dataset':slot,'days':DAYS,'as_of':DAYS[-1],'owner':owner,'pools':{},'actual_limits':{},
+            'historical_references':{code:primary}}
+        with patch('test_chip_daily_v1.LINES',lines),patch('backend.chips.runner.Storage',Memory),\
+            patch('backend.chips.runner.fetch_reference') as fetch:
+            row=_calculate(store,FakeSource(),STOCK,ctx)
+        fetch.assert_not_called()
+        self.assertEqual(row['prefilter_status'],'FAIL')
+        saved=store.get(f'data/chips/daily/{slot}/{code}.json')[0]
+        self.assertEqual(saved['historical_limit_reference']['corroborating_source']['archived_request_as_of'],day)

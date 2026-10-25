@@ -16,28 +16,31 @@ class PricePosition(unittest.TestCase):
         self.assertEqual(row['original_peak_changes'],[{'unchanged':'audit'}])
         return row
 
-    def test_either_branch_and_both_are_sufficient(self):
+    def test_only_mean_cost_satisfies_position_and_stability_needs_review(self):
         for peaks,mean,states in [(('4.9',),'5.1',('PASS','FAIL')),(('5.1',),'4.9',('FAIL','PASS')),(('4.9',),'4.8',('PASS','PASS'))]:
             with self.subTest(states=states):
                 row=self.project(peaks=peaks,mean=mean)
                 self.assertEqual((row['above_peak_status'],row['above_mean_cost_status']),states)
-                self.assertEqual(row['screen_status'],'PASS')
+                self.assertEqual(row['price_position_status'],states[1])
+                self.assertEqual(row['chip_unchanged_status'],'UNKNOWN')
+                self.assertEqual(row['screen_status'],'FAIL' if states[1]=='FAIL' else 'UNKNOWN')
 
     def test_equal_to_both_is_not_above(self):
         self.assertEqual(self.project(peaks=('5',),mean='5')['screen_status'],'FAIL')
         self.assertEqual(self.project()['screen_status'],'FAIL')
 
     def test_mean_uses_full_precision_and_tied_peaks_use_any(self):
-        self.assertEqual(self.project(mean='4.999999999999999999')['screen_status'],'PASS')
+        self.assertEqual(self.project(mean='4.999999999999999999')['price_position_status'],'PASS')
+        self.assertEqual(self.project(mean='4.999999999999999999')['screen_status'],'UNKNOWN')
         self.assertEqual(self.project(peaks=('4.8','5.5'))['above_peak_status'],'PASS')
 
-    def test_unknown_never_becomes_a_match_but_known_or_pass_survives(self):
+    def test_missing_mean_cannot_be_replaced_by_a_peak_match(self):
         for operand in (None,'NaN','Infinity','-1','broken'):
             with self.subTest(operand=operand):
                 self.assertEqual(self.project(mean=operand)['screen_status'],'UNKNOWN')
-                self.assertEqual(self.project(mean=operand,peaks=('4.9',))['screen_status'],'PASS')
-        self.assertEqual(self.project(peaks=(),mean='4.9')['screen_status'],'PASS')
-        self.assertEqual(self.project(peaks=(),mean='5.1')['screen_status'],'UNKNOWN')
+                self.assertEqual(self.project(mean=operand,peaks=('4.9',))['screen_status'],'UNKNOWN')
+        self.assertEqual(self.project(peaks=(),mean='4.9')['screen_status'],'UNKNOWN')
+        self.assertEqual(self.project(peaks=(),mean='5.1')['screen_status'],'FAIL')
         self.assertEqual(self.project(ready=False)['screen_status'],'UNKNOWN')
 
     def test_original_conjunction_and_snapshot_identity_are_retained(self):
