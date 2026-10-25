@@ -82,11 +82,12 @@ const stabilityReasons:Record<string,string>={
   OTHER_CONDITION_FAILED_NOT_EVALUATED:'其他筛选条件未满足',LIMIT_EVENT_NOT_ESTABLISHED:'缺少已确认的涨停日期',
   EARLIER_LIMIT_STATUS_UNKNOWN:'较早交易日的涨停证据不足',BASELINE_NOT_AVAILABLE:'缺少涨停前一交易日的基准数据',
   CHIP_HISTORY_INCOMPLETE:'比较期间的筹码历史不完整',PRICE_BASIS_INCOMPARABLE:'比较期间的价格口径不可比',
-  NATIVE_RESOLUTION_INSUFFICIENT:'筹码价格分辨率不足',COMPARISON_RESOURCE_BOUND:'本批比较尚未完成',
+  NATIVE_RESOLUTION_INSUFFICIENT:'筹码价格分辨率不足',COMPARISON_RESOURCE_BOUND:'筹码比较跨度过大',
   INVALID_STABILITY_INPUT:'比较数据不完整',NO_USABLE_DISTRIBUTION:'缺少可用筹码分布',SOURCE_MODEL_MISMATCH:'模型或来源版本不一致',
   DATA_TRADE_STATUS_CONFLICT:'交易状态证据存在冲突',DATA_PRICE_EVIDENCE_CONFLICT:'价格来源证据存在冲突',
 };
 export function chipStabilityLabel(row:MarketScreenRow){
+  if(row.chip_stability?.reasons.includes('OTHER_CONDITION_FAILED_NOT_EVALUATED'))return '其他筛选条件未满足';
   return row.chip_unchanged_status==='PASS'?'顶格未动':row.chip_unchanged_status==='FAIL'?'顶格稳定条件未满足':'顶格判断数据不足';
 }
 export function chipStabilityDetails(row:MarketScreenRow){
