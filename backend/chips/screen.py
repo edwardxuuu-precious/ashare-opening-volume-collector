@@ -1,12 +1,12 @@
-"""Dated price/limit evidence and explicit chip-price position, without stability."""
+"""Dated evidence and the conjunction of adopted daily screening conditions."""
 from decimal import Decimal, ROUND_HALF_UP, ROUND_FLOOR, ROUND_CEILING
 from .calendar import sessions
 from .listing import trusted_listing
 from .limit_reference import matched
+from .stability import RULE_ID as CHIP_UNCHANGED_RULE
 
 PRICE_POSITION_RULE = 'CLOSE_GT_MEAN_COST_V2'
 PRICE_FILTER_RULE = 'NO_ABSOLUTE_PRICE_FILTER_V1'
-CHIP_UNCHANGED_RULE = 'TOP_PEAK_UNCHANGED_MANUAL_REVIEW_V1'
 
 def apply_price_position(row, snapshot):
     """Project the new condition from the sealed current snapshot, without replay.
@@ -37,6 +37,15 @@ def apply_price_position(row, snapshot):
         above_peak_status=peak_state, above_mean_cost_status=mean_state,
         price_position_status=state, chip_unchanged_status='UNKNOWN',
         screen_status='FAIL' if 'FAIL' in (base, state) else 'UNKNOWN')
+    return row
+
+
+def apply_stability(row, result):
+    if result.get('rule_id') != CHIP_UNCHANGED_RULE or result.get('status') not in ('PASS','FAIL','UNKNOWN'):
+        raise ValueError('VERSIONED_STABILITY_RESULT_REQUIRED')
+    row.update(chip_stability=result, chip_unchanged_status=result['status'])
+    states=(row['prefilter_status'], row['price_position_status'], result['status'])
+    row['screen_status']='FAIL' if 'FAIL' in states else 'PASS' if all(s=='PASS' for s in states) else 'UNKNOWN'
     return row
 
 def board(code):

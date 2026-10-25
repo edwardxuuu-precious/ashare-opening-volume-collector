@@ -13,7 +13,8 @@ from itertools import zip_longest
 from pathlib import Path
 from .calendar import SOURCES,last_ten,sessions
 from .eastmoney_model import MODEL,compare_snapshots,estimate_snapshots,prepare_eastmoney
-from .screen import board,prefilter,apply_price_position,PRICE_POSITION_RULE,PRICE_FILTER_RULE,CHIP_UNCHANGED_RULE
+from .screen import board,prefilter,apply_price_position,apply_stability,PRICE_POSITION_RULE,PRICE_FILTER_RULE,CHIP_UNCHANGED_RULE
+from .stability import classify as classify_stability,calculation_complete as stability_calculated,THRESHOLDS as STABILITY_THRESHOLDS,POLICY_METADATA as STABILITY_POLICY
 from .source import Source
 from .golden import VERSION as GOLDEN_VERSION,grid_row as golden_row,document as golden_document
 from .current_quote import collect as collect_final_quotes,overlay as overlay_final_quote,renormalize as renormalize_final_quotes
@@ -35,7 +36,7 @@ def implementation_identity():
     """Bind resumed batches and exact model caches to their actual source."""
     root=Path(__file__).parent
     hashes={name:hashlib.sha256((root/name).read_text(encoding='utf-8').replace('\r\n','\n').encode()).hexdigest()
-        for name in ('runner.py','source.py','baostock_history.py','ths_history.py','listing.py','display.py','model.py','eastmoney_model.py','ohlc4_input.py','current_quote.py','screen.py','calendar.py','limit_reference.py','golden.py')}
+        for name in ('runner.py','source.py','baostock_history.py','ths_history.py','listing.py','display.py','model.py','eastmoney_model.py','ohlc4_input.py','current_quote.py','screen.py','calendar.py','limit_reference.py','golden.py','stability.py')}
     transport=root.parent/'scripts'/'baostock_source.py'
     hashes['baostock_source.py']=hashlib.sha256(transport.read_text(encoding='utf-8').replace('\r\n','\n').encode()).hexdigest()
     adapter_hash=hashlib.sha256(encoded({k:hashes[k] for k in ('source.py','baostock_history.py','ths_history.py','baostock_source.py')})).hexdigest()
@@ -336,6 +337,17 @@ def _calculate(store,source,stock,ctx):
         return cached
     def publish(value):
         apply_price_position(value['screening_row'],value.get('snapshots',{}).get(as_of))
+        no_trade=set(stock.get('confirmed_no_trade_sessions',[]))
+        no_trade.update(value.get('source_audit',{}).get('confirmed_no_trade_sessions',[]))
+        no_trade.update(value.get('snapshots',{}).get(as_of,{}).get('no_trade_confirmation_dates',[]))
+        stability,proof=classify_stability(value['screening_row'],value.get('history',[]),days,
+            security_id=stock['code'],no_trade=no_trade,
+            reference_evidence=references or value.get('historical_limit_reference'),
+            actual_limits=state.get('actual_limits'),expected_current=value.get('snapshots',{}).get(as_of),
+            incomparable=bool(value.get('price_basis_incomparable')))
+        apply_stability(value['screening_row'],stability)
+        value.pop('chip_stability_evidence',None)
+        if proof:value['chip_stability_evidence']=proof
         value['screening_row']['golden_grid']=golden_row(value)
         display=display_frame(value)
         exceeds_browser_limit=any(len(s.get('profile',[]))>MAX_BROWSER_PROFILE_BINS for s in display.get('snapshots',{}).values())
@@ -748,13 +760,16 @@ def run(store,*,as_of,max_minutes=285,workers=4):
             'model_ready_count':ready,'screen_counts':{k:counts[k] for k in ('PASS','FAIL','UNKNOWN')},
             'price_position_rule':PRICE_POSITION_RULE,'price_filter_rule':PRICE_FILTER_RULE,
             'chip_unchanged_rule':CHIP_UNCHANGED_RULE,
+            'chip_stability_thresholds':STABILITY_THRESHOLDS,
+            'chip_stability_policy':STABILITY_POLICY,
             'final_screen_counts':{k:final_counts[k] for k in ('PASS','FAIL','UNKNOWN')},
             'display_response_verified_count':sum(0<r.get('display_response_upper_bound_bytes',0)<5900000 for r in rows),
             'max_display_response_upper_bound_bytes':max((r.get('display_response_upper_bound_bytes',0) for r in rows),default=0),
             'market_complete':ready==len(rows) and counts['UNKNOWN']==0 and final_counts['UNKNOWN']==0 and not catalog_only,
-            # Pending human review is not missing source data to recalculate.
+            # Only actual unresolved input/comparison gaps require a repair.
             'calculation_complete':ready==len(rows) and counts['UNKNOWN']==0
-                and all(r['price_position_status']!='UNKNOWN' for r in rows) and not catalog_only,
+                and all(r['price_position_status']!='UNKNOWN' for r in rows)
+                and all(stability_calculated(r) for r in rows) and not catalog_only,
             'universe_coverage':'OFFICIAL_CURRENT_LIST_RECONCILED' if reconciled else ('SITE_CATALOG_UNVERIFIED' if catalog_only else 'VENDOR_REPORTED_TOTAL_VALIDATED'),
             'execution_identity':identity,'coefficient':2,'unchanged_threshold':None,
             'model_version':MODEL['version'],'model':MODEL,'history_window_bars':210,'golden_grid_version':GOLDEN_VERSION,

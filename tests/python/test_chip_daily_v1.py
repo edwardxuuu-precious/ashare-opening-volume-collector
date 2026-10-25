@@ -52,7 +52,7 @@ class DailyV1(unittest.TestCase):
             manifest,_=store.get('data/chips/daily/manifest.json');slot=manifest['dataset_id']
             frame,_=store.get(f'data/chips/daily/{slot}/000607.json')
             self.assertEqual(result['outcome'],'COMMITTED');self.assertIsNone(frame['unchanged_threshold']);self.assertEqual(manifest['price_filter_rule'],'NO_ABSOLUTE_PRICE_FILTER_V1')
-            self.assertEqual(manifest['chip_unchanged_rule'],'TOP_PEAK_UNCHANGED_MANUAL_REVIEW_V1')
+            self.assertEqual(manifest['chip_unchanged_rule'],'TOP_REGION_STABLE_1_90_90_V1')
             self.assertEqual(frame['snapshots'][DAYS[-1]]['peak_prices_cny'],['4.50'])
             self.assertEqual(frame['screening_row']['prefilter_status'],'PASS')
             self.assertEqual(frame['screening_row']['screen_status'],'FAIL')
@@ -75,18 +75,19 @@ class DailyV1(unittest.TestCase):
             self.assertEqual(run(store,as_of=DAYS[-1],max_minutes=2,workers=1)['outcome'],'COMMITTED')
             self.assertEqual(FakeSource.calls,1)
 
-    def test_manual_unchanged_review_does_not_repeat_completed_calculation(self):
+    def test_automatic_stability_result_does_not_repeat_completed_calculation(self):
         class Rising(FakeSource):
             def pools(self,days):
-                return {days[-1]:{'000607':{'p':5000,'zdp':10,'amount':50000}}},[]
-        lines=LINES[:-1]+[f'{DAYS[-1]},5,5,5,5,100,50000,0,10,0.45,1.00']
+                return {days[-1]:{'000607':{'p':110000,'zdp':10,'amount':110000}}},[]
+        lines=[f'{d},100,100,100,100,100,1000000,0,0,0,.01' for d in DAYS[:-1]]
+        lines+=[f'{DAYS[-1]},110,110,110,110,10,110000,0,10,10,.001']
         store=Memory();FakeSource.calls=0
         with patch('test_chip_daily_v1.LINES',lines),patch('backend.chips.runner.Source',Rising):
             result=run(store,as_of=DAYS[-1],max_minutes=2,workers=1)
             manifest=store.get('data/chips/daily/manifest.json')[0]
             self.assertEqual(result['outcome'],'COMMITTED')
             self.assertTrue(manifest['calculation_complete'])
-            self.assertFalse(manifest['market_complete'])
-            self.assertEqual(manifest['final_screen_counts'],{'PASS':0,'FAIL':0,'UNKNOWN':1})
+            self.assertTrue(manifest['market_complete'])
+            self.assertEqual(manifest['final_screen_counts'],{'PASS':1,'FAIL':0,'UNKNOWN':0})
             self.assertEqual(run(store,as_of=DAYS[-1],max_minutes=2,workers=1)['outcome'],'ALREADY_COMMITTED')
             self.assertEqual(FakeSource.calls,1)

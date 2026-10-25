@@ -1,8 +1,12 @@
 import { chipNumber, parseChipSample, type ChipSample, type ChipSnapshot } from './chips.ts';
-import {chipPricePositionRule,chipUnchangedRule,validateChipPricePosition} from './chip-price-position.ts';
+import {chipPricePositionRule,chipUnchangedRule,chipStabilityThresholds,validateChipPricePosition} from './chip-price-position.ts';
 
 export const chipPriceFilterRule = 'NO_ABSOLUTE_PRICE_FILTER_V1';
 export type MarketState = 'PASS' | 'FAIL' | 'UNKNOWN';
+export type ChipStabilitySummary={
+  rule_id:typeof chipUnchangedRule;status:MarketState;baseline_date:string|null;first_limit_up_date:string|null;
+  evaluated_sessions:number;required_sessions:number;max_shift_fraction:string|null;min_mass_ratio:string|null;reasons:string[];
+};
 export type DailyCandle = { date: string; open: string; high: string; low: string; close: string; volume_shares: string; amount_cny: string; turnover_percent: string };
 export type MarketManifest = {
   schema: 'stock.chips.market.manifest.v1'; dataset_id: string; active_slot: string;
@@ -14,6 +18,7 @@ export type MarketManifest = {
   model_version?: string; history_window_bars?: number;
   price_filter_rule: typeof chipPriceFilterRule;
   chip_unchanged_rule: typeof chipUnchangedRule;
+  chip_stability_thresholds?:typeof chipStabilityThresholds;
   price_position_rule?:typeof chipPricePositionRule;final_screen_counts?:Record<MarketState,number>;
   universe_coverage?: 'SITE_CATALOG_UNVERIFIED'|'VENDOR_REPORTED_TOTAL_VALIDATED'|'OFFICIAL_CURRENT_LIST_RECONCILED';
 };
@@ -24,7 +29,7 @@ export type MarketScreenRow = {
   prefilter_status: MarketState; recent_limit_up_dates: string[];
   model_mean_cost_cny?:string|null;above_peak_status?:MarketState;above_mean_cost_status?:MarketState;
   price_position_status?:MarketState;screen_status?:MarketState;
-  chip_unchanged_status?:'UNKNOWN';
+  chip_unchanged_status?:MarketState;chip_stability?:ChipStabilitySummary;
   chip_status: 'READY' | 'MISSING'; peak_prices_cny: string[]; previous_peak_prices_cny: string[];
   original_peak_changes: { price_cny: string; previous_share_percent: string; current_share_percent: string; change_percentage_points: string }[];
   reasons: string[];
@@ -43,7 +48,12 @@ const count = (v: unknown): v is number => typeof v === 'number' && Number.isSaf
 export function parseMarketManifest(input: unknown): MarketManifest {
   const v = obj(input), c = obj(v.screen_counts);
   if(v.price_filter_rule!==chipPriceFilterRule || v.price_position_rule!==chipPricePositionRule || v.chip_unchanged_rule!==chipUnchangedRule)
-    throw Error('筛选已取消价格门槛，仅保留近10交易日涨停、收盘高于平均成本、顶格未动；等待符合新规则的每日批次。');
+    throw Error('顶格未动已改为自动判断，等待符合自动规则的新每日批次。');
+  if(v.chip_stability_thresholds!==undefined){
+    const thresholds=obj(v.chip_stability_thresholds);
+    if(Object.keys(thresholds).length!==3||Object.entries(chipStabilityThresholds).some(([key,value])=>thresholds[key]!==value))
+      throw Error('顶格自动判断的固定阈值不匹配。');
+  }
   if (v.schema !== 'stock.chips.market.manifest.v1' || !/^[0-9a-f]{16}$/.test(String(v.dataset_id)) || v.active_slot!==v.dataset_id
     || !day(v.as_of) || !day(v.previous_date) || v.previous_date >= v.as_of || v.coefficient !== 2 || v.unchanged_threshold !== null
     || !Array.isArray(v.official_sessions) || v.official_sessions.length !== 10 || !v.official_sessions.every(day)
@@ -74,6 +84,14 @@ export function parseMarketScreen(input: unknown, manifest: MarketManifest): Mar
     if(manifest.price_position_rule){
       if(!r.peak_prices_cny.every(p=>typeof p==='string'&&Number.isFinite(Number(p))&&Number(p)>0))throw Error('主峰价格不正确。');
       validateChipPricePosition(r as unknown as MarketScreenRow);finalCounts[r.screen_status as MarketState]++;
+      const stability=(r as unknown as MarketScreenRow).chip_stability!;
+      if(stability.first_limit_up_date!==null){
+        const index=manifest.official_sessions.indexOf(stability.first_limit_up_date);
+        if(index<0||stability.first_limit_up_date!==[...r.recent_limit_up_dates].sort()[0]
+          ||stability.required_sessions!==manifest.official_sessions.length-index
+          ||(index>0&&stability.baseline_date!==null&&stability.baseline_date!==manifest.official_sessions[index-1]))
+          throw Error('顶格自动判断的基准或比较日期与涨停窗口不一致。');
+      }else if(stability.required_sessions!==0)throw Error('顶格自动判断缺少起始涨停日期。');
     }
     seen.add(String(r.security_id)); counts[r.prefilter_status as MarketState]++;
   }
