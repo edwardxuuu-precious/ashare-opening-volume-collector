@@ -27,6 +27,7 @@ POLICY_METADATA = {
 }
 SHIFT, RETENTION, HEIGHT = Fraction(1, 100), Fraction(9, 10), Fraction(9, 10)
 MAX_CELLS = 20000
+COMPARISON_VERSION = 'uniform-halfstep.component-qualification.v2'
 
 
 class InputError(ValueError):
@@ -160,6 +161,7 @@ def judge_snapshots(snapshots, baseline_date, required, *, first_limit_up_date):
     summary.update(baseline_date=baseline_date, first_limit_up_date=first_limit_up_date,
                    required_sessions=len(required))
     evidence = {'rule_id': RULE_ID, 'thresholds': dict(THRESHOLDS), 'policy': dict(POLICY_METADATA),
+                'comparison_version': COMPARISON_VERSION,
                 'daily': [], 'anchor_bands': []}
     try:
         base = snapshots[baseline_date]
@@ -176,10 +178,13 @@ def judge_snapshots(snapshots, baseline_date, required, *, first_limit_up_date):
                         baseline_audit=audit)
         evidence['anchor_bands'] = [{'lower_cny': text(b[0]), 'upper_cny': text(b[1]),
                                     'baseline_share_percent': text(m*100)} for b, m in zip(bands, base_mass)]
-        # The smallest original top price sets the strictest native resolution
-        # requirement. Refining the comparison grid does not relax this gate.
+        # Native resolution qualifies the displacement measurement only. The
+        # adopted uniform half-step distribution has an exact band integral,
+        # so a failed mass condition remains a conclusive necessary-condition
+        # failure even when displacement cannot be resolved to one percent.
         max_native_step = min(top)*SHIFT
         maximum, minimum, reasons, unknown = None, None, [], []
+        shift_evaluated = 0
         for day in required:
             snapshot = snapshots.get(day)
             if not snapshot:
@@ -191,25 +196,34 @@ def judge_snapshots(snapshots, baseline_date, required, *, first_limit_up_date):
                 continue
             try:
                 current, native_step = cells(snapshot)
-                if max(step, native_step) > max_native_step:
-                    unknown.append('NATIVE_RESOLUTION_INSUFFICIENT')
-                    continue
-                current_top, day_audit = rebin(current, origin, step)
-                shift = relative_distance(top, current_top)
                 masses = [band_mass(current, b) for b in bands]
                 ratios = [m/b for m, b in zip(masses, base_mass)]
                 retention = min(ratios)
-                maximum = shift if maximum is None else max(maximum, shift)
                 minimum = retention if minimum is None else min(minimum, retention)
                 summary['evaluated_sessions'] += 1
+                resolved = max(step, native_step) <= max_native_step
+                shift, current_top, day_audit = None, [], None
+                if not resolved:
+                    unknown.append('NATIVE_RESOLUTION_INSUFFICIENT')
+                else:
+                    try:
+                        current_top, day_audit = rebin(current, origin, step)
+                        shift = relative_distance(top, current_top)
+                        maximum = shift if maximum is None else max(maximum, shift)
+                        shift_evaluated += 1
+                    except ResourceBound:
+                        unknown.append('COMPARISON_RESOURCE_BOUND')
                 failed = []
-                if shift > SHIFT:
+                if shift is not None and shift > SHIFT:
                     failed.append('PEAK_REGION_MOVED')
                 if retention < RETENTION:
                     failed.append('ANCHOR_BAND_MASS_DECREASED')
                 reasons.extend(failed)
-                evidence['daily'].append({'date': day, 'status': 'FAIL' if failed else 'PASS',
+                evidence['daily'].append({'date': day, 'status': 'FAIL' if failed else 'UNKNOWN' if shift is None else 'PASS',
                     'max_shift_fraction': text(shift, upper=True), 'min_mass_ratio': text(retention),
+                    'shift_status': 'UNKNOWN' if shift is None else 'FAIL' if shift > SHIFT else 'PASS',
+                    'mass_status': 'FAIL' if retention < RETENTION else 'PASS',
+                    'native_resolution_sufficient': resolved,
                     'native_step_cny': text(native_step), 'top_centers': [text(p) for p in current_top],
                     'band_share_percent': [text(m*100) for m in masses], 'audit': day_audit,
                     'model_input_prefix_sha256': snapshot.get('normalized_input_prefix_sha256')})
@@ -217,7 +231,8 @@ def judge_snapshots(snapshots, baseline_date, required, *, first_limit_up_date):
                 unknown.append('COMPARISON_RESOURCE_BOUND')
             except InputError:
                 unknown.append('INVALID_STABILITY_INPUT')
-        summary.update(max_shift_fraction=text(maximum, upper=True), min_mass_ratio=text(minimum))
+        summary.update(max_shift_fraction=text(maximum, upper=True), min_mass_ratio=text(minimum),
+                       shift_evaluated_sessions=shift_evaluated, mass_evaluated_sessions=summary['evaluated_sessions'])
         summary['status'] = 'FAIL' if reasons else 'UNKNOWN' if unknown or not required else 'PASS'
         summary['reasons'] = sorted(set(reasons + unknown))
     except ResourceBound:
@@ -317,8 +332,10 @@ def classify(row, history, days, *, security_id, no_trade=(), reference_evidence
                     and Decimal(quote['close'])!=observed[day].close):
                     conflicts[day]='DATA_PRICE_EVIDENCE_CONFLICT'
         trusted_no_trade=no_trade-set(conflicts)
-        # Observed reference-price discontinuities make the unadjusted price
-        # spaces incomparable. Absence of such a signal is not event certification.
+        # A dated reference-price break invalidates comparisons from that date
+        # onward. It cannot erase an already-observed failure before the break.
+        # Absence of such a signal is not corporate-action certification.
+        basis_breaks = {}
         for day in required:
             reference = (reference_evidence or {}).get('rows', {}).get(day, {})
             quote = (actual_limits or {}).get(day, {}).get(security_id, {})
@@ -337,11 +354,16 @@ def classify(row, history, days, *, security_id, no_trade=(), reference_evidence
                     continue
                 reported = Decimal(value)
                 if reported.is_finite() and reported > 0 and reported.quantize(Decimal('.01')) != observed[prior].close.quantize(Decimal('.01')):
-                    summary = empty('PRICE_BASIS_INCOMPARABLE')
-                    summary.update(baseline_date=baseline, first_limit_up_date=first, required_sessions=len(required))
-                    return summary, None
+                    basis_breaks[day] = {'previous_observed_date': prior,
+                        'previous_observed_close_cny': str(observed[prior].close),
+                        'reported_reference_close_cny': str(reported),
+                        'source': 'HISTORICAL_REFERENCE_PRECLOSE' if matched_reference else 'ACTUAL_LIMIT_QUOTE_REFERENCE_CLOSE'}
+        incomparable_from = min(basis_breaks, default=None)
+        incomparable_days = {day for day in required if incomparable_from and day >= incomparable_from}
         anchors, missing_from = {}, None
         for day in targets:
+            if day in incomparable_days:
+                continue
             if missing_from is not None and day >= missing_from:
                 continue
             if day in conflicts:
@@ -378,6 +400,21 @@ def classify(row, history, days, *, security_id, no_trade=(), reference_evidence
         if expected_current and (calculated[support_date]['normalized_input_prefix_sha256'] != expected_current.get('normalized_input_prefix_sha256')):
             return empty('SOURCE_MODEL_MISMATCH'), None
         summary, evidence = judge_snapshots(snapshots, baseline, required, first_limit_up_date=first)
+        if basis_breaks:
+            reasons = set(summary['reasons'])
+            # Only remove the generic missing-snapshot label when every missing
+            # required comparison is specifically explained by this price break.
+            if set(required)-set(snapshots) <= incomparable_days:
+                reasons.discard('CHIP_HISTORY_INCOMPLETE')
+            reasons.add('PRICE_BASIS_INCOMPARABLE')
+            summary['reasons'] = sorted(reasons)
+            if summary['status'] != 'FAIL':
+                summary['status'] = 'UNKNOWN'
+            evidence.update(price_basis_discontinuities=basis_breaks,
+                first_incomparable_date=incomparable_from,
+                price_basis_incomparable_sessions=sorted(incomparable_days),
+                unadjusted_inputs_preserved=True)
+            evidence['summary'] = deepcopy(summary)
         if conflicts:
             summary['reasons']=sorted(set(summary['reasons'])|set(conflicts.values()))
             evidence['summary']=deepcopy(summary)
