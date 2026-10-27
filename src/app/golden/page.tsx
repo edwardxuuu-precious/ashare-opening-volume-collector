@@ -10,6 +10,7 @@ import {GoldenCanvas} from '@/components/golden-canvas';
 import {GoldenReviewTools} from '@/components/golden-review-tools';
 import {blankDraft,draftHistory,type ManualDraft,type SnapMode} from '@/lib/golden-drawing';
 import {readChip} from '@/lib/chip-read';
+import {createPublicationNavigation,followsPublication,startPublicationFollow} from '@/lib/publication-follow';
 import {autoLines,manualLines,parseWatchManifest,parseExample,type WatchManifest,type Example,type ReviewRound} from '@/lib/golden-workbench';
 import '../chips/chips.css';
 import '../chips/workbench.css';
@@ -54,22 +55,54 @@ function Detail({example,user,initialRound,onViewRound}:{example:Example;user:st
 
 export default function GoldenPage(){
  const [viewRound,setViewRound]=useState<ReviewRound|null>(null),[roundSequence,setRoundSequence]=useState(0);
- const navigation=useRef(0);
+ const navigation=useRef(createPublicationNavigation()),navigationRead=useRef<AbortController|null>(null);
  const [status,setStatus]=useState<GoldenUpdateStatus|null>(null),[statusError,setStatusError]=useState('');
- const [manifest,setManifest]=useState<WatchManifest|null>(null),[latest,setLatest]=useState<WatchManifest|null>(null),[code,setCode]=useState('002693'),[example,setExample]=useState<Example|null>(null),[error,setError]=useState(''),[detailError,setDetailError]=useState(''),[user,setUser]=useState(''),[search,setSearch]=useState(''),[retry,setRetry]=useState(0);
- useEffect(()=>{const c=new AbortController(),ticket=navigation.current;setError('');readChip('/data/golden-workbench/manifest.json',c.signal,parseWatchManifest).then(v=>{if(!c.signal.aborted){setLatest(v);if(ticket===navigation.current)setManifest(v);}}).catch(e=>{if(!c.signal.aborted)setError(e.message);});fetch(api+'/auth/me',{credentials:'include',signal:c.signal}).then(async r=>await r.json() as {username?:string}).then(v=>{if(!c.signal.aborted&&v.username)setUser(v.username);}).catch(()=>{});return()=>c.abort();},[retry]);
- useEffect(()=>{const c=new AbortController();let timer:ReturnType<typeof setTimeout>;const poll=async()=>{try{const value=await readChip('/data/golden-workbench/status.json',c.signal,parseGoldenStatus);if(!c.signal.aborted){setStatus(value);setStatusError('');}}catch(e){if(!c.signal.aborted)setStatusError('更新状态暂时无法读取，请稍后刷新。');}finally{if(!c.signal.aborted)timer=setTimeout(()=>{if(document.visibilityState==='visible')void poll();else timer=setTimeout(()=>void poll(),60000);},30000);}};void poll();return()=>{c.abort();clearTimeout(timer);};},[retry]);
- useEffect(()=>{if(!manifest||code==='overview'){setExample(null);return;}const c=new AbortController();setExample(null);setDetailError('');readChip(`/data/golden-workbench/${manifest.dataset_id}/${code}.json`,c.signal,v=>parseExample(v,manifest,code)).then(v=>{if(!c.signal.aborted)setExample(v);}).catch(e=>{if(!c.signal.aborted)setDetailError(e.message);});return()=>c.abort();},[manifest,code]);
- const chooseSample=(symbol:string)=>{navigation.current++;setViewRound(null);setCode(symbol);};
- const refreshData=()=>{navigation.current++;setViewRound(null);setRetry(n=>n+1);};
+ const [manifest,setManifest]=useState<WatchManifest|null>(null),[latest,setLatest]=useState<WatchManifest|null>(null),[code,setCode]=useState('002693'),[example,setExample]=useState<Example|null>(null),[error,setError]=useState(''),[updateError,setUpdateError]=useState(''),[detailError,setDetailError]=useState(''),[user,setUser]=useState(''),[search,setSearch]=useState('');
+ const publication=useRef<{refresh:()=>void;stop:()=>void}|null>(null),viewed=useRef<WatchManifest|null>(null),selected=useRef(code);
+ selected.current=code;
+ useEffect(()=>{
+  const follow=startPublicationFollow({
+   readStatus:signal=>readChip('/data/golden-workbench/status.json',signal,parseGoldenStatus),
+   readManifest:signal=>readChip('/data/golden-workbench/manifest.json',signal,parseWatchManifest),
+   readPayload:async(m,signal)=>{const symbol=selected.current;return navigation.current.pending||navigation.current.pinned||symbol==='overview'?null:readChip(`/data/golden-workbench/${m.dataset_id}/${symbol}.json`,signal,v=>parseExample(v,m,symbol));},
+   onStatus:setStatus,
+   onPublication:(m,value,previous)=>{
+    if(navigation.current.pending)return false;
+    const follows=followsPublication(viewed.current,previous,navigation.current.pinned);
+    if(follows&&selected.current!=='overview'&&value?.symbol!==selected.current)return false;
+    setLatest(m);
+    if(follows){viewed.current=m;setManifest(m);if(value)setExample(value);setDetailError('');}
+   },
+   onStatusError:e=>setStatusError(e?'更新状态暂时无法读取，保留已显示结果。':''),
+   onPublicationError:e=>setUpdateError(e?.message??''),isRunning:v=>v.state==='RUNNING',
+   publishedDataset:v=>['COMPLETE','PARTIAL'].includes(v.state)&&v.dataset_id?v.dataset_id:null,
+   activeStatusMs:30000,
+  });
+  publication.current=follow;return()=>{follow.stop();publication.current=null;};
+ },[]);
+ useEffect(()=>{const c=new AbortController();fetch(api+'/auth/me',{credentials:'include',signal:c.signal}).then(async r=>await r.json() as {username?:string}).then(v=>{if(!c.signal.aborted&&v.username)setUser(v.username);}).catch(()=>{});return()=>c.abort();},[]);
+ useEffect(()=>{if(!manifest||code==='overview'){setExample(null);return;}if(example?.dataset_id===manifest.dataset_id&&example.symbol===code)return;const c=new AbortController();setExample(null);setDetailError('');readChip(`/data/golden-workbench/${manifest.dataset_id}/${code}.json`,c.signal,v=>parseExample(v,manifest,code)).then(v=>{if(!c.signal.aborted)setExample(v);}).catch(e=>{if(!c.signal.aborted)setDetailError(e.message);});return()=>c.abort();},[manifest,code]);
+ useEffect(()=>()=>navigationRead.current?.abort(),[]);
+ const chooseSample=(symbol:string)=>{const pending=navigation.current.pending;navigation.current.cancel();navigationRead.current?.abort();selected.current=symbol;setViewRound(null);setCode(symbol);if(pending)publication.current?.refresh();};
+ const refreshData=()=>publication.current?.refresh();
  useEffect(()=>{const fn=(e:KeyboardEvent)=>{if(e.key!=='ArrowUp'&&e.key!=='ArrowDown')return;if((e.target as HTMLElement)?.closest('input,select,textarea,button,[contenteditable="true"]'))return;const list=manifest?.rows??[],i=list.findIndex(r=>r.symbol===code),next=i+(e.key==='ArrowDown'?1:-1);if(list[next]){e.preventDefault();chooseSample(list[next].symbol);}};document.addEventListener('keydown',fn);return()=>document.removeEventListener('keydown',fn);},[manifest,code]);
  const rows=useMemo(()=>(manifest?.rows??[]).filter(v=>`${v.name} ${v.symbol}`.includes(search.trim())),[manifest,search]);
- async function changeDay(dataset:string){if(!latest)return;const ticket=++navigation.current;setError('');try{const batch=dataset===latest.dataset_id?latest:await readChip(`/data/golden-workbench/${dataset}/manifest.json`,new AbortController().signal,parseWatchManifest);if(ticket!==navigation.current)return;setViewRound(null);setManifest(batch);}catch(e){if(ticket===navigation.current)setError((e as Error).message);}}
- async function openRound(round:ReviewRound){if(!round.drawing_snapshot||!latest)return;const ticket=++navigation.current;setError('');try{const batch=round.dataset_id===latest.dataset_id?latest:await readChip(`/data/golden-workbench/${round.dataset_id}/manifest.json`,new AbortController().signal,parseWatchManifest);if(ticket!==navigation.current)return;setRoundSequence(n=>n+1);setViewRound(round);setManifest(batch);setCode(round.auto_context?.symbol??code);}catch(e){if(ticket===navigation.current)setError((e as Error).message);}}
+ async function changeDay(dataset:string){
+  if(!latest)return;navigationRead.current?.abort();const c=new AbortController();navigationRead.current=c;const ticket=navigation.current.begin();setError('');
+  try{const batch=dataset===latest.dataset_id?latest:await readChip(`/data/golden-workbench/${dataset}/manifest.json`,c.signal,parseWatchManifest);if(batch.dataset_id!==dataset)throw Error('核对日期与所选批次不一致。');if(!navigation.current.commit(ticket,dataset!==latest.dataset_id))return;setViewRound(null);viewed.current=batch;setManifest(batch);}
+  catch(e){if(navigation.current.fail(ticket))setError((e as Error).message);}
+  finally{if(navigation.current.isCurrent(ticket)){navigationRead.current=null;publication.current?.refresh();}}
+ }
+ async function openRound(round:ReviewRound){
+  if(!round.drawing_snapshot||!latest)return;navigationRead.current?.abort();const c=new AbortController();navigationRead.current=c;const ticket=navigation.current.begin();setError('');
+  try{const batch=round.dataset_id===latest.dataset_id?latest:await readChip(`/data/golden-workbench/${round.dataset_id}/manifest.json`,c.signal,parseWatchManifest);if(batch.dataset_id!==round.dataset_id)throw Error('核对轮次与所选批次不一致。');if(!navigation.current.commit(ticket,true))return;setRoundSequence(n=>n+1);setViewRound(round);viewed.current=batch;setManifest(batch);const symbol=round.auto_context?.symbol??code;selected.current=symbol;setCode(symbol);}
+  catch(e){if(navigation.current.fail(ticket))setError((e as Error).message);}
+  finally{if(navigation.current.isCurrent(ticket)){navigationRead.current=null;publication.current?.refresh();}}
+ }
  return <div className="chip-site chip-workbench gw-site"><header className="chip-site-header cw-header"><a href="/" className="brand"><BrandIdentity/></a><StockNavigation active="golden"/><div className="cw-header-actions"><button className="chip-site-link" onClick={refreshData}><RefreshCw size={14}/>刷新</button><AccountControls/></div></header>
  <div className="gw-shell"><aside className="gw-sidebar"><div className="gw-list-heading"><h1>黄金画格核对</h1><span>20个固定样本</span></div><button className="gw-overview-link" aria-pressed={code==='overview'} onClick={()=>chooseSample('overview')}><LayoutGrid size={14}/>20图总览 <span>20</span></button><input className="gw-search" type="search" aria-label="查找核对样本" placeholder="搜索名称 / 代码" value={search} onChange={e=>setSearch(e.target.value)}/><nav aria-label="固定20个核对样本">{rows.map((r,i)=><button key={r.symbol} className="gw-stock" aria-pressed={code===r.symbol} onClick={()=>chooseSample(r.symbol)}><small>{String(i+1).padStart(2,'0')}</small><span><b>{r.name}</b><em>{r.symbol==='sh000001'?'SH000001 · 指数':r.symbol}</em></span><small>{r.H&&r.L?'H/L齐备':r.H?'L待核':'H待核'}</small></button>)}</nav><p className="gw-sidebar-note">↑ ↓ 切换样本<br/>自动候选 · 待人工核对</p></aside>
  <main className="gw-workspace"><GoldenUpdateStrip status={status} latest={latest} viewDate={manifest?.as_of} viewDatasetId={manifest?.dataset_id} viewGeneratedAt={manifest?.generated_at} error={statusError} onRefresh={refreshData}/><div className="gw-page-bar"><div className="gw-mobile-samples"><select aria-label="选择核对样本" value={code} onChange={e=>chooseSample(e.target.value)}><option value="overview">20图总览</option>{manifest?.rows.map(r=><option key={r.symbol} value={r.symbol}>{r.name} {r.symbol}</option>)}</select></div><span className="gw-page-context">{code==='overview'?'样本总览':'人工画线与校准'}</span><label>核对日期<select aria-label="切换每日画格记录" value={manifest?.dataset_id??''} onChange={e=>changeDay(e.target.value)}>{latest?.archives.slice().reverse().map(a=><option key={a.dataset_id} value={a.dataset_id}>{a.as_of}{a.generated_at?` · ${chinaTime(a.generated_at).slice(11,16)}`:''}{a.dataset_id===latest.dataset_id?' · 最新':''}</option>)}</select></label></div>
- {error&&<p role="alert" className="gw-warning">{error}</p>}
+ {(error||updateError)&&<p role="alert" className="gw-warning">{[error,updateError].filter(Boolean).join('；')}</p>}
  {!manifest&&!error&&<div className="gw-empty">正在读取20个每日样本…</div>}
  {code==='overview'&&manifest&&<><div className="gw-overview-heading"><h2>20个固定样本</h2><p>{manifest.as_of} · {manifest.rows.filter(r=>r.H).length}个H候选 / {manifest.rows.filter(r=>r.H&&r.L).length}组H/L齐备。缺点保留待核，不人工补齐。</p><p>选择股票，打开画线与批注工作区。</p></div><div className="gw-overview-grid">{rows.map(r=><button className="gw-preview" key={r.symbol} onClick={()=>chooseSample(r.symbol)}><div><h3>{r.name}<small>{r.symbol==='sh000001'?'SH000001 · 指数':r.symbol}</small></h3><span>{r.H&&r.L?'H/L齐备':r.H?'L待核':'H待核'} ↗</span></div><GoldenCanvas mini history={r.history} lines={r.H?[{price:Number(r.H.price),label:'H'},...(r.L?[{price:Number(r.L.price),label:'L'},...[.5,.25,.125].map(q=>({price:Number(r.L!.price)+q*(Number(r.H!.price)-Number(r.L!.price)),label:'等分'}))]:[])]:[]}/><footer><span>H {r.H?.price??'待核'} / L {r.L?.price??'待核'}</span><span>M {r.M_count}候选</span></footer>{r.freshness!=='CURRENT'&&<p className="gw-warning">行情待核 / 最近 {r.last_bar_date??'未知'}</p>}</button>)}</div></>}
  {code!=='overview'&&(example?<Detail key={example.dataset_id+example.symbol+user+(viewRound?.dataset_id===example.dataset_id&&(viewRound.auto_context?.symbol??example.symbol)===example.symbol?String(roundSequence):'')} example={example} user={user} initialRound={viewRound?.dataset_id===example.dataset_id&&(viewRound.auto_context?.symbol??example.symbol)===example.symbol?viewRound:null} onViewRound={openRound}/>:<div className="gw-empty" role={detailError?'alert':'status'}>{detailError||'正在读取K线与完整选点证据…'}</div>)}
