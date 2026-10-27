@@ -79,7 +79,7 @@ jobs:
           fi
           args=()
           if [ -n "$STOCK_AS_OF" ]; then args+=(--as-of "$STOCK_AS_OF"); fi
-          python -m backend.chips.runner --bucket "$STOCK_BUCKET" --max-minutes "$STOCK_MAX_MINUTES" "${args[@]}"
+          python tooling/run_chip_bounded.py --bucket "$STOCK_BUCKET" --max-minutes "$STOCK_MAX_MINUTES" "${args[@]}"
           if [ "$GITHUB_EVENT_NAME" = 'workflow_run' ]; then
             python tooling/chip_followup_guard.py --verify-as-of "$STOCK_AS_OF"
           fi

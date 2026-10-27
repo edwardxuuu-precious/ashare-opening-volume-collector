@@ -6,7 +6,7 @@ from tooling import chip_followup_guard as g
 def at(value):return datetime.fromisoformat(value+'+08:00')
 def manifest(day='2026-10-23'):
     return {'schema':'stock.chips.market.manifest.v1','as_of':day,'dataset_id':'a'*16,'active_slot':'a'*16,
-        'universe_total':5,'scanned_count':5,'chip_unchanged_rule':g.RULE_ID,
+        'universe_total':5,'scanned_count':5,'model_ready_count':5,'chip_unchanged_rule':g.RULE_ID,
         'chip_stability_thresholds':copy.deepcopy(g.THRESHOLDS),'chip_stability_policy':copy.deepcopy(g.POLICY_METADATA),
         'price_filter_rule':'NO_ABSOLUTE_PRICE_FILTER_V1','price_position_rule':'CLOSE_GT_MEAN_COST_V2',
         'calculation_complete':False,'market_complete':False,'final_screen_counts':{'PASS':0,'FAIL':3,'UNKNOWN':2}}

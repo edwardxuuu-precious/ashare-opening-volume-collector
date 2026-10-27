@@ -160,7 +160,10 @@ def shared_universe(store,as_of,source=None):
 class Storage:
     def __init__(self,bucket,region):
         import boto3
-        self.s3=boto3.client('s3',region_name=region);self.bucket=bucket;self.region=region
+        from botocore.config import Config
+        self.s3=boto3.client('s3',region_name=region,config=Config(
+            connect_timeout=7,read_timeout=25,retries={'total_max_attempts':2}))
+        self.bucket=bucket;self.region=region
     def get(self,key):
         from botocore.exceptions import ClientError
         try:
@@ -176,6 +179,89 @@ class Storage:
         if match: args['IfMatch']=match
         if new: args['IfNoneMatch']='*'
         return self.s3.put_object(**args)['ETag']
+
+
+def refresh_daily_quotes(store,source,stocks,as_of,current,receipts=()):
+    """One bounded missing-quote refresh; complete validated bodies stay frozen.
+
+    The in-memory source interface remains available to software fixtures. Real
+    storage requires original hashed bodies and the existing strict daily-line
+    validation, including its explicit valid zero-trade result.
+    """
+    cloud=isinstance(store,Storage)
+    before=deepcopy(current or {})
+    validated=renormalize_final_quotes(before,as_of)
+    def complete(quote):
+        if not quote:return False
+        if not cloud and not quote.get('raw_quote_body'):
+            return True
+        return (bool(quote.get('raw_quote_body')) and 'daily_line' in quote
+                and not quote.get('daily_line_error')
+                and (quote['daily_line'] is None or
+                     isinstance(quote['daily_line'],str) and bool(quote['daily_line'])))
+    quotes=deepcopy(before)
+    for code,quote in validated.items():
+        if complete(quote):quotes[code]=quote
+    key=f'collector/chips/limits/{as_of}.json'
+    cached,etag=store.get(key)
+    cached_quotes=renormalize_final_quotes((cached or {}).get('quotes',{}),as_of)
+    # An earlier attempt may already have filled the shared cache. Only adopt
+    # those facts where this generation lacks a complete original quote.
+    for stock in stocks:
+        code=stock['code']
+        if not complete(validated.get(code)) and complete(cached_quotes.get(code)):
+            validated[code]=cached_quotes[code];quotes[code]=cached_quotes[code]
+    missing=[stock for stock in stocks if not complete(validated.get(stock['code']))]
+    refreshed={};new_receipts=[]
+    if missing:
+        refreshed,new_receipts=(collect_final_quotes(source,missing,as_of) if cloud
+                                else source.actual_limits(missing,as_of))
+        if not set(refreshed)<={stock['code'] for stock in missing}:
+            raise ValueError('FINAL_QUOTE_REFRESH_SECURITY_MISMATCH')
+        refreshed=renormalize_final_quotes(refreshed,as_of)
+        # A different invalid body is diagnostic evidence, not newly available
+        # calculation input. Keep the frozen generation unchanged until strict
+        # validation establishes a complete positive- or zero-trade quote.
+        quotes.update({code:quote for code,quote in refreshed.items() if complete(quote)})
+    merged_receipts=[];seen=set()
+    for receipt in [*receipts,*(cached or {}).get('receipts',[]),*new_receipts]:
+        digest=hashlib.sha256(encoded(receipt)).hexdigest()
+        if digest not in seen:merged_receipts.append(receipt);seen.add(digest)
+    if refreshed or new_receipts:
+        cache_quotes=deepcopy(cached_quotes)
+        for code,quote in validated.items():
+            if code not in cache_quotes or not complete(cache_quotes[code]) and complete(quote):
+                cache_quotes[code]=quote
+        cache_value={'quotes':{**cache_quotes,**refreshed},'receipts':merged_receipts}
+        if cache_value!=cached:
+            store.put(key,cache_value,match=etag,new=etag is None,compressed=True)
+    return quotes,merged_receipts,quotes!=before
+
+
+def resume_quote_inputs(store,source,state,state_etag):
+    """Rotate frozen checkpoint inputs only when a missing quote is filled."""
+    day=state['as_of']
+    quotes,receipts,changed=refresh_daily_quotes(store,source,state['stocks'],day,
+        state.get('actual_limits',{}).get(day,{}),state.get('limit_receipts',[]))
+    if changed or state.get('retry_failed'):
+        original=deepcopy(state)
+        digest=hashlib.sha256(encoded(original)).hexdigest()
+        archive=f'collector/chips/recovery/{state["dataset_id"]}-{digest[:12]}.json'
+        saved,_=store.get(archive)
+        if saved is None:store.put(archive,original,new=True,compressed=True)
+        elif saved!=original:raise _ArchiveConflict('IMMUTABLE_CHECKPOINT_ARCHIVE_CONFLICT')
+        old_slot=state['active_slot']
+        dataset=hashlib.sha256(encoded([old_slot,state['execution_identity'],now()])).hexdigest()[:16]
+        state=deepcopy(state)
+        state.update(dataset_id=dataset,active_slot=dataset,previous_slot=old_slot,rows={},retry_failed=False,
+            quote_refresh_parent_checkpoint=archive)
+        state.setdefault('actual_limits',{})[day]=quotes
+        state['limit_receipts']=receipts
+        state_etag=store.put('collector/chips/state.json',state,match=state_etag,compressed=True)
+    else:
+        # Receipt additions do not alter the generation's frozen quote inputs.
+        state['limit_receipts']=receipts
+    return state,state_etag
 
 
 def session_snapshots(bars,targets,*,security_id,no_trade,state=None):
@@ -636,7 +722,7 @@ def run(store,*,as_of,max_minutes=285,workers=4):
         if (current and current['as_of']==as_of and (current.get('market_complete') or current.get('calculation_complete'))
             and current.get('execution_identity')==identity):
             return {'outcome':'ALREADY_COMMITTED','as_of':as_of,'market_complete':current['market_complete']}
-        state,state_etag=store.get('collector/chips/state.json');source=Source()
+        state,state_etag=store.get('collector/chips/state.json');source=Source();recovered_slot=None
         if current and state and current['dataset_id']==state.get('dataset_id'):
             # A committed but incomplete generation is immutable. Repair into a
             # new generation, keeping the existing publication readable.
@@ -645,17 +731,19 @@ def run(store,*,as_of,max_minutes=285,workers=4):
             archive=f'collector/chips/recovery/{state["dataset_id"]}-{hashlib.sha256(encoded(state)).hexdigest()[:12]}.json'
             archived,_=store.get(archive)
             if not archived:store.put(archive,state,new=True,compressed=True)
+            if (state.get('as_of')==as_of and state.get('active_slot')==state.get('dataset_id')
+                and isinstance(state.get('active_slot'),str) and re.fullmatch('[0-9a-f]{16}',state['active_slot'])):
+                # Restore only the lookup entry point. Every READY frame still
+                # passes the existing model/adapter/quote/archive/listing guards.
+                recovered_slot=state['active_slot']
             state=None
         if state and state['as_of']<as_of and len(state['rows'])<len(state['stocks']):
             # Finish the first bootstrap rather than discarding its progress
             # every afternoon. Subsequent sessions reuse its exact model states.
             as_of=state['as_of']
         if state and state['as_of']>as_of: raise ValueError('WOULD_REPLACE_NEWER_BATCH')
-        if state and state.get('retry_failed'):
-            old_slot=state['active_slot']
-            dataset=hashlib.sha256(encoded([old_slot,identity,now()])).hexdigest()[:16]
-            state.update(dataset_id=dataset,active_slot=dataset,previous_slot=old_slot,rows={},retry_failed=False)
-            state_etag=store.put('collector/chips/state.json',state,match=state_etag,compressed=True)
+        if state and state['as_of']==as_of:
+            state,state_etag=resume_quote_inputs(store,source,state,state_etag)
         if not state or state['as_of']!=as_of:
             from .listing import verified_current
             reconciliation,_=store.get(f'collector/chips/universe-verified/{as_of}.json')
@@ -712,15 +800,8 @@ def run(store,*,as_of,max_minutes=285,workers=4):
                 if closing_bundle:
                     closing_pools[day]=closing_pool(closing_bundle,day)
                     closing_pool_receipts.append(closing_bundle['receipt'])
-            if as_of not in actual_limits or (isinstance(store,Storage) and not any(q.get('raw_quote_body') for q in actual_limits.get(as_of,{}).values())):
-                quotes,limit_receipts=collect_final_quotes(source,stocks,as_of) if isinstance(store,Storage) else source.actual_limits(stocks,as_of)
-                if quotes:
-                    quote_key=f'collector/chips/limits/{as_of}.json'
-                    previous_quotes,quote_etag=store.get(quote_key)
-                    quotes={**(previous_quotes or {}).get('quotes',{}),**quotes}
-                    store.put(quote_key,{'quotes':quotes,'receipts':limit_receipts},match=quote_etag,new=quote_etag is None,compressed=True)
-                    actual_limits[as_of]=quotes
-            if as_of in actual_limits:actual_limits[as_of]=renormalize_final_quotes(actual_limits[as_of],as_of)
+            quotes,limit_receipts,_=refresh_daily_quotes(store,source,stocks,as_of,actual_limits.get(as_of,{}))
+            actual_limits[as_of]=quotes
             dataset=hashlib.sha256(encoded([as_of,MODEL,identity,stocks,now()])).hexdigest()[:16]
             state={'as_of':as_of,'dataset_id':dataset,'active_slot':dataset,
                 'days':days,'stocks':stocks,'pools':pools,'universe_receipts':universe_receipts,'pool_receipts':pool_receipts,
@@ -728,7 +809,8 @@ def run(store,*,as_of,max_minutes=285,workers=4):
                 'require_current_final_quote':as_of==target_day(),
                 'historical_references':historical_references,'reference_receipts':reference_receipts,
                 'closing_pools':closing_pools,'closing_pool_receipts':closing_pool_receipts,'rows':{},'started_at':now()}
-            if current and current['as_of']==as_of:state['previous_slot']=current['active_slot']
+            if recovered_slot:state['previous_slot']=recovered_slot
+            elif current and current['as_of']==as_of:state['previous_slot']=current['active_slot']
             state_etag=store.put('collector/chips/state.json',state,match=state_etag,new=state_etag is None,compressed=True)
         dataset=state['dataset_id'];slot=state['active_slot'];days=state['days'];done=state['rows']
         def assert_owned():
@@ -749,6 +831,7 @@ def run(store,*,as_of,max_minutes=285,workers=4):
             store.put('data/chips/daily/status.json',{'schema':'stock.chips.market.status.v1','state':status,
                 'as_of':as_of,'dataset_id':dataset,'universe_total':len(state['stocks']),'scanned_count':len(done),
                 'model_ready_count':sum(r['chip_status']=='READY' for r in done.values()),'updated_at':now(),
+                'workflow_run_id':os.environ.get('GITHUB_RUN_ID'),'lease_owner':owner,
                 'last_committed_date':current['as_of'] if current else None,'unchanged_threshold':None})
         save_status('RUNNING')
         # Stratify initial reads so one failing exchange cannot trigger a global
@@ -811,6 +894,7 @@ def run(store,*,as_of,max_minutes=285,workers=4):
         manifest={'schema':'stock.chips.market.manifest.v1','dataset_id':dataset,'active_slot':slot,'as_of':as_of,
             'previous_date':days[-2],'official_sessions':days,'universe_total':len(rows),'scanned_count':len(rows),
             'model_ready_count':ready,'screen_counts':{k:counts[k] for k in ('PASS','FAIL','UNKNOWN')},
+            'input_repair':{'schema':'stock.chips.input-repair.v1','model_missing_count':len(rows)-ready},
             'price_position_rule':PRICE_POSITION_RULE,'price_filter_rule':PRICE_FILTER_RULE,
             'chip_unchanged_rule':CHIP_UNCHANGED_RULE,
             'chip_stability_thresholds':STABILITY_THRESHOLDS,
