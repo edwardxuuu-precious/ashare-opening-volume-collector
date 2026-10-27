@@ -16,6 +16,7 @@ from zoneinfo import ZoneInfo
 
 REPOSITORY = "edwardxuuu-precious/ashare-opening-volume-collector"
 WORKFLOW = "collector.yml"
+CHIP_WORKFLOW = "chips.yml"
 SHANGHAI = ZoneInfo("Asia/Shanghai")
 STATE_KEY = "collector/dispatcher-state.json"
 BACKOFF_MINUTES = (5, 15, 30)
@@ -192,33 +193,89 @@ def choose_work(status, phase, now):
     return {"phase": selected_phase, "target_date": day, "max_minutes": str(minutes)}, "due"
 
 
-def read_json(s3, bucket, key, optional=False):
+def choose_chip_work(status, now):
+    if now.tzinfo is None or now.utcoffset() is None:
+        raise ValueError("Aware dispatcher clock required")
+    local = now.astimezone(SHANGHAI)
+    today, clock = local.date().isoformat(), local.strftime("%H:%M")
+    if status.get("writerDisabled") is True or status.get("automationEnabled") is False:
+        return None, "writer_disabled"
+    dates, valid_through = status.get("calendarDates"), status.get("calendarValidThrough")
+    if not isinstance(dates, list) or not dates or not isinstance(valid_through, str):
+        return None, "calendar_unavailable"
+    if date.fromisoformat(valid_through).isoformat() != valid_through:
+        raise ValueError("Invalid calendar validity date")
+    if valid_through < today:
+        return None, "calendar_expired"
+    if any(not isinstance(day, str) or date.fromisoformat(day).isoformat() != day for day in dates):
+        raise ValueError("Invalid trading calendar")
+    if "15:40" <= clock < "21:20":
+        target, slot = today, "primary"
+    elif clock >= "21:20":
+        target, slot = today, "evening"
+    elif clock >= "02:20":
+        target = (local.date() - timedelta(days=1)).isoformat()
+        slot = "overnight"
+    else:
+        return None, "before_overnight_window"
+    if target not in dates:
+        return None, "non_trading_target"
+    return {"as_of": target, "auto_slot": slot, "automatic_origin": "aws-watchdog",
+            "max_minutes": "285", "mode": "collect"}, "due"
+
+
+def read_document(s3, bucket, key, optional=False):
     if optional:
         # Prefix-scoped ListBucket permits a genuine absent/forbidden distinction
         # without giving the dispatcher a listing of all private market objects.
         listing = s3.list_objects_v2(Bucket=bucket, Prefix=key, MaxKeys=1)
         if not any(item.get("Key") == key for item in listing.get("Contents", [])):
-            return {}
+            return {}, None
     try:
         response = s3.get_object(Bucket=bucket, Key=key)
     except Exception as exc:
         if optional and getattr(exc, "response", {}).get("Error", {}).get("Code") in ("NoSuchKey", "404"):
-            return {}
+            return {}, None
         raise
-    raw = response["Body"].read(2 * 1024 * 1024 + 1)
+    with response["Body"] as stream:
+        raw = stream.read(2 * 1024 * 1024 + 1)
     if len(raw) > 2 * 1024 * 1024:
         raise ValueError("Dispatcher status exceeds safe size")
     result = json.loads(raw)
     if not isinstance(result, dict):
         raise ValueError("Invalid dispatcher status")
-    return result
+    return result, response.get("ETag")
 
 
-def save_state(s3, bucket, state):
-    s3.put_object(Bucket=bucket, Key=STATE_KEY,
+def read_json(s3, bucket, key, optional=False):
+    return read_document(s3, bucket, key, optional)[0]
+
+
+def save_state(s3, bucket, state, etag):
+    condition = {"IfMatch": etag} if etag is not None else {"IfNoneMatch": "*"}
+    response = s3.put_object(Bucket=bucket, Key=STATE_KEY,
                   Body=json.dumps(state, separators=(",", ":"), allow_nan=False).encode(),
                   ContentType="application/json", ServerSideEncryption="AES256",
-                  CacheControl="no-store")
+                  CacheControl="no-store", **condition)
+    if not response.get("ETag"):
+        raise ValueError("Dispatcher ledger write returned no ETag")
+    return response["ETag"]
+
+
+def read_ledger(s3, bucket):
+    state, etag = read_document(s3, bucket, STATE_KEY, optional=True)
+    if state and not etag:
+        raise ValueError("Dispatcher ledger has no ETag")
+    if not isinstance(state.get("attempts", {}), dict):
+        raise ValueError("Invalid dispatch attempts")
+    return state, etag
+
+
+def trim_ledger(ledger, now):
+    threshold = (now.astimezone(SHANGHAI).date() - timedelta(days=14)).isoformat()
+    ledger.update(version=2, updatedAt=iso(now))
+    ledger["attempts"] = {key: value for key, value in ledger.get("attempts", {}).items()
+                          if str(value.get("lastDispatchAt", ""))[:10] >= threshold}
 
 
 class GitHub:
@@ -241,9 +298,11 @@ class GitHub:
             raise RuntimeError("GitHub API response exceeds safe size")
         return json.loads(raw) if raw else {}
 
-    def active(self):
+    def active(self, workflow=WORKFLOW):
+        if workflow not in (WORKFLOW, CHIP_WORKFLOW):
+            raise ValueError("Unknown dispatch workflow")
         for status in ACTIVE_STATUSES:
-            result = self.request("GET", "/repos/" + REPOSITORY + "/actions/workflows/" + WORKFLOW
+            result = self.request("GET", "/repos/" + REPOSITORY + "/actions/workflows/" + workflow
                                   + "/runs?branch=main&status=" + status + "&per_page=1")
             if result.get("total_count", 0):
                 return True
@@ -255,6 +314,10 @@ class GitHub:
     def dispatch(self, work):
         return self.request("POST", "/repos/" + REPOSITORY + "/actions/workflows/" + WORKFLOW
                             + "/dispatches", {"ref": "main", "inputs": dict(work, mode="collect")})
+
+    def dispatch_chips(self, work):
+        return self.request("POST", "/repos/" + REPOSITORY + "/actions/workflows/" + CHIP_WORKFLOW
+                            + "/dispatches", {"ref": "main", "inputs": work})
 
 
 def installation_token(ssm, env, now):
@@ -301,7 +364,7 @@ def dispatch_once(event, s3, bucket, github_factory, now):
             raise ValueError("Invalid production writer lease")
         if expires > now.timestamp():
             return {"dispatched": False, "reason": "production_writer_active"}
-    ledger = read_json(s3, bucket, STATE_KEY, optional=True)
+    ledger, etag = read_ledger(s3, bucket)
     key = work["phase"] + ":" + work["target_date"]
     attempts = ledger.setdefault("attempts", {})
     record = attempts.setdefault(key, {})
@@ -321,7 +384,7 @@ def dispatch_once(event, s3, bucket, github_factory, now):
             delay = BACKOFF_MINUTES[min(record["failures"] - 1, 2)]
             completed = instant(run.get("updated_at")) or now
             record["nextAttemptAt"] = iso(completed + timedelta(minutes=delay))
-            save_state(s3, bucket, ledger)
+            etag = save_state(s3, bucket, ledger, etag)
             if now < instant(record["nextAttemptAt"]):
                 return {"dispatched": False, "reason": "failed_run_backoff", "nextAttemptAt": record["nextAttemptAt"]}
         else:
@@ -329,31 +392,82 @@ def dispatch_once(event, s3, bucket, github_factory, now):
     # Save before POST. An uncertain network response is retried only after the
     # cooldown and another live GitHub active-run / production-lease check.
     record.update(lastDispatchAt=iso(now), nextAttemptAt=iso(now + timedelta(minutes=5)))
-    ledger.update(version=1, updatedAt=iso(now))
-    # Keep a bounded 14-day ledger; it contains no market rows or credentials.
-    threshold = (now.astimezone(SHANGHAI).date() - timedelta(days=14)).isoformat()
-    ledger["attempts"] = {k: v for k, v in attempts.items() if str(v.get("lastDispatchAt", ""))[:10] >= threshold}
-    save_state(s3, bucket, ledger)
+    trim_ledger(ledger, now)
+    etag = save_state(s3, bucket, ledger, etag)
     try:
         result = github.dispatch(work)
     except Exception:
         record["failures"] = count(record.get("failures")) + 1
         record["nextAttemptAt"] = iso(now + timedelta(minutes=BACKOFF_MINUTES[min(record["failures"] - 1, 2)]))
-        save_state(s3, bucket, ledger)
+        save_state(s3, bucket, ledger, etag)
         raise RuntimeError("Workflow dispatch failed; private retry ledger saved") from None
     if result.get("workflow_run_id"):
         record["runId"] = int(result["workflow_run_id"])
-    save_state(s3, bucket, ledger)
+    save_state(s3, bucket, ledger, etag)
     return {"dispatched": True, "phase": work["phase"], "targetDate": work["target_date"],
             "runId": record.get("runId"), "dispatchedAt": iso(now)}
+
+
+def dispatch_chips_once(event, s3, bucket, github_factory, now):
+    if event.get("phase", "watchdog") not in ("watchdog", "catchup"):
+        return {"dispatched": False, "reason": "not_chip_wakeup_phase"}
+    status = read_json(s3, bucket, "collector/refresh-status.json", optional=True)
+    if not status:
+        status = read_json(s3, bucket, "data/collection-status.json", optional=True)
+    work, reason = choose_chip_work(status, now)
+    if work is None:
+        return {"dispatched": False, "reason": reason}
+    ledger, etag = read_ledger(s3, bucket)
+    key = "chips:" + work["as_of"] + ":" + work["auto_slot"]
+    attempts = ledger.setdefault("attempts", {})
+    if key in attempts:
+        return {"dispatched": False, "reason": "chip_slot_already_claimed",
+                "as_of": work["as_of"], "auto_slot": work["auto_slot"]}
+    github = github_factory()
+    if github.active(CHIP_WORKFLOW):
+        return {"dispatched": False, "reason": "chip_run_active"}
+    record = {"lastDispatchAt": iso(now), "state": "claimed", "automatic_origin": "aws-watchdog",
+              "as_of": work["as_of"], "auto_slot": work["auto_slot"]}
+    attempts[key] = record
+    trim_ledger(ledger, now)
+    etag = save_state(s3, bucket, ledger, etag)
+    try:
+        result = github.dispatch_chips(work)
+    except Exception:
+        record["state"] = "outcome_unknown"
+        save_state(s3, bucket, ledger, etag)
+        raise RuntimeError("Chip workflow dispatch outcome unknown; slot remains consumed") from None
+    record["state"] = "submitted"
+    if result.get("workflow_run_id"):
+        record["runId"] = int(result["workflow_run_id"])
+    save_state(s3, bucket, ledger, etag)
+    return {"dispatched": True, "workflow": CHIP_WORKFLOW, "as_of": work["as_of"],
+            "auto_slot": work["auto_slot"], "automatic_origin": "aws-watchdog",
+            "runId": record.get("runId"), "dispatchedAt": iso(now)}
+
+
+def dispatch_all(event, s3, bucket, github_factory, now):
+    results = {}
+    for name, dispatch in (("chips", dispatch_chips_once), ("collector", dispatch_once)):
+        try:
+            results[name] = dispatch(event, s3, bucket, github_factory, now)
+        except Exception as exc:
+            results[name] = {"dispatched": False, "reason": "dispatch_error", "errorType": type(exc).__name__}
+    return results
 
 
 def handler(event, context):
     import boto3
     now = datetime.now(timezone.utc)
     s3, ssm = boto3.client("s3"), boto3.client("ssm")
-    result = dispatch_once(event, s3, os.environ["STOCK_BUCKET"],
-                           lambda: GitHub(installation_token(ssm, os.environ, now)), now)
+    clients = []
+    def github_factory():
+        if not clients:
+            clients.append(GitHub(installation_token(ssm, os.environ, now)))
+        return clients[0]
+    result = dispatch_all(event, s3, os.environ["STOCK_BUCKET"], github_factory, now)
     # Aggregate-only operational proof; no status bodies or GitHub responses.
     print(json.dumps(result, separators=(",", ":")))
+    if any(value.get("reason") == "dispatch_error" for value in result.values()):
+        raise RuntimeError("Dispatcher failed; inspect aggregate operational proof")
     return result

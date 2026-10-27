@@ -27,7 +27,7 @@ POLICY_METADATA = {
 }
 SHIFT, RETENTION, HEIGHT = Fraction(1, 100), Fraction(9, 10), Fraction(9, 10)
 MAX_CELLS = 20000
-COMPARISON_VERSION = 'uniform-halfstep.component-qualification.v2'
+COMPARISON_VERSION = 'uniform-halfstep.component-qualification.v3-bounds'
 
 
 class InputError(ValueError):
@@ -140,6 +140,51 @@ def relative_distance(baseline, current):
     return max(forward, backward)
 
 
+def relative_distance_bounds(baseline, current):
+    """Enclose the same max/min metric for any points in the top cells."""
+    if not baseline or not current:
+        raise InputError('TOP_REGION_MISSING')
+    left, right = baseline, current
+    if any(a <= 0 or b <= a for a, b in left+right):
+        raise InputError('POSITIVE_INTERVAL_REQUIRED')
+
+    def pair(q, p):
+        a, b = q; c, d = p
+        lower = (c-b)/b if c > b else (a-d)/a if d < a else Fraction(0)
+        upper = max(abs(value-price)/price for price in q for value in p)
+        return lower, upper
+
+    matrix = [[pair(q, p) for p in right] for q in left]
+    forward = [min(value[0] for value in row) for row in matrix]
+    backward = [min(matrix[i][j][0] for i in range(len(left))) for j in range(len(right))]
+    lower = max(forward+backward)
+    upper = max([min(value[1] for value in row) for row in matrix]+
+                [min(matrix[i][j][1] for i in range(len(left))) for j in range(len(right))])
+    is_forward = max(forward) >= max(backward)
+    index = (forward if is_forward else backward).index(lower)
+    source = left[index] if is_forward else right[index]
+    targets = right if is_forward else left
+    candidates = [matrix[index][j][0] for j in range(len(right))] if is_forward else [matrix[i][index][0] for i in range(len(left))]
+    return {'method': 'SAME_NATIVE_GRID_CELL_INTERVALS_V1',
+            'lower_fraction': lower, 'upper_fraction': upper,
+            'lower_exact_fraction': str(lower), 'upper_exact_fraction': str(upper),
+            'nominal_center_fraction': relative_distance([(a+b)/2 for a, b in left], [(a+b)/2 for a, b in right]),
+            'baseline_top_intervals_cny': [[text(a), text(b)] for a, b in left],
+            'current_top_intervals_cny': [[text(a), text(b)] for a, b in right],
+            'witness': {'direction': 'BASELINE_TO_CURRENT' if is_forward else 'CURRENT_TO_BASELINE',
+                        'source_interval_cny': [text(value) for value in source],
+                        'candidate_intervals_cny': [[text(a), text(b)] for a, b in targets],
+                        'candidate_lower_fractions': [text(value) for value in candidates]}}
+
+
+def native_top_intervals(source, comparison_top):
+    peak = max(m/(b-a) for a, b, m in source)
+    top = [(a, b) for a, b, m in source if m/(b-a) >= HEIGHT*peak]
+    if len(top) != len(comparison_top) or any(not a <= center <= b for (a, b), center in zip(top, comparison_top)):
+        return None
+    return top if all(a > 0 for a, _ in top) else None
+
+
 def anchor_bands(top, step):
     bands = []
     for p in top:
@@ -184,7 +229,7 @@ def judge_snapshots(snapshots, baseline_date, required, *, first_limit_up_date):
         # failure even when displacement cannot be resolved to one percent.
         max_native_step = min(top)*SHIFT
         maximum, minimum, reasons, unknown = None, None, [], []
-        shift_evaluated = 0
+        shift_evaluated, bound_evaluated, proven_lower = 0, 0, None
         for day in required:
             snapshot = snapshots.get(day)
             if not snapshot:
@@ -203,8 +248,21 @@ def judge_snapshots(snapshots, baseline_date, required, *, first_limit_up_date):
                 summary['evaluated_sessions'] += 1
                 resolved = max(step, native_step) <= max_native_step
                 shift, current_top, day_audit = None, [], None
+                bounds, proven_movement = None, False
                 if not resolved:
                     unknown.append('NATIVE_RESOLUTION_INSUFFICIENT')
+                    if step == native_step and [(a, b) for a, b, _ in original] == [(a, b) for a, b, _ in current]:
+                        bounded_top, _ = rebin(current, origin, step)
+                        base_intervals = native_top_intervals(original, top)
+                        current_intervals = native_top_intervals(current, bounded_top)
+                        if base_intervals and current_intervals:
+                            bounds = relative_distance_bounds(base_intervals, current_intervals)
+                            proven_movement = bounds['lower_fraction'] > SHIFT
+                            proven_lower = bounds['lower_fraction'] if proven_lower is None else max(proven_lower, bounds['lower_fraction'])
+                            bound_evaluated += 1
+                            bounds.update(lower_fraction=text(bounds['lower_fraction']),
+                                          upper_fraction=text(bounds['upper_fraction'], upper=True),
+                                          nominal_center_fraction=text(bounds['nominal_center_fraction'], upper=True))
                 else:
                     try:
                         current_top, day_audit = rebin(current, origin, step)
@@ -214,14 +272,15 @@ def judge_snapshots(snapshots, baseline_date, required, *, first_limit_up_date):
                     except ResourceBound:
                         unknown.append('COMPARISON_RESOURCE_BOUND')
                 failed = []
-                if shift is not None and shift > SHIFT:
+                if proven_movement or shift is not None and shift > SHIFT:
                     failed.append('PEAK_REGION_MOVED')
                 if retention < RETENTION:
                     failed.append('ANCHOR_BAND_MASS_DECREASED')
                 reasons.extend(failed)
                 evidence['daily'].append({'date': day, 'status': 'FAIL' if failed else 'UNKNOWN' if shift is None else 'PASS',
                     'max_shift_fraction': text(shift, upper=True), 'min_mass_ratio': text(retention),
-                    'shift_status': 'UNKNOWN' if shift is None else 'FAIL' if shift > SHIFT else 'PASS',
+                    'shift_status': 'FAIL' if proven_movement else 'UNKNOWN' if shift is None else 'FAIL' if shift > SHIFT else 'PASS',
+                    'displacement_bounds': bounds,
                     'mass_status': 'FAIL' if retention < RETENTION else 'PASS',
                     'native_resolution_sufficient': resolved,
                     'native_step_cny': text(native_step), 'top_centers': [text(p) for p in current_top],
@@ -232,7 +291,10 @@ def judge_snapshots(snapshots, baseline_date, required, *, first_limit_up_date):
             except InputError:
                 unknown.append('INVALID_STABILITY_INPUT')
         summary.update(max_shift_fraction=text(maximum, upper=True), min_mass_ratio=text(minimum),
-                       shift_evaluated_sessions=shift_evaluated, mass_evaluated_sessions=summary['evaluated_sessions'])
+                       shift_evaluated_sessions=shift_evaluated, mass_evaluated_sessions=summary['evaluated_sessions'],
+                       displacement_bound_evaluated_sessions=bound_evaluated,
+                       max_proven_shift_lower_bound_exact_fraction=str(proven_lower) if proven_lower is not None else None,
+                       max_proven_shift_lower_bound_fraction=text(proven_lower))
         summary['status'] = 'FAIL' if reasons else 'UNKNOWN' if unknown or not required else 'PASS'
         summary['reasons'] = sorted(set(reasons + unknown))
     except ResourceBound:

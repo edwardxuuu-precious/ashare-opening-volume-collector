@@ -56,6 +56,30 @@ test('a pass summary cannot carry a contradictory data-gap or failure reason',()
  assert.throws(()=>validateChipStability({...passed(),reasons:['PEAK_REGION_MOVED']}));
 });
 
+test('a coarse grid can prove failure with a strict displacement lower bound, without claiming a measured shift',()=>{
+ const bounded={...failed(),max_shift_fraction:null,min_mass_ratio:'1.01',
+  displacement_bound_evaluated_sessions:1,max_proven_shift_lower_bound_fraction:'0.01483165529933961377'};
+ assert.equal(validateChipStability(bounded),'FAIL');
+ assert.match(chipStabilityDetails({...base(),chip_stability:bounded}),/位移至少 1.48%/);
+ for(const update of [
+  {max_proven_shift_lower_bound_fraction:'0.01'},
+  {max_proven_shift_lower_bound_fraction:'0.009999999999999999'},
+  {max_proven_shift_lower_bound_fraction:'broken'},
+  {displacement_bound_evaluated_sessions:0},
+  {displacement_bound_evaluated_sessions:2},
+  {displacement_bound_evaluated_sessions:undefined},
+  {reasons:['NATIVE_RESOLUTION_INSUFFICIENT']},
+ ])assert.throws(()=>validateChipStability({...bounded,...update}));
+ assert.throws(()=>validateChipStability({...bounded,status:'PASS',max_shift_fraction:'0',reasons:[]}));
+ const denominator='1'+'0'.repeat(70),numerator='1'+'0'.repeat(67)+'1';
+ assert.equal(validateChipStability({...bounded,max_proven_shift_lower_bound_fraction:'0.01',
+  max_proven_shift_lower_bound_exact_fraction:numerator+'/'+denominator}),'FAIL');
+ for(const value of ['1/0','-1/5','bad','1/100'])assert.throws(()=>validateChipStability({...bounded,
+  max_proven_shift_lower_bound_fraction:'0.01',max_proven_shift_lower_bound_exact_fraction:value}));
+ assert.throws(()=>validateChipStability({...passed(),displacement_bound_evaluated_sessions:1,
+  max_proven_shift_lower_bound_fraction:'0.5',max_proven_shift_lower_bound_exact_fraction:'0'}));
+});
+
 test('daily reader accepts new automatic pass and rejects forged summaries, counts and dated coverage',()=>{
  const m=parseMarketManifest(manifest({PASS:1,FAIL:0,UNKNOWN:0}));
  const row=projected({...base(),model_mean_cost_cny:'4.9',chip_stability:passed()});

@@ -59,7 +59,8 @@ class TargetDay(unittest.TestCase):
     def test_workflow_primary_and_original_catchup_times(self):
         workflow=(Path(__file__).resolve().parents[2]/'.github/workflows/chips.yml').read_text(encoding='utf-8')
         self.assertIn("- cron: '40 7 * * *'",workflow)
-        self.assertIn("- cron: '20 13,18 * * *'",workflow)
+        self.assertIn("- cron: '20 13 * * *'",workflow)
+        self.assertIn("- cron: '20 18 * * *'",workflow)
         self.assertNotIn("- cron: '20 8,13,18 * * *'",workflow)
 
 

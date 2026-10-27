@@ -6,6 +6,8 @@ export type MarketState = 'PASS' | 'FAIL' | 'UNKNOWN';
 export type ChipStabilitySummary={
   rule_id:typeof chipUnchangedRule;status:MarketState;baseline_date:string|null;first_limit_up_date:string|null;
   evaluated_sessions:number;required_sessions:number;max_shift_fraction:string|null;min_mass_ratio:string|null;reasons:string[];
+  displacement_bound_evaluated_sessions?:number;max_proven_shift_lower_bound_fraction?:string|null;
+  max_proven_shift_lower_bound_exact_fraction?:string|null;
 };
 export type DailyCandle = { date: string; open: string; high: string; low: string; close: string; volume_shares: string; amount_cny: string; turnover_percent: string };
 export type MarketManifest = {

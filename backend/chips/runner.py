@@ -842,6 +842,14 @@ def target_day(explicit=None):
         last_ten(explicit);return explicit
     return sessions('2026-01-01',eligible.isoformat())[-1]
 
+def operational_complete(rows):
+    """No further calculation for these inputs; universe coverage stays separate."""
+    return bool(rows) and all(r.get('chip_status') == 'READY' and
+        (r.get('screen_status') in ('PASS','FAIL') or
+         r.get('prefilter_status') == r.get('price_position_status') == 'PASS' and stability_calculated(r))
+        for r in rows)
+
+
 def run(store,*,as_of,max_minutes=285,workers=4):
     started=time.monotonic();deadline=started+max_minutes*60;owner=uuid.uuid4().hex
     lease,etag=store.get('collector/chips/lease.json')
@@ -851,7 +859,8 @@ def run(store,*,as_of,max_minutes=285,workers=4):
     try:
         current,current_etag=store.get('data/chips/daily/manifest.json')
         identity=implementation_identity()
-        if (current and current['as_of']==as_of and (current.get('market_complete') or current.get('calculation_complete'))
+        if (current and current['as_of']==as_of and (current.get('market_complete') or current.get('calculation_complete')
+            or current.get('operational_complete') is True)
             and current.get('execution_identity')==identity):
             return {'outcome':'ALREADY_COMMITTED','as_of':as_of,'market_complete':current['market_complete']}
         state,state_etag=store.get('collector/chips/state.json');source=Source();recovered_slot=None
@@ -963,7 +972,7 @@ def run(store,*,as_of,max_minutes=285,workers=4):
             store.put('data/chips/daily/status.json',{'schema':'stock.chips.market.status.v1','state':status,
                 'as_of':as_of,'dataset_id':dataset,'universe_total':len(state['stocks']),'scanned_count':len(done),
                 'model_ready_count':sum(r['chip_status']=='READY' for r in done.values()),'updated_at':now(),
-                'workflow_run_id':os.environ.get('GITHUB_RUN_ID'),'lease_owner':owner,
+                'workflow_run_id':os.environ.get('GITHUB_RUN_ID'),'lease_owner':owner,'execution_identity':identity,
                 'last_committed_date':current['as_of'] if current else None,'unchanged_threshold':None})
         save_status('RUNNING')
         # Stratify initial reads so one failing exchange cannot trigger a global
@@ -1039,6 +1048,7 @@ def run(store,*,as_of,max_minutes=285,workers=4):
             'calculation_complete':ready==len(rows) and counts['UNKNOWN']==0
                 and all(r['price_position_status']!='UNKNOWN' for r in rows)
                 and all(stability_calculated(r) for r in rows) and not catalog_only,
+            'operational_complete':operational_complete(rows),
             'universe_coverage':'OFFICIAL_CURRENT_LIST_RECONCILED' if reconciled else ('SITE_CATALOG_UNVERIFIED' if catalog_only else 'VENDOR_REPORTED_TOTAL_VALIDATED'),
             'execution_identity':identity,'coefficient':2,'unchanged_threshold':None,
             'model_version':MODEL['version'],'model':MODEL,'history_window_bars':210,'golden_grid_version':GOLDEN_VERSION,

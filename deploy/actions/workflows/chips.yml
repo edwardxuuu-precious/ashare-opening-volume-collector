@@ -14,9 +14,21 @@ on:
         description: Runtime budget 2..285 minutes; checkpointed for continuation
         type: string
         default: '285'
+      automatic_origin:
+        description: Internal scheduler origin; empty for a separately authorized manual run
+        type: string
+      auto_slot:
+        description: Internal daily allowance primary, evening or overnight
+        type: string
   schedule:
-    # 16:20 Shanghai, with two bounded catch-up runs. Separate from opening collector.
-    - cron: '20 8,13,18 * * *'
+    # 15:40 Shanghai, with unchanged 21:20 / next-day 02:20 bounded catch-up runs.
+    - cron: '40 7 * * *'
+    - cron: '20 13 * * *'
+    - cron: '20 18 * * *'
+  workflow_run:
+    workflows: [Collect opening volume into private storage]
+    types: [completed]
+    branches: [main]
 permissions:
   contents: read
 concurrency:
@@ -24,7 +36,12 @@ concurrency:
   cancel-in-progress: false
 jobs:
   chips:
-    if: github.ref == 'refs/heads/main' && (github.event_name == 'workflow_dispatch' || vars.DISABLE_CHIPS_UPDATE != 'true')
+    if: >-
+      github.ref == 'refs/heads/main' &&
+      ((github.event_name == 'workflow_dispatch' && inputs.automatic_origin == '') || vars.DISABLE_CHIPS_UPDATE != 'true') &&
+      (github.event_name != 'workflow_run' ||
+      (github.event.workflow_run.head_branch == 'main' &&
+      github.event.workflow_run.head_repository.full_name == 'edwardxuuu-precious/ashare-opening-volume-collector'))
     runs-on: ubuntu-24.04
     timeout-minutes: 310
     permissions:
@@ -51,14 +68,28 @@ jobs:
           role-duration-seconds: 21600
           role-session-name: chips-${{ github.run_id }}
           aws-region: us-east-1
+      - name: Check trusted automatic daily allowance
+        id: followup
+        if: inputs.mode != 'probe' && (github.event_name != 'workflow_dispatch' || inputs.automatic_origin != '')
+        run: python tooling/chip_followup_guard.py
       - name: Compute privately and commit the complete scan
-        if: inputs.mode != 'probe'
+        if: inputs.mode != 'probe' && ((github.event_name == 'workflow_dispatch' && inputs.automatic_origin == '') || steps.followup.outputs.should_run == 'true')
         shell: bash
+        env:
+          FOLLOWUP_AS_OF: ${{ steps.followup.outputs.as_of }}
+          FOLLOWUP_MAX_MINUTES: ${{ steps.followup.outputs.max_minutes }}
         run: |
           set -euo pipefail
+          if [ -n "$FOLLOWUP_AS_OF" ]; then
+            STOCK_AS_OF="$FOLLOWUP_AS_OF"
+            STOCK_MAX_MINUTES="$FOLLOWUP_MAX_MINUTES"
+          fi
           args=()
           if [ -n "$STOCK_AS_OF" ]; then args+=(--as-of "$STOCK_AS_OF"); fi
-          python -m backend.chips.runner --bucket "$STOCK_BUCKET" --max-minutes "$STOCK_MAX_MINUTES" "${args[@]}"
+          python tooling/run_chip_bounded.py --bucket "$STOCK_BUCKET" --max-minutes "$STOCK_MAX_MINUTES" "${args[@]}"
+          if [ -n "$FOLLOWUP_AS_OF" ]; then
+            python tooling/chip_followup_guard.py --verify-as-of "$STOCK_AS_OF"
+          fi
       - name: Bounded source health check
         if: inputs.mode == 'probe'
         run: python -m backend.chips.probe

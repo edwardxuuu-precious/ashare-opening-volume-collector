@@ -2,19 +2,26 @@
 
 本目录的 Dispatcher 只读取私有健康状态和 writer lease，并只向
 `edwardxuuu-precious/ashare-opening-volume-collector` 的 `main` 分支派发
-`collector.yml`。它不下载、不修改市场数据，也不创建或接管采集写锁。
+`collector.yml` 和 `chips.yml`。它不下载、不修改市场数据，也不创建或接管计算写锁。
 
 ## 调度合约
 
 - 09:50（上海时间）：开盘预采。
 - 15:30：当天收盘全量更新。
 - 07:00：已知历史缺口接续。
-- 07:02–23:55：每五分钟 watchdog；只在数据不完整、退避已到期、无 GitHub 活跃任务且无有效 writer lease 时派发。
+- 07时至23时及02时：每小时第2、7、12……57分钟调用现有 watchdog。采集任务仍只在原07:00–23:55窗口内运行，检查缺口、退避、活跃任务和 writer lease。
+- 筹码按官方交易日历，在15:40、21:20和次日02:20到期后，由最近的 watchdog 调用唤醒。现有 GitHub 三个定时事件及采集完成事件继续保留。新增02时覆盖每天增加12次现有 Lambda 调用，没有增加云资源或 IAM 权限。
 - Scheduler 固定 `Asia/Shanghai`，关闭弹性时间窗。09:40–09:50 和 15:20–15:30 是让位窗口，watchdog 不派发。
 
-任务输入始终包含 `mode=collect`、`phase`、`target_date` 和
+采集任务输入始终包含 `mode=collect`、`phase`、`target_date` 和
 `max_minutes=12..285`。任务未完成时会保存 checkpoint 并以失败状态结束；
 watchdog 依状态与退避继续接力，不以 GitHub 绿灯替代数据完成。
+
+筹码输入为 `mode=collect`、`automatic_origin=aws-watchdog`、`auto_slot`、`as_of` 和 `max_minutes=285`。调度器按日期和时段先认领再派发，每档最多一次 POST。未知网络结果也保留已消耗额度。调度账本的全部更新使用 S3 条件写，避免采集与筹码互相覆盖。
+
+运行侧用同一并发组、S3 写锁和不可重置的时段认领防止重复计算。暂停的 checkpoint 接续不要求新行情；worker 超时后只接续已确认清理完进程的批次。每日一次的新输入修复额度独立保留。每次计算仍为4个 worker、最多285分钟，job上限310分钟。
+
+`operational_complete` 表示当前模型和输入已得到终态结果，可以包含有具体原因的UNKNOWN。它不会认证证券清单或把原 `market_complete`、`calculation_complete` 改为通过。没有新输入或实现版本变化时，已完成批次直接跳过。`DISABLE_CHIPS_UPDATE=true`同时阻止 GitHub 定时、采集完成和 AWS 自动筹码计算。
 
 ## 账号持有人操作
 
@@ -28,8 +35,7 @@ watchdog 依状态与退避继续接力，不以 GitHub 绿灯替代数据完成
 4. 以新的、哈希命名的 Lambda ZIP 上传到
    `collector/dispatcher-code/`；先创建所有 schedule 为 `DISABLED` 的 stack
    `stock-actions-scheduler`，并以 `CAPABILITY_IAM` 审阅最小权限模板。
-5. 在采集窗口外调用 watchdog。预期结果为
-   `outside_collection_window`，且不得产生 GitHub run 或市场数据写入。
+5. 用本地虚构状态测试时段、认领竞争和未知 POST 结果。生产 watchdog 在02时也可能合法唤醒筹码，不用手工调用作为只读探针。
 6. 只读核对 `collector/refresh-status.json` 的交易日历、目标缺口和 writer lease 后，启用 schedules。
 7. 确认 Dispatcher 已成功派发一次带明确目标日期的 run 后，再将仓库变量
    `DISABLE_DAILY_UPDATE=true`，关闭旧 GitHub cron 的数据写入。手工和 Dispatcher 的

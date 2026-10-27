@@ -1,4 +1,5 @@
 import base64
+import hashlib
 import io
 import json
 import sys
@@ -38,11 +39,18 @@ class MemoryS3:
         return {"Contents": [{"Key": key} for key in sorted(self.data) if key.startswith(Prefix)][:MaxKeys]}
 
     def get_object(self, Bucket, Key):
-        return {"Body": io.BytesIO(json.dumps(self.data[Key]).encode())}
+        raw = json.dumps(self.data[Key]).encode()
+        return {"Body": io.BytesIO(raw), "ETag": '"' + hashlib.sha256(raw).hexdigest() + '"'}
 
     def put_object(self, **kwargs):
+        key = kwargs["Key"]
+        if (kwargs.get("IfNoneMatch") == "*" and key in self.data or
+            kwargs.get("IfMatch") is not None and
+            (key not in self.data or self.get_object("bucket", key)["ETag"] != kwargs["IfMatch"])):
+            raise RuntimeError("PreconditionFailed")
         self.writes.append(kwargs)
-        self.data[kwargs["Key"]] = json.loads(kwargs["Body"])
+        self.data[key] = json.loads(kwargs["Body"])
+        return {"ETag": self.get_object("bucket", key)["ETag"]}
 
 
 class FakeGitHub:
@@ -326,7 +334,7 @@ class SchedulerTemplateTests(unittest.TestCase):
     def test_precise_shanghai_schedules_disabled_until_explicit_enable(self):
         resources = self.build()["Resources"]
         expected = {"OpeningSchedule": "cron(50 9 * * ? *)", "CloseSchedule": "cron(30 15 * * ? *)",
-                    "CatchupSchedule": "cron(0 7 * * ? *)", "WatchdogSchedule": "cron(2/5 7-23 * * ? *)"}
+                    "CatchupSchedule": "cron(0 7 * * ? *)", "WatchdogSchedule": "cron(2/5 2,7-23 * * ? *)"}
         for key, expression in expected.items():
             props = resources[key]["Properties"]
             self.assertEqual(props["ScheduleExpression"], expression)

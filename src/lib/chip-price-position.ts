@@ -24,18 +24,42 @@ export function validateChipStability(input:unknown):MarketState{
   const value=input as ChipStabilitySummary;
   const shift=value.max_shift_fraction===null?null:decimal(value.max_shift_fraction,true);
   const mass=value.min_mass_ratio===null?null:decimal(value.min_mass_ratio,true);
+  const bound=value.max_proven_shift_lower_bound_fraction==null?null:decimal(value.max_proven_shift_lower_bound_fraction,true);
+  const boundSessions=value.displacement_bound_evaluated_sessions;
+  const exactBound=value.max_proven_shift_lower_bound_exact_fraction;
+  const rational=typeof exactBound==='string'&&exactBound.length<=1000?/^(\d+)(?:\/([1-9]\d*))?$/.exec(exactBound):null;
   if(value.rule_id!==chipUnchangedRule||!states.includes(value.status)
     || (value.baseline_date!==null&&!isoDay(value.baseline_date))||(value.first_limit_up_date!==null&&!isoDay(value.first_limit_up_date))
     || (value.baseline_date!==null&&value.first_limit_up_date!==null&&value.baseline_date>=value.first_limit_up_date)
     || !Number.isSafeInteger(value.evaluated_sessions)||!Number.isSafeInteger(value.required_sessions)
     || value.evaluated_sessions<0||value.required_sessions<0||value.required_sessions>10||value.evaluated_sessions>value.required_sessions
     || (value.max_shift_fraction!==null&&!shift)||(value.min_mass_ratio!==null&&!mass)
+    || (value.max_proven_shift_lower_bound_fraction!=null&&(!bound||typeof boundSessions!=='number'||!Number.isSafeInteger(boundSessions)
+      ||boundSessions<1||boundSessions>value.evaluated_sessions))
+    || (boundSessions!==undefined&&(!Number.isSafeInteger(boundSessions)||boundSessions<0||boundSessions>value.evaluated_sessions))
+    || (exactBound!=null&&(!rational||!bound))
     || !Array.isArray(value.reasons)||!value.reasons.every(reason=>typeof reason==='string'&&reason.length>0))throw Error('顶格自动判断的规则、日期或指标不完整。');
   const moved=shift!==null&&compare(shift,decimal(chipStabilityThresholds.max_shift_fraction)!)>0;
   const weakened=mass!==null&&compare(mass,decimal(chipStabilityThresholds.min_mass_ratio)!)<0;
+  if(rational&&bound){
+    const numerator=BigInt(rational[1]),denominator=BigInt(rational[2]??'1');
+    const decimalNumerator=bound.amount*BigInt(10)**BigInt(Math.max(0,-bound.scale));
+    const decimalDenominator=BigInt(10)**BigInt(Math.max(0,bound.scale));
+    const unitExponent=bound.amount===BigInt(0)?0:bound.amount.toString().length-bound.scale-50;
+    const unitNumerator=BigInt(10)**BigInt(Math.max(0,unitExponent));
+    const unitDenominator=BigInt(10)**BigInt(Math.max(0,-unitExponent));
+    if(decimalNumerator*denominator>numerator*decimalDenominator
+      ||(bound.amount===BigInt(0)&&numerator!==BigInt(0))
+      ||numerator*decimalDenominator*unitDenominator>=
+        (decimalNumerator*unitDenominator+unitNumerator*decimalDenominator)*denominator)
+      throw Error('位移下界的完整精度证明与显示值不一致。');
+  }
+  const provenMoved=rational?BigInt(rational[1])*BigInt(100)>BigInt(rational[2]??'1')
+    :bound!==null&&compare(bound,decimal(chipStabilityThresholds.max_shift_fraction)!)>0;
   if(value.status==='PASS'&&(!value.baseline_date||!value.first_limit_up_date||value.required_sessions<1
-    ||value.evaluated_sessions!==value.required_sessions||!shift||!mass||moved||weakened||value.reasons.length!==0))throw Error('顶格自动入选缺少完整通过依据。');
-  if(value.status==='FAIL'&&(!value.baseline_date||!value.first_limit_up_date||value.evaluated_sessions<1||(!moved&&!weakened)))
+    ||value.evaluated_sessions!==value.required_sessions||!shift||!mass||moved||weakened||provenMoved||value.reasons.length!==0))throw Error('顶格自动入选缺少完整通过依据。');
+  if(value.status==='FAIL'&&(!value.baseline_date||!value.first_limit_up_date||value.evaluated_sessions<1
+    ||(!moved&&!weakened&&!(provenMoved&&value.reasons.includes('PEAK_REGION_MOVED')))))
     throw Error('顶格未满足缺少明确失败指标。');
   if(value.status==='UNKNOWN'&&!value.reasons.length)throw Error('顶格判断缺少数据不足的原因。');
   return value.status;
@@ -95,6 +119,8 @@ export function chipStabilityDetails(row:MarketScreenRow){
   const parts:string[]=[];
   if(value.baseline_date)parts.push(`基准 ${value.baseline_date}`);
   if(value.max_shift_fraction!==null)parts.push(`最大偏移 ${(Number(value.max_shift_fraction)*100).toFixed(2)}%`);
+  if(value.max_proven_shift_lower_bound_fraction!=null&&Number(value.max_proven_shift_lower_bound_fraction)>0.01)
+    parts.push(`位移至少 ${(Number(value.max_proven_shift_lower_bound_fraction)*100).toFixed(2)}%`);
   if(value.min_mass_ratio!==null)parts.push(`原区占比最低保留 ${(Number(value.min_mass_ratio)*100).toFixed(2)}%（相对基准）`);
   if(value.required_sessions>0)parts.push(`已核 ${value.evaluated_sessions}/${value.required_sessions}日`);
   if(value.status!=='PASS')parts.push(...new Set(value.reasons.map(reason=>stabilityReasons[reason]??(value.status==='FAIL'?'不满足稳定标准':'数据不足'))));

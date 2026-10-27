@@ -58,7 +58,7 @@ class DisplayTransport(unittest.TestCase):
                     return result
                 store.put=save
                 points=[{'price_cny':f'{Decimal(i)/100:.2f}','share_percent':'0.02'} for i in range(1,5001)]
-                value={'dataset_id':dataset,'security_id':STOCK['code'],'source':{'sha256':'INVENTED'},
+                value={'dataset_id':dataset,'security_id':STOCK['code'],'name':'INVENTED','as_of':DAYS[-1],'source':{'sha256':'INVENTED'},
                     'snapshots':{DAYS[-1]:{'profile':points,'peak_prices_cny':['25.00']}}}
                 row={'security_id':STOCK['code'],'chip_status':'READY','reasons':[]}
                 context={'slot':dataset,'dataset':dataset,'days':DAYS,'as_of':DAYS[-1],'owner':owner,
@@ -81,7 +81,7 @@ class DisplayTransport(unittest.TestCase):
         store=Memory();owner='INVENTED';dataset='2222222222222222'
         store.put('collector/chips/lease.json',{'owner':owner,'expires':time.time()+1000})
         points=[{'price_cny':str(i),'share_percent':'25'} for i in range(1,5)]
-        value={'dataset_id':dataset,'security_id':STOCK['code'],'source':{'sha256':'INVENTED'},
+        value={'dataset_id':dataset,'security_id':STOCK['code'],'name':'INVENTED','as_of':DAYS[-1],'source':{'sha256':'INVENTED'},
             'snapshots':{DAYS[-1]:{'profile':points,'peak_prices_cny':['1','2','3','4']}}}
         row={'security_id':STOCK['code'],'chip_status':'READY','reasons':[]}
         context={'slot':dataset,'dataset':dataset,'days':DAYS,'as_of':DAYS[-1],'owner':owner,

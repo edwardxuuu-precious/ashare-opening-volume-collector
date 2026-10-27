@@ -125,6 +125,8 @@ class LimitReference(unittest.TestCase):
         store=Memory();FakeSource.calls=0
         with patch('backend.chips.runner.Source',NoPool):
             self.assertEqual(run(store,as_of=DAYS[-1],max_minutes=2,workers=1)['screen_counts']['UNKNOWN'],1)
+        # A legacy publication lacks the terminal-operation marker and enters repair.
+        store.data['data/chips/daily/manifest.json'].pop('operational_complete')
         key='collector/chips/model/'+STOCK['code']+'.json'
         del store.data[key];del store.version[key]
         with patch('backend.chips.runner.Source',FakeSource):

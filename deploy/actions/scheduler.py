@@ -67,7 +67,7 @@ def template(bucket, code_key, private_key_parameter, app_id, installation_id, r
                  "Catchup": ("cron(0 7 * * ? *)", "catchup"),
                  # Offset avoids throttling the precise triggers when reserved
                  # concurrency is one and Scheduler has retries disabled.
-                 "Watchdog": ("cron(2/5 7-23 * * ? *)", "watchdog")}
+                 "Watchdog": ("cron(2/5 2,7-23 * * ? *)", "watchdog")}
     for name, (expression, phase) in schedules.items():
         resources[name + "Schedule"] = {"Type": "AWS::Scheduler::Schedule", "Properties": {
             "GroupName": {"Ref": "ScheduleGroup"}, "ScheduleExpression": expression,

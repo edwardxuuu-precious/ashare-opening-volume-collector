@@ -85,12 +85,12 @@ class Followup(unittest.TestCase):
         self.assertEqual(clock.waits,[600])
     def test_wait_is_deducted_from_original_budget(self):
         clock=Clock('2026-10-26T15:30:00')
-        r=g.run_guard(lambda key:manifest() if key==g.MANIFEST else None,clock,clock.sleep)
+        r=g.run_guard(lambda key:manifest() if key==g.MANIFEST else None,clock,clock.sleep,lambda *_:True)
         self.assertEqual(r['should_run'],'true');self.assertEqual(r['max_minutes'],'275')
         self.assertEqual(r['wait_seconds'],600)
     def test_no_wait_retains_maximum_budget(self):
         clock=Clock('2026-10-26T17:00:00')
-        r=g.run_guard(lambda key:None,clock,clock.sleep)
+        r=g.run_guard(lambda key:None,clock,clock.sleep,lambda *_:True)
         self.assertEqual(r['max_minutes'],'285');self.assertEqual(clock.waits,[])
     def test_stuck_clock_exhausted_budget_and_day_rollover_stop(self):
         clock=Clock('2026-10-26T15:30:00')

@@ -135,6 +135,7 @@ class LateHandoffs(unittest.TestCase):
             reads.append(key)
             if key==g.MANIFEST:return partial()
             if key==g.LEASE:return None
+            if key==g.CHIP_STATUS:return None
             if key==g.COLLECTOR_STATUS:return collector()
             if key==g.repair_key(DAY):return stored
             raise AssertionError(key)
@@ -146,7 +147,7 @@ class LateHandoffs(unittest.TestCase):
         self.assertEqual(result['should_run'],'true');self.assertEqual(result['max_minutes'],'285')
         self.assertEqual(len(client.calls),1);call=client.calls[0]
         self.assertEqual(call['IfNoneMatch'],'*');self.assertEqual(call['ServerSideEncryption'],'AES256')
-        self.assertEqual(reads,[g.MANIFEST,g.LEASE,g.COLLECTOR_STATUS,g.repair_key(DAY),g.LEASE])
+        self.assertEqual(reads,[g.MANIFEST,g.LEASE,g.CHIP_STATUS,g.COLLECTOR_STATUS,g.repair_key(DAY),g.LEASE])
         fetch,_,clock=self.inputs(stored=client.objects[g.repair_key(DAY)])
         def forbidden(*args):self.fail('Spent marker was claimed again')
         self.assertEqual(g.run_guard(fetch,clock,clock.sleep,forbidden)['should_run'],'false')
@@ -196,13 +197,20 @@ class LateHandoffs(unittest.TestCase):
             def put_object(self,**kwargs):raise Denied()
         with self.assertRaises(Denied):g.claim_repair(Client(),'INVENTED',g.repair_key(DAY),marker())
 
-    def test_complete_or_unpublished_paths_do_not_read_or_claim_repair_metadata(self):
+    def test_complete_or_unpublished_paths_never_claim_input_repair(self):
         for m in (None,manifest(DAY),manifest('2026-10-23')):
             reads=[];clock=Clock(DAY+'T17:00:00')
             def fetch(key):reads.append(key);return m if key==g.MANIFEST else None
-            def forbidden(*args):self.fail('Unnecessary daily repair claim')
-            result=g.run_guard(fetch,clock,clock.sleep,forbidden)
-            self.assertEqual(reads,[g.MANIFEST,g.LEASE])
+            claims=[]
+            def claim(key,value):
+                claims.append(key)
+                self.assertEqual(value['schema'],'stock.chips.automatic-slot.v1')
+                return True
+            result=g.run_guard(fetch,clock,clock.sleep,claim)
+            if m and m['as_of']==DAY:
+                self.assertEqual(reads,[g.MANIFEST,g.LEASE,g.CHIP_STATUS]);self.assertEqual(claims,[])
+            else:
+                self.assertEqual(claims,[g.automatic_key(DAY,'primary')])
             self.assertEqual(result['should_run'],'false' if m and m['as_of']==DAY else 'true')
 
     def test_verify_main_reads_only_manifest_and_never_claims_a_marker(self):
