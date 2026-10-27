@@ -618,7 +618,7 @@ def _worker_stock(stock):
 
 def target_day(explicit=None):
     cn=datetime.now(timezone(timedelta(hours=8)))
-    eligible=cn.date() if (cn.hour,cn.minute)>=(16,10) else cn.date()-timedelta(days=1)
+    eligible=cn.date() if (cn.hour,cn.minute)>=(15,40) else cn.date()-timedelta(days=1)
     if explicit:
         if explicit>eligible.isoformat(): raise ValueError('SESSION_NOT_COMPLETED')
         last_ten(explicit);return explicit

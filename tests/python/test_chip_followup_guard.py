@@ -17,14 +17,15 @@ class Clock:
 
 class ClockRules(unittest.TestCase):
     def test_cutoff_and_bounded_wait(self):
-        cases=[('2026-10-26T15:29:59','SKIP',None),('2026-10-26T15:30:00','WAIT',3000),
-            ('2026-10-26T16:19:59.500000','WAIT',1),('2026-10-26T16:20:00','READY',0)]
+        cases=[('2026-10-26T15:29:59','SKIP',None),('2026-10-26T15:30:00','WAIT',600),
+            ('2026-10-26T15:39:59','WAIT',1),('2026-10-26T15:39:59.500000','WAIT',1),
+            ('2026-10-26T15:40:00','READY',0)]
         for value,action,wait in cases:
             with self.subTest(value=value):
                 result=g.time_gate(at(value));self.assertEqual(result['action'],action)
                 if wait is not None:self.assertEqual(result['wait_seconds'],wait)
     def test_utc_is_shanghai_day(self):
-        now=datetime(2026,10,26,8,20,tzinfo=timezone.utc)
+        now=datetime(2026,10,26,7,40,tzinfo=timezone.utc)
         self.assertEqual(g.time_gate(now)['as_of'],'2026-10-26')
         self.assertEqual(g.time_gate(now)['action'],'READY')
     def test_weekend_and_exchange_holiday_skip(self):
@@ -67,21 +68,26 @@ class Followup(unittest.TestCase):
         def forbidden(key):self.fail('Unexpected metadata read')
         self.assertEqual(g.run_guard(forbidden,Clock('2026-10-26T10:00:00'))['should_run'],'false')
     def test_wait_then_read_fresh_publication_and_skip(self):
-        clock=Clock('2026-10-26T15:50:00');reads=[]
+        clock=Clock('2026-10-26T15:35:00');reads=[]
         def fetch(key):
             reads.append(clock());return manifest('2026-10-26') if key==g.MANIFEST else None
         r=g.run_guard(fetch,clock,clock.sleep)
-        self.assertEqual(clock.waits,[1800]);self.assertTrue(all(t>=at('2026-10-26T16:20:00') for t in reads))
+        self.assertEqual(clock.waits,[300]);self.assertTrue(all(t>=at('2026-10-26T15:40:00') for t in reads))
         self.assertEqual(r['reason'],'TODAY_ALREADY_PUBLISHED')
     def test_wait_then_recheck_new_active_lease(self):
-        clock=Clock('2026-10-26T15:30:00')
-        def fetch(key):return manifest() if key==g.MANIFEST else {'expires':clock().timestamp()+60}
+        clock=Clock('2026-10-26T15:30:00');reads=[]
+        def fetch(key):
+            reads.append((key,clock()))
+            return manifest() if key==g.MANIFEST else {'expires':clock().timestamp()+60}
         r=g.run_guard(fetch,clock,clock.sleep);self.assertEqual(r['reason'],'CHIP_WRITER_ACTIVE')
+        self.assertEqual([key for key,_ in reads],[g.MANIFEST,g.LEASE])
+        self.assertTrue(all(t>=at('2026-10-26T15:40:00') for _,t in reads))
+        self.assertEqual(clock.waits,[600])
     def test_wait_is_deducted_from_original_budget(self):
         clock=Clock('2026-10-26T15:30:00')
         r=g.run_guard(lambda key:manifest() if key==g.MANIFEST else None,clock,clock.sleep)
-        self.assertEqual(r['should_run'],'true');self.assertEqual(r['max_minutes'],'235')
-        self.assertEqual(r['wait_seconds'],3000)
+        self.assertEqual(r['should_run'],'true');self.assertEqual(r['max_minutes'],'275')
+        self.assertEqual(r['wait_seconds'],600)
     def test_no_wait_retains_maximum_budget(self):
         clock=Clock('2026-10-26T17:00:00')
         r=g.run_guard(lambda key:None,clock,clock.sleep)

@@ -30,9 +30,9 @@ def time_gate(now):
         return {'action': 'SKIP', 'reason': 'NON_TRADING_DAY', 'as_of': day}
     if (local.hour, local.minute) < (15, 30):
         return {'action': 'SKIP', 'reason': 'BEFORE_CLOSE_HANDOFF', 'as_of': day}
-    ready = local.replace(hour=16, minute=20, second=0, microsecond=0)
+    ready = local.replace(hour=15, minute=40, second=0, microsecond=0)
     wait = max(0, math.ceil((ready-local).total_seconds()))
-    if wait > 3000: raise ValueError('WAIT_BOUND_EXCEEDED')
+    if wait > 600: raise ValueError('WAIT_BOUND_EXCEEDED')
     return {'action': 'WAIT' if wait else 'READY', 'reason': 'WAIT_FOR_DAILY_WINDOW' if wait else 'DAILY_WINDOW',
             'as_of': day, 'wait_seconds': wait}
 
