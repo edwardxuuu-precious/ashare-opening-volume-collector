@@ -18,7 +18,7 @@ from .stability import classify as classify_stability,calculation_complete as st
 from .source import Source
 from .golden import VERSION as GOLDEN_VERSION,grid_row as golden_row,document as golden_document
 from .current_quote import collect as collect_final_quotes,overlay as overlay_final_quote,renormalize as renormalize_final_quotes
-from .listing import trusted_listing
+from .listing import trusted_listing,restore_archived_listing_facts
 from .display import display_frame,response_upper_bound,MAX_BROWSER_PROFILE_BINS
 from .history import archive_keys
 from .limit_reference import prepared as reference_prepared,closing_pool,fetch_closing_pool,fetch_reference,corroborate_quantity,archived_corroboration
@@ -31,6 +31,56 @@ class _ArchiveConflict(RuntimeError):
 
 def now(): return datetime.now(timezone.utc).isoformat()
 def encoded(v): return json.dumps(v,ensure_ascii=False,separators=(',',':')).encode()
+
+def needs_historical_reference(row,reasons,snapshot=None):
+    """Complete earliest-anchor evidence even after a later limit-up passed.
+
+    Preserve the original unknown-prefilter repair. Additional acquisition is
+    restricted to above-mean-cost candidates and unknown sessions BEFORE their
+    earliest confirmed hit; later unknowns cannot change that anchor.
+    """
+    if row.get('close_cny') is None:return False
+    wanted=set(reasons)
+    missing=[e for e in row.get('limit_evidence',[]) if e.get('status')=='UNKNOWN' and e.get('reason') in wanted]
+    if not missing:return False
+    if row.get('prefilter_status')=='UNKNOWN':return True
+    if row.get('prefilter_status')!='PASS' or not row.get('recent_limit_up_dates') or not snapshot:return False
+    position={**row,'chip_status':'READY'}
+    apply_price_position(position,snapshot)
+    if position['price_position_status']!='PASS':return False
+    first=min(row['recent_limit_up_dates'])
+    return any(e['date']<first for e in missing)
+
+def restore_listing_context(store,stocks,days,as_of):
+    """Recover fixed listing dates, without reusing an old universe membership."""
+    if all(trusted_listing(stock,as_of) for stock in stocks):return stocks,[]
+    from .listing import verified_current
+    notes=[]
+    for source_day in reversed(days[:-1]):
+        key=f'collector/chips/universe-verified/{source_day}.json'
+        try:
+            bundle,_=store.get(key)
+            if bundle is None:continue
+            verified_current(bundle,bundle.get('stocks',[]),source_day)
+            donor={s['code']:s for s in bundle['stocks']}
+            candidates=[];conflicts=[]
+            for stock in stocks:
+                if trusted_listing(stock,as_of) or stock['code'] not in donor:continue
+                prior=donor[stock['code']]
+                if stock.get('name')!=prior['name']:
+                    conflicts.append({'security_id':stock['code'],'reason':'SECURITY_NAME_CONFLICT'});continue
+                if stock.get('listed') is not None and stock['listed']!=prior['listed']:
+                    conflicts.append({'security_id':stock['code'],'reason':'LISTING_DATE_CONFLICT'});continue
+                candidates.append(stock)
+            restored,receipt=restore_archived_listing_facts(candidates,bundle,as_of,key)
+            replacement={s['code']:s for s in restored}
+            receipt.update(conflicting_stock_count=len(conflicts),conflicts=conflicts[:50],
+                conflicts_sha256=hashlib.sha256(encoded(conflicts)).hexdigest())
+            return [replacement.get(s['code'],s) for s in stocks],notes+[receipt]
+        except Exception as exc:
+            notes.append({'provider':'ARCHIVED_LISTING_FACT_REJECTED','source_key':key,
+                'error':type(exc).__name__,'detail':str(exc)[:160],'current_membership_verified':False})
+    return stocks,notes
 
 def implementation_identity():
     """Bind resumed batches and exact model caches to their actual source."""
@@ -246,11 +296,11 @@ def _calculate(store,source,stock,ctx):
                 own();store.put(rejected_key,entry,new=True,compressed=True)
             links.append({k:v for k,v in entry.items() if k!='raw_base64'}|{'private_raw_key':rejected_key})
         return links
-    def evaluate(screen_stock,lines):
+    def evaluate(screen_stock,lines,snapshot=None):
         nonlocal references
         row=prefilter(screen_stock,lines,days,state['pools'],state.get('actual_limits'),references,state.get('closing_pools'))
-        if (isinstance(store,Storage) and row['prefilter_status']=='UNKNOWN' and row.get('close_cny') is not None
-            and any(e['reason']=='HISTORICAL_REFERENCE_CLOSE_NOT_VERIFIED' for e in row['limit_evidence'])):
+        if (isinstance(store,Storage) and needs_historical_reference(row,
+            ('HISTORICAL_REFERENCE_CLOSE_NOT_VERIFIED','INCLUSIVE_LIMIT_POOL_REFERENCE_CLOSE_NOT_VERIFIED'),snapshot)):
             try:
                 ref_key=f'collector/chips/reference-daily/{as_of}/{stock["code"]}.json'
                 bundle,_=store.get(ref_key)
@@ -262,8 +312,7 @@ def _calculate(store,source,stock,ctx):
             except Exception as exc:
                 row['reasons'].append('HISTORICAL_REFERENCE_FETCH_ERROR:'+type(exc).__name__)
         if (isinstance(store,Storage) and references and references.get('provider')=='BAOSTOCK_0.9.3'
-            and row['prefilter_status']=='UNKNOWN' and row.get('close_cny') is not None
-            and any(e['reason']=='REFERENCE_DAILY_VOLUME_CONFLICT' for e in row['limit_evidence'])):
+            and needs_historical_reference(row,('REFERENCE_DAILY_VOLUME_CONFLICT',),snapshot)):
             try:
                 corroboration_key=f'collector/chips/reference-corroboration/{as_of}/{stock["code"]}.json'
                 primary_references=references
@@ -280,7 +329,7 @@ def _calculate(store,source,stock,ctx):
                         references=corroborate_quantity(references,secondary,lines)
                         row=prefilter(screen_stock,lines,days,state['pools'],state.get('actual_limits'),references,state.get('closing_pools'))
                         break
-                if row['prefilter_status']=='UNKNOWN' and any(e['reason']=='REFERENCE_DAILY_VOLUME_CONFLICT' for e in row['limit_evidence']):
+                if needs_historical_reference(row,('REFERENCE_DAILY_VOLUME_CONFLICT',),snapshot):
                     if bundle is None:
                         bundle=fetch_reference(source,stock,days,provider='SOHU_REPORTED_DAILY_CHANGE')
                         own();store.put(corroboration_key,bundle,new=True,compressed=True)
@@ -406,7 +455,7 @@ def _calculate(store,source,stock,ctx):
                 row=previous['screening_row']
                 screen_stock={**stock,'reference_close_verified':cached.get('_source_provider')!='THS_UNADJUSTED',
                     'confirmed_no_trade_sessions':cached.get('_confirmed_no_trade_sessions',[])}
-                row.update(evaluate(screen_stock,cached['_source_history']))
+                row.update(evaluate(screen_stock,cached['_source_history'],previous.get('snapshots',{}).get(as_of)))
                 if references:previous['historical_limit_reference']=references
                 previous.update(dataset_id=dataset,recorded_at=now(),reused_from_generation=previous_slot,
                     calculation_execution_identity=previous.get('calculation_execution_identity',previous['execution_identity']),
@@ -468,7 +517,8 @@ def _calculate(store,source,stock,ctx):
         row,value=frame(stock,raw,receipt,days,state['pools'],dataset,state.get('actual_limits'),model_cache,references,state.get('closing_pools'))
         decoded_screen=json.loads(raw)
         row.update(evaluate({**stock,'reference_close_verified':receipt.get('provider')!='THS_UNADJUSTED',
-            'confirmed_no_trade_sessions':decoded_screen.get('confirmed_no_trade_sessions',[])},decoded_screen['data']['klines']))
+            'confirmed_no_trade_sessions':decoded_screen.get('confirmed_no_trade_sessions',[])},decoded_screen['data']['klines'],
+            value.get('snapshots',{}).get(as_of)))
         if references:value['historical_limit_reference']=references
         final_wrapper=None
         if (row['chip_status']=='MISSING' and receipt.get('provider')=='THS_UNADJUSTED'
@@ -620,7 +670,10 @@ def run(store,*,as_of,max_minutes=285,workers=4):
                 except Exception as exc:
                     stocks,universe_receipts=shared_universe(store,as_of,source)
                     universe_receipts[0]['em_refresh_error']=type(exc).__name__
-            days=last_ten(as_of);pools,pool_receipts=source.pools(days)
+            days=last_ten(as_of)
+            stocks,listing_notes=restore_listing_context(store,stocks,days,as_of)
+            universe_receipts+=listing_notes
+            pools,pool_receipts=source.pools(days)
             for day in days:
                 pool_key=f'collector/chips/pools/{day}.json'
                 cached_pool,pool_etag=store.get(pool_key)

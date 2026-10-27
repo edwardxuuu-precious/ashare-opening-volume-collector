@@ -228,6 +228,37 @@ def judge_snapshots(snapshots, baseline_date, required, *, first_limit_up_date):
     return summary, evidence
 
 
+def _reference_no_trade(reference_evidence, security_id, as_of):
+    """Accept only explicit, dated BaoStock suspension rows from checked evidence."""
+    reference_evidence=reference_evidence or {}
+    digest=reference_evidence.get('source_sha256')
+    if (reference_evidence.get('provider')!='BAOSTOCK_0.9.3'
+        or not isinstance(digest,str) or len(digest)!=64
+        or any(c not in '0123456789abcdef' for c in digest)
+        or len(security_id)!=6 or not security_id.isdigit()
+        or not security_id.startswith(('0','3','6'))):
+        return set()
+    symbol=('sh.' if security_id.startswith('6') else 'sz.')+security_id
+    result=set()
+    rows=reference_evidence.get('rows',{})
+    if not isinstance(rows,dict):return result
+    for day,row in rows.items():
+        try:
+            if (not isinstance(row,dict) or row.get('tradestatus')!='0'
+                or row.get('date')!=day or row.get('code')!=symbol
+                or row.get('adjustflag')!='3' or day>as_of or sessions(day,day)!=[day]):
+                continue
+            quantities=[row.get(k) for k in ('volume','amount')]
+            if 'turn' in row:quantities.append(row['turn'])
+            if any(not isinstance(value,str) or (value.strip() and
+                (not Decimal(value).is_finite() or Decimal(value)!=0)) for value in quantities):
+                continue
+            result.add(day)
+        except (TypeError,ValueError,ArithmeticError):
+            continue
+    return result
+
+
 def classify(row, history, days, *, security_id, no_trade=(), reference_evidence=None,
              actual_limits=None, expected_current=None, incomparable=False):
     """Build the common-window daily-close comparisons from existing inputs."""
@@ -264,9 +295,14 @@ def classify(row, history, days, *, security_id, no_trade=(), reference_evidence
             raise InputError('HISTORY_ORDER_INVALID')
         observed = {b.source_date: b for b in bars}
         no_trade = set(no_trade)
+        no_trade.update(_reference_no_trade(reference_evidence,security_id,days[-1]))
         targets=[baseline]+required
         conflicts={}
-        for day in targets:
+        # The observed candle used to carry a missing baseline must not itself
+        # contradict a no-trade reference just before the comparison period.
+        carry_start=max((day for day in observed if day<=baseline),default=baseline)
+        conflict_days=set(targets)|{day for day in no_trade if carry_start<=day<=days[-1]}
+        for day in sorted(conflict_days):
             reference=(reference_evidence or {}).get('rows',{}).get(day,{})
             quote=(actual_limits or {}).get(day,{}).get(security_id,{})
             if ((day in observed and (reference.get('tradestatus')=='0' or day in no_trade))
@@ -319,6 +355,13 @@ def classify(row, history, days, *, security_id, no_trade=(), reference_evidence
                 anchors[day] = day
                 continue
             prior = max((d for d in observed if d < day), default=None)
+            if prior in conflicts:
+                if day==baseline:
+                    summary=empty(conflicts[prior])
+                    summary.update(baseline_date=baseline,first_limit_up_date=first,required_sessions=len(required))
+                    return summary,None
+                missing_from=day
+                continue
             if day not in trusted_no_trade or not prior or not (set(sessions(prior, day))-set(observed)) <= trusted_no_trade:
                 if day == baseline:
                     summary = empty('BASELINE_NOT_AVAILABLE')

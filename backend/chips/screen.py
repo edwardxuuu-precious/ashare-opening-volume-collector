@@ -84,9 +84,12 @@ def closing_limit_state(stock, fields, pool, actual=None, closing=None):
                 and Decimal(actual['reference_close'])>0 and (not reference_verified or Decimal(actual['reference_close'])==reference)):
                 return ('PASS' if close==upper else 'FAIL'),'VENDOR_ACTUAL_UPPER_LIMIT_MATCHED_DAILY_BAR'
         if closing and closing.get('date')==day:
-            if (Decimal(closing['close'])==close and reference_verified
-                and abs(Decimal(closing['pct'])-Decimal(fields[8]))<=Decimal('.015')
+            if (Decimal(closing['close'])==close
                 and abs(Decimal(closing['turnover_percent'])-Decimal(fields[10]))<=Decimal('.02')):
+                if not reference_verified:
+                    return 'UNKNOWN','INCLUSIVE_LIMIT_POOL_REFERENCE_CLOSE_NOT_VERIFIED'
+                if abs(Decimal(closing['pct'])-Decimal(fields[8]))>Decimal('.015'):
+                    return 'UNKNOWN','INCLUSIVE_LIMIT_POOL_DAILY_FIELDS_CONFLICT'
                 return 'PASS','INCLUSIVE_CLOSING_LIMIT_POOL_MATCHED_CLOSE_REFERENCE_PERCENT_AND_TURNOVER'
             return 'UNKNOWN','INCLUSIVE_LIMIT_POOL_DAILY_FIELDS_CONFLICT'
         hit=(pool or {}).get(code)

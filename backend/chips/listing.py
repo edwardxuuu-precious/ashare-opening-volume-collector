@@ -8,9 +8,49 @@ from datetime import datetime
 from urllib.parse import urlencode
 
 
+ARCHIVED_LISTING_SCOPE = 'LISTING_DATE_ONLY_NOT_CURRENT_MEMBERSHIP'
+ARCHIVED_FACT_CHECKSUM = 'SHA256_JSON_UTF8_ENSURE_ASCII_FALSE_COMPACT_SORT_KEYS_WITHOUT_SHA256'
+
+
+def _sha256(value, *, sort_keys=True):
+    return hashlib.sha256(json.dumps(value,ensure_ascii=False,sort_keys=sort_keys,
+        separators=(',',':')).encode()).hexdigest()
+
+
+def _valid_sha256(value):
+    return isinstance(value,str) and len(value)==64 and all(c in '0123456789abcdef' for c in value)
+
+
+def _date(value):
+    return isinstance(value,str) and datetime.strptime(value,'%Y-%m-%d').date().isoformat()==value
+
+
+def _trusted_archived_listing(stock, evidence, as_of):
+    try:
+        listed=stock.get('listed');source_as_of=evidence.get('source_as_of');adopted=evidence.get('as_of')
+        code=stock.get('code')
+        if (not isinstance(code,str) or len(code)!=6 or not code.isdigit()
+            or evidence.get('security_id')!=code or evidence.get('name')!=stock.get('name')
+            or not stock.get('name') or evidence.get('listed')!=listed
+            or not all(_date(day) for day in (listed,source_as_of,adopted))
+            or not listed<=source_as_of<adopted or (as_of is not None and adopted!=as_of)
+            or evidence.get('source_key')!=f'collector/chips/universe-verified/{source_as_of}.json'
+            or evidence.get('fact_scope')!=ARCHIVED_LISTING_SCOPE
+            or evidence.get('sha256_basis')!=ARCHIVED_FACT_CHECKSUM
+            or evidence.get('current_membership_verified') is not False
+            or not all(_valid_sha256(evidence.get(k)) for k in ('source_bundle_sha256','source_stocks_sha256'))
+            or evidence.get('sha256')!=_sha256({k:v for k,v in evidence.items() if k!='sha256'})):
+            return None
+        return listed
+    except (TypeError,ValueError):
+        return None
+
+
 def trusted_listing(stock, as_of=None):
     """Distinguish an official dated listing fact from a vendor-reported field."""
     evidence=stock.get('listing_evidence') or {}
+    if evidence.get('provider')=='ARCHIVED_OFFICIAL_LISTING_FACT':
+        return _trusted_archived_listing(stock,evidence,as_of)
     if (evidence.get('security_id')!=stock.get('code') or evidence.get('listed')!=stock.get('listed')
         or evidence.get('provider') not in ('SSE_CURRENT_LIST','SZSE_CURRENT_LIST','OFFICIAL_CURRENT_LIST_RECONCILIATION')
         or len(evidence.get('sha256',''))!=64
@@ -46,6 +86,52 @@ def verified_current(bundle, stocks, as_of):
     verified=[{**row,'listing_evidence':{'security_id':row['code'],'listed':row['listed'],
         'provider':'OFFICIAL_CURRENT_LIST_RECONCILIATION','sha256':bundle['stocks_sha256'],'as_of':as_of}} for row in rows]
     return verified,receipt
+
+
+def restore_archived_listing_facts(stocks, bundle, as_of, source_key):
+    """Carry an already known listing date, never archived current membership."""
+    source_as_of=(bundle or {}).get('as_of')
+    try:
+        dated=all(_date(day) for day in (source_as_of,as_of))
+    except (TypeError,ValueError):
+        dated=False
+    if (not dated or source_as_of>=as_of
+        or source_key!=f'collector/chips/universe-verified/{source_as_of}.json'):
+        raise ValueError('ARCHIVED_LISTING_SOURCE_DATE_OR_KEY_INVALID')
+    # Validate the donor's own exact dated set, hash and all three market sources.
+    verified=verified_current(bundle,bundle.get('stocks',[]),source_as_of)
+    if not verified:
+        raise ValueError('ARCHIVED_LISTING_SOURCE_UNVERIFIED')
+    source_rows={row['code']:row for row in verified[0]}
+    # Match the archived bundle writer's compact UTF-8, preserving field order.
+    bundle_hash=_sha256(bundle,sort_keys=False)
+    restored=[];count=0
+    for stock in stocks:
+        if trusted_listing(stock,as_of):
+            restored.append(stock)
+            continue
+        fact=source_rows.get(stock['code'])
+        if fact is None:
+            restored.append(stock)
+            continue
+        if stock.get('name')!=fact['name']:
+            raise ValueError('ARCHIVED_LISTING_SECURITY_NAME_CONFLICT')
+        if stock.get('listed') is not None and stock['listed']!=fact['listed']:
+            raise ValueError('ARCHIVED_LISTING_DATE_CONFLICT')
+        evidence={'provider':'ARCHIVED_OFFICIAL_LISTING_FACT','security_id':stock['code'],
+            'name':stock['name'],'listed':fact['listed'],'as_of':as_of,
+            'source_as_of':source_as_of,'source_key':source_key,
+            'source_bundle_sha256':bundle_hash,'source_stocks_sha256':bundle['stocks_sha256'],
+            'fact_scope':ARCHIVED_LISTING_SCOPE,'current_membership_verified':False,
+            'sha256_basis':ARCHIVED_FACT_CHECKSUM}
+        evidence['sha256']=_sha256(evidence)
+        restored.append({**stock,'listed':fact['listed'],'listing_evidence':evidence})
+        count+=1
+    receipt={'provider':'ARCHIVED_OFFICIAL_LISTING_FACTS','as_of':as_of,'restored_count':count,
+        'source_as_of':source_as_of,'source_key':source_key,'source_bundle_sha256':bundle_hash,
+        'source_stocks_sha256':bundle['stocks_sha256'],'fact_scope':ARCHIVED_LISTING_SCOPE,
+        'current_membership_verified':False}
+    return restored,receipt
 
 
 def sh_sz(source, as_of):
