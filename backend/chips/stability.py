@@ -259,7 +259,7 @@ def _reference_no_trade(reference_evidence, security_id, as_of):
     if not isinstance(rows,dict):return result
     for day,row in rows.items():
         try:
-            if (not isinstance(row,dict) or row.get('tradestatus')!='0'
+            if (not isinstance(row,dict) or row.get('archive_conflict') or row.get('tradestatus')!='0'
                 or row.get('date')!=day or row.get('code')!=symbol
                 or row.get('adjustflag')!='3' or day>as_of or sessions(day,day)!=[day]):
                 continue
@@ -317,9 +317,14 @@ def classify(row, history, days, *, security_id, no_trade=(), reference_evidence
         # contradict a no-trade reference just before the comparison period.
         carry_start=max((day for day in observed if day<=baseline),default=baseline)
         conflict_days=set(targets)|{day for day in no_trade if carry_start<=day<=days[-1]}
+        conflict_days.update(day for day,reference in (reference_evidence or {}).get('rows',{}).items()
+            if reference.get('archive_conflict') and carry_start<=day<=days[-1])
         for day in sorted(conflict_days):
             reference=(reference_evidence or {}).get('rows',{}).get(day,{})
             quote=(actual_limits or {}).get(day,{}).get(security_id,{})
+            if reference.get('archive_conflict'):
+                conflicts[day]='DATA_REFERENCE_ARCHIVE_CONFLICT'
+                continue
             if ((day in observed and (reference.get('tradestatus')=='0' or day in no_trade))
                 or (day not in observed and day in no_trade and reference.get('tradestatus')=='1')):
                 conflicts[day]='DATA_TRADE_STATUS_CONFLICT'

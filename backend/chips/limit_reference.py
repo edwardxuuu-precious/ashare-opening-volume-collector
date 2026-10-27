@@ -8,14 +8,26 @@ import base64
 import hashlib
 import json
 import urllib.parse
+from copy import deepcopy
 from datetime import datetime,timezone,timedelta
 from decimal import Decimal as D
 from .baostock_history import FIELDS
 
 
-def prepared(bundle, code, days):
+def _bind_rows(evidence,bundle,days,private_key):
+    if private_key is None:return evidence
+    receipt=bundle['receipt']
+    identity={'provider':receipt['provider'],'source_sha256':receipt['sha256'],
+        'source_url':receipt['url'],'ingested_at':receipt['ingested_at'],
+        'source_as_of':bundle['as_of'],'official_sessions':list(days),'private_source_key':private_key,
+        'bundle_canonical_sha256':hashlib.sha256(json.dumps(bundle,ensure_ascii=False,sort_keys=True,separators=(',',':')).encode()).hexdigest()}
+    evidence['row_sources']={day:[deepcopy(identity)] for day in evidence['rows']}
+    return evidence
+
+
+def prepared(bundle, code, days, *, private_key=None):
     if bundle.get('schema')=='stock.chips.limit.sohu.prepared.v1':
-        return sohu_prepared(bundle,code,days)
+        return _bind_rows(sohu_prepared(bundle,code,days),bundle,days,private_key)
     if (bundle.get('schema')!='stock.chips.limit.reference.prepared.v1'
         or bundle.get('security_id')!=code or bundle.get('official_sessions')!=days
         or bundle.get('as_of')!=days[-1] or bundle.get('published') is not False
@@ -54,9 +66,88 @@ def prepared(bundle, code, days):
                 raise ValueError('REFERENCE_PERCENT_CONFLICT')
         rows[day]=r
     if not rows:raise ValueError('REFERENCE_ROWS_EMPTY')
-    return {'provider':receipt['provider'],'source_sha256':receipt['sha256'],
+    evidence={'provider':receipt['provider'],'source_sha256':receipt['sha256'],
         'source_url':receipt['url'],'ingested_at':receipt['ingested_at'],
         'historical_PIT_authenticated':False,'rows':rows}
+    return _bind_rows(evidence,bundle,days,private_key)
+
+
+def archived_reference(bundle,code,days,*,expected_as_of,private_key):
+    """Revalidate an original BaoStock request; project only observed overlap."""
+    from .calendar import last_ten
+    if (not isinstance(days,list) or len(days)!=10 or days!=last_ten(days[-1])
+        or expected_as_of not in days[:-1]
+        or bundle.get('schema')!='stock.chips.limit.reference.prepared.v1'
+        or bundle.get('as_of')!=expected_as_of
+        or private_key!=f'collector/chips/reference-daily/{expected_as_of}/{code}.json'):
+        raise ValueError('ARCHIVED_REFERENCE_DATE_OR_SCHEMA_INVALID')
+    original_days=last_ten(expected_as_of)
+    evidence=prepared(bundle,code,original_days,private_key=private_key)
+    rows={day:row for day,row in evidence['rows'].items() if day in days}
+    if not rows:raise ValueError('ARCHIVED_REFERENCE_OVERLAP_EMPTY')
+    return {**evidence,'rows':rows,'row_sources':{day:evidence['row_sources'][day] for day in rows},
+        'archived_request_as_of':expected_as_of,'archived_official_sessions':original_days,
+        'current_overlap_sessions':sorted(rows),'private_archive_key':private_key,
+        'newer_session_absence_is_not_evidence':True}
+
+
+def _same_reference_row(left,right):
+    """Compare evidence values, allowing only equivalent decimal spellings."""
+    categorical=('date','code','adjustflag','tradestatus','isST')
+    numeric=('open','high','low','close','preclose','volume','amount','turn','pctChg')
+    for field in categorical:
+        if field in left and field in right and left[field]!=right[field]:return False
+    for field in numeric:
+        if field not in left or field not in right:continue
+        a,b=left[field],right[field]
+        if a==b:continue
+        if not isinstance(a,str) or not isinstance(b,str) or not a.strip() or not b.strip():return False
+        try:
+            x,y=D(a),D(b)
+            if not x.is_finite() or not y.is_finite() or x!=y:return False
+        except ArithmeticError:return False
+    return True
+
+
+def merge_reference_evidence(current,additional):
+    """Fill missing dates, retain current values, and expose every disagreement.
+
+    Top-level identity continues to describe its original primary body. Each
+    added date carries its own original request/hash/key; the aggregate trace
+    is explicitly separate from a vendor raw-body hash.
+    """
+    if not additional:return deepcopy(current)
+    result=deepcopy(current) if current else {k:deepcopy(v) for k,v in additional[0].items() if k not in ('rows','row_sources')}
+    rows=result.setdefault('rows',{})
+    sources=result.setdefault('row_sources',{})
+    conflicts=result.setdefault('archive_conflicts',{})
+    for day in rows:
+        sources.setdefault(day,[{'identity_scope':'EXISTING_CURRENT_ROW_PROVENANCE_NOT_SUPPLIED'}])
+    for candidate in additional:
+        for day,row in candidate['rows'].items():
+            incoming=deepcopy(candidate.get('row_sources',{}).get(day,[]))
+            if not incoming:
+                if candidate.get('private_archive_key'):raise ValueError('REFERENCE_ROW_LINEAGE_REQUIRED')
+                # Older already-prepared current references did not retain a
+                # per-row locator. Do not invent its original request identity.
+                incoming=[{'identity_scope':'EXISTING_CURRENT_ROW_PROVENANCE_NOT_SUPPLIED'}]
+            if day not in rows:
+                rows[day]=deepcopy(row);sources[day]=incoming
+                continue
+            existing=(result.get('primary_rows') or {}).get(day,rows[day])
+            if not _same_reference_row(existing,row):
+                conflicts.setdefault(day,[]).append({'existing_row':{k:v for k,v in existing.items() if k!='archive_conflict'},
+                    'incoming_row':deepcopy(row),'incoming_sources':incoming})
+                rows[day]['archive_conflict']=True
+            known={json.dumps(source,sort_keys=True,separators=(',',':')) for source in sources[day]}
+            for source in incoming:
+                key=json.dumps(source,sort_keys=True,separators=(',',':'))
+                if key not in known:sources[day].append(source);known.add(key)
+    result['source_sha256_scope']='PRIMARY_REFERENCE_BODY_ONLY;SEE_ROW_SOURCES'
+    result['reference_trace_schema']='stock.chips.reference-lineage.v1'
+    trace={'rows':rows,'row_sources':sources,'archive_conflicts':conflicts}
+    result['reference_trace_sha256']=hashlib.sha256(json.dumps(trace,ensure_ascii=False,sort_keys=True,separators=(',',':')).encode()).hexdigest()
+    return result
 
 
 def sohu_prepared(bundle,code,days):
@@ -212,6 +303,7 @@ def corroborate_quantity(primary,secondary,lines):
 
 def matched(reference, fields):
     """Return a conflict, explicit no-trade status, or a matched reference."""
+    if reference.get('archive_conflict'):return 'REFERENCE_ARCHIVE_CONFLICT'
     if reference['tradestatus']=='0':
         # A source trade candle with positive volume cannot be silently removed.
         if fields and (D(fields[5])!=0 or D(fields[6])!=0):

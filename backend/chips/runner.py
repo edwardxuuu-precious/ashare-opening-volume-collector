@@ -21,7 +21,8 @@ from .current_quote import collect as collect_final_quotes,overlay as overlay_fi
 from .listing import trusted_listing,restore_archived_listing_facts
 from .display import display_frame,response_upper_bound,MAX_BROWSER_PROFILE_BINS
 from .history import archive_keys
-from .limit_reference import prepared as reference_prepared,closing_pool,fetch_closing_pool,fetch_reference,corroborate_quantity,archived_corroboration
+from .suspension_evidence import extract as extract_saved_suspension,overlay as overlay_saved_suspension
+from .limit_reference import prepared as reference_prepared,closing_pool,fetch_closing_pool,fetch_reference,corroborate_quantity,archived_corroboration,archived_reference,merge_reference_evidence
 
 def listing_context(stock):
     return {'listed':stock.get('listed'),'evidence':stock.get('listing_evidence')}
@@ -86,9 +87,11 @@ def implementation_identity():
     """Bind resumed batches and exact model caches to their actual source."""
     root=Path(__file__).parent
     hashes={name:hashlib.sha256((root/name).read_text(encoding='utf-8').replace('\r\n','\n').encode()).hexdigest()
-        for name in ('runner.py','source.py','baostock_history.py','ths_history.py','listing.py','display.py','model.py','eastmoney_model.py','ohlc4_input.py','current_quote.py','screen.py','calendar.py','limit_reference.py','golden.py','stability.py')}
+        for name in ('runner.py','source.py','baostock_history.py','ths_history.py','listing.py','display.py','model.py','eastmoney_model.py','ohlc4_input.py','current_quote.py','screen.py','calendar.py','limit_reference.py','golden.py','stability.py','suspension_evidence.py')}
     transport=root.parent/'scripts'/'baostock_source.py'
     hashes['baostock_source.py']=hashlib.sha256(transport.read_text(encoding='utf-8').replace('\r\n','\n').encode()).hexdigest()
+    status_source=root.parent/'scripts'/'exchange_status.py'
+    hashes['exchange_status.py']=hashlib.sha256(status_source.read_text(encoding='utf-8').replace('\r\n','\n').encode()).hexdigest()
     adapter_hash=hashlib.sha256(encoded({k:hashes[k] for k in ('source.py','baostock_history.py','ths_history.py','baostock_source.py')})).hexdigest()
     model_hash=hashlib.sha256(encoded({k:hashes[k] for k in ('model.py','eastmoney_model.py','ohlc4_input.py')})).hexdigest()
     return {'sha256':hashlib.sha256(encoded(hashes)).hexdigest(),'files':hashes,'model_implementation_sha256':model_hash,
@@ -97,6 +100,27 @@ def implementation_identity():
 def compatible_state(state,identity):
     return (state.get('execution_identity')==identity and state.get('source_version')==Source.VERSION
         and state.get('active_slot')==state.get('dataset_id') and len(state.get('dataset_id',''))==16)
+
+def compatible_suspension_evidence(previous,identity):
+    if not previous.get('source_audit',{}).get('official_no_trade_evidence'):return True
+    old=previous.get('execution_identity',{}).get('files',{})
+    current=identity.get('files',{})
+    return all(old.get(name) and old[name]==current.get(name)
+        for name in ('suspension_evidence.py','exchange_status.py'))
+
+def overlay_quote_with_saved_status(raw,receipt,stock,as_of,quote,*,require_final_quote=False):
+    decoded=json.loads(raw)
+    official=decoded.get('official_no_trade_evidence')
+    if official:
+        verified,_=overlay_saved_suspension(raw,receipt,stock,as_of,[])
+        if verified!=raw:raise ValueError('OFFICIAL_NO_TRADE_DERIVED_DATES_CONFLICT')
+    merged,updated=overlay_final_quote(raw,receipt,stock,as_of,quote,require_final_quote=require_final_quote)
+    if (official and as_of in decoded.get('confirmed_no_trade_sessions',[])
+        and updated.get('unconfirmed_no_trade_placeholder_date')==as_of):
+        # This date has an independently checked exchange record. The generic
+        # THS zero-placeholder removal must not erase that checked status.
+        return raw,receipt
+    return merged,updated
 
 def compatible_ready_model(previous,identity):
     """One exact source migration, replayed against every stored snapshot.
@@ -179,6 +203,24 @@ class Storage:
         if match: args['IfMatch']=match
         if new: args['IfNoneMatch']='*'
         return self.s3.put_object(**args)['ETag']
+
+    def get_bounded(self,key,*,max_bytes,max_decoded_bytes):
+        """Read a small published input without applying a bound to checkpoints."""
+        import io
+        from botocore.exceptions import ClientError
+        try:
+            response=self.s3.get_object(Bucket=self.bucket,Key=key)
+            try:raw=response['Body'].read(max_bytes+1)
+            finally:response['Body'].close()
+            if len(raw)>max_bytes:raise ValueError('PUBLISHED_INPUT_ENCODED_BOUND')
+            if raw[:2]==b'\x1f\x8b':
+                with gzip.GzipFile(fileobj=io.BytesIO(raw)) as stream:
+                    raw=stream.read(max_decoded_bytes+1)
+            if len(raw)>max_decoded_bytes:raise ValueError('PUBLISHED_INPUT_DECODED_BOUND')
+            return json.loads(raw),response['ETag']
+        except ClientError as exc:
+            if exc.response['Error']['Code'] in ('NoSuchKey','404'):return None,None
+            raise
 
 
 def refresh_daily_quotes(store,source,stocks,as_of,current,receipts=()):
@@ -294,6 +336,9 @@ def session_snapshots(bars,targets,*,security_id,no_trade,state=None):
 
 def frame(stock,raw,receipt,days,pools,dataset,actual_limits=None,model_state=None,reference_evidence=None,closing_pools=None):
     decoded=json.loads(raw)
+    if decoded.get('official_no_trade_evidence'):
+        verified,_=overlay_saved_suspension(raw,receipt,stock,days[-1],[])
+        if verified!=raw:raise ValueError('OFFICIAL_NO_TRADE_DERIVED_DATES_CONFLICT')
     lines=(decoded.get('data') or {}).get('klines') or []
     no_trade=decoded.get('confirmed_no_trade_sessions',[])
     screen_stock={**stock,'reference_close_verified':receipt.get('provider')!='THS_UNADJUSTED',
@@ -329,6 +374,9 @@ def frame(stock,raw,receipt,days,pools,dataset,actual_limits=None,model_state=No
                 amount_unit='CNY',adjustment='00_UNADJUSTED',original_source_preserved=True,
                 original_sdk_bundle_sha256=hashlib.sha256(raw).hexdigest(),
                 reference_close_method=json.loads(raw).get('reference_close_method'))
+        if decoded.get('official_no_trade_evidence'):
+            audit.update(official_no_trade_evidence=decoded['official_no_trade_evidence'],
+                confirmed_no_trade_sessions=no_trade)
         result['history']=[{'date':b.source_date,'open':str(b.open),'high':str(b.high),'low':str(b.low),
             'close':str(b.close),'volume_shares':str(b.volume_shares),'amount_cny':str(b.amount_cny),
             'turnover_percent':str(b.turnover_pct)} for b in bars[-500:]]
@@ -387,16 +435,40 @@ def _calculate(store,source,stock,ctx):
         row=prefilter(screen_stock,lines,days,state['pools'],state.get('actual_limits'),references,state.get('closing_pools'))
         if (isinstance(store,Storage) and needs_historical_reference(row,
             ('HISTORICAL_REFERENCE_CLOSE_NOT_VERIFIED','INCLUSIVE_LIMIT_POOL_REFERENCE_CLOSE_NOT_VERIFIED'),snapshot)):
+            rejected_archives=[]
             try:
                 ref_key=f'collector/chips/reference-daily/{as_of}/{stock["code"]}.json'
                 bundle,_=store.get(ref_key)
-                if bundle is None:
-                    bundle=fetch_reference(source,stock,days)
-                    own();store.put(ref_key,bundle,new=True,compressed=True)
-                references=reference_prepared(bundle,stock['code'],days)
-                row=prefilter(screen_stock,lines,days,state['pools'],state.get('actual_limits'),references,state.get('closing_pools'))
+                if bundle is not None:
+                    current=reference_prepared(bundle,stock['code'],days,private_key=ref_key)
+                    references=merge_reference_evidence(references,[current])
+                    row=prefilter(screen_stock,lines,days,state['pools'],state.get('actual_limits'),references,state.get('closing_pools'))
+                if needs_historical_reference(row,
+                    ('HISTORICAL_REFERENCE_CLOSE_NOT_VERIFIED','INCLUSIVE_LIMIT_POOL_REFERENCE_CLOSE_NOT_VERIFIED'),snapshot):
+                    archives=[]
+                    for prior_day in reversed(days[:-1]):
+                        prior_key=f'collector/chips/reference-daily/{prior_day}/{stock["code"]}.json'
+                        prior,_=store.get(prior_key)
+                        if prior is None:continue
+                        try:
+                            archives.append(archived_reference(prior,stock['code'],days,
+                                expected_as_of=prior_day,private_key=prior_key))
+                        except (ValueError,KeyError,ArithmeticError) as exc:
+                            rejected_archives.append('HISTORICAL_REFERENCE_ARCHIVE_REJECTED:'+type(exc).__name__)
+                    if archives:
+                        references=merge_reference_evidence(references,archives)
+                        row=prefilter(screen_stock,lines,days,state['pools'],state.get('actual_limits'),references,state.get('closing_pools'))
+                if needs_historical_reference(row,
+                    ('HISTORICAL_REFERENCE_CLOSE_NOT_VERIFIED','INCLUSIVE_LIMIT_POOL_REFERENCE_CLOSE_NOT_VERIFIED'),snapshot):
+                    if bundle is None:
+                        bundle=fetch_reference(source,stock,days)
+                        own();store.put(ref_key,bundle,new=True,compressed=True)
+                    current=reference_prepared(bundle,stock['code'],days,private_key=ref_key)
+                    references=merge_reference_evidence(references,[current])
+                    row=prefilter(screen_stock,lines,days,state['pools'],state.get('actual_limits'),references,state.get('closing_pools'))
             except Exception as exc:
                 row['reasons'].append('HISTORICAL_REFERENCE_FETCH_ERROR:'+type(exc).__name__)
+            row['reasons'].extend(rejected_archives)
         if (isinstance(store,Storage) and references and references.get('provider')=='BAOSTOCK_0.9.3'
             and needs_historical_reference(row,('REFERENCE_DAILY_VOLUME_CONFLICT',),snapshot)):
             try:
@@ -425,6 +497,26 @@ def _calculate(store,source,stock,ctx):
             except Exception as exc:
                 row['reasons'].append('REFERENCE_QUANTITY_CORROBORATION_ERROR:'+type(exc).__name__)
         return row
+    suspension_input_keys=[]
+    def saved_suspension(day):
+        key=f'collector/chips/suspension-inputs/{dataset}/{stock["code"]}/{day}.json'
+        if isinstance(store,Storage):
+            saved,_=store.get_bounded(key,max_bytes=1000000,max_decoded_bytes=2000000)
+        else:saved,_=store.get(key)
+        if saved is not None:
+            if saved.get('private_archive_key')!=key:raise ValueError('SUSPENSION_ARCHIVE_KEY_CONFLICT')
+            suspension_input_keys.append(key)
+            return saved['bundle']
+        source_key=f'data/{day}.json'
+        if isinstance(store,Storage):
+            publication,etag=store.get_bounded(source_key,max_bytes=6000000,max_decoded_bytes=20000000)
+        else:publication,etag=store.get(source_key)
+        if publication is None:return None
+        bundle=extract_saved_suspension(publication,stock['code'],source_key,source_etag=etag)
+        if bundle is None:return None
+        own();store.put(key,{'private_archive_key':key,'bundle':bundle},new=True,compressed=True)
+        suspension_input_keys.append(key)
+        return bundle
     def preserve_archive(value,cached=None):
         """Bind reused frames to verified final bytes before their lineage changes."""
         expected=value.get('source',{}).get('sha256')
@@ -531,7 +623,9 @@ def _calculate(store,source,stock,ctx):
             and previous.get('source',{}).get('current_quote_sha256')
                 ==state.get('actual_limits',{}).get(as_of,{}).get(stock['code'],{}).get('raw_quote_sha256')
             and (not ctx.get('require_current_final_quote') or previous.get('source',{}).get('provider')!='THS_UNADJUSTED'
-                or previous.get('source',{}).get('current_quote_sha256'))
+                or previous.get('source',{}).get('current_quote_sha256')
+                or previous.get('source_audit',{}).get('official_no_trade_evidence'))
+            and compatible_suspension_evidence(previous,ctx.get('execution_identity',{}))
             and compatible_ready_model(previous,ctx.get('execution_identity',{}))):
             cached=preserve_archive(previous,cached)
             if cached is None:cached,_=store.get(f'collector/chips/model/{stock["code"]}.json')
@@ -575,7 +669,7 @@ def _calculate(store,source,stock,ctx):
             if hashlib.sha256(raw).hexdigest()!=receipt['sha256']: raise ValueError('RAW_HASH_MISMATCH')
             original_raw=raw
             original_raw_key=cached_key if same_session_cache else raw_key
-            raw,receipt=overlay_final_quote(raw,receipt,stock,as_of,state.get('actual_limits',{}).get(as_of,{}).get(stock['code']),require_final_quote=bool(ctx.get('require_current_final_quote')))
+            raw,receipt=overlay_quote_with_saved_status(raw,receipt,stock,as_of,state.get('actual_limits',{}).get(as_of,{}).get(stock['code']),require_final_quote=bool(ctx.get('require_current_final_quote')))
             if raw!=original_raw:
                 receipt['original_history_raw_key']=original_raw_key
                 raw_key=f'collector/chips/raw/{dataset}/{stock["code"]}-current-quote.json'
@@ -591,7 +685,7 @@ def _calculate(store,source,stock,ctx):
             if rejected:receipt['rejected_sources']=rejected
             own();store.put(raw_key,{'receipt':receipt,'raw_base64':base64.b64encode(raw).decode()},new=True,compressed=True)
             original_raw=raw;original_raw_key=raw_key
-            raw,receipt=overlay_final_quote(raw,receipt,stock,as_of,state.get('actual_limits',{}).get(as_of,{}).get(stock['code']),require_final_quote=bool(ctx.get('require_current_final_quote')))
+            raw,receipt=overlay_quote_with_saved_status(raw,receipt,stock,as_of,state.get('actual_limits',{}).get(as_of,{}).get(stock['code']),require_final_quote=bool(ctx.get('require_current_final_quote')))
             if raw!=original_raw:
                 receipt['original_history_raw_key']=original_raw_key
                 raw_key=f'collector/chips/raw/{dataset}/{stock["code"]}-current-quote.json'
@@ -606,6 +700,44 @@ def _calculate(store,source,stock,ctx):
             'confirmed_no_trade_sessions':decoded_screen.get('confirmed_no_trade_sessions',[])},decoded_screen['data']['klines'],
             value.get('snapshots',{}).get(as_of)))
         if references:value['historical_limit_reference']=references
+        if (row['chip_status']=='MISSING' and board(stock['code'])[0]!='BSE'
+            and any(reason.startswith('REQUESTED_SOURCE_DATES_MISSING:') for reason in value['reasons'])):
+            try:
+                bundle=saved_suspension(as_of)
+                bundles=[bundle] if bundle else []
+                repaired_raw,repaired_receipt=overlay_saved_suspension(raw,receipt,stock,as_of,bundles)
+                repaired=json.loads(repaired_raw)
+                observed={line.split(',')[0] for line in repaired['data']['klines']}
+                latest=max(observed)
+                missing=set(sessions(latest,as_of))-observed-set(repaired.get('confirmed_no_trade_sessions',[]))
+                # An independent previous-day single-session record can close
+                # the remaining gap; today's interval is never extended.
+                if days[-2] in missing:
+                    prior=saved_suspension(days[-2])
+                    if prior:
+                        bundles.append(prior)
+                        repaired_raw,repaired_receipt=overlay_saved_suspension(raw,receipt,stock,as_of,bundles)
+                if repaired_raw!=raw:
+                    repaired_receipt['official_no_trade_private_input_keys']=suspension_input_keys
+                    repaired_key=f'collector/chips/raw/{dataset}/{stock["code"]}-{repaired_receipt["sha256"][:16]}.json'
+                    wrapper={'receipt':repaired_receipt,'raw_base64':base64.b64encode(repaired_raw).decode()}
+                    existing,_=store.get(repaired_key)
+                    if existing is None:
+                        own();store.put(repaired_key,wrapper,new=True,compressed=True)
+                    elif existing!=wrapper:raise _ArchiveConflict('IMMUTABLE_SUSPENSION_OVERLAY_CONFLICT')
+                    row,value=frame(stock,repaired_raw,repaired_receipt,days,state['pools'],dataset,
+                        state.get('actual_limits'),model_cache,references,state.get('closing_pools'))
+                    raw,receipt,raw_key=repaired_raw,repaired_receipt,repaired_key
+                    repaired=json.loads(raw)
+                    row.update(evaluate({**stock,'reference_close_verified':receipt.get('provider')!='THS_UNADJUSTED',
+                        'confirmed_no_trade_sessions':repaired.get('confirmed_no_trade_sessions',[])},
+                        repaired['data']['klines'],value.get('snapshots',{}).get(as_of)))
+                    if references:value['historical_limit_reference']=references
+            except _ArchiveConflict:raise
+            except Exception as exc:
+                value['official_no_trade_input_error']={'error':type(exc).__name__,'detail':str(exc)[:200]}
+                reason='OFFICIAL_NO_TRADE_INPUT_REJECTED:'+str(exc)[:160]
+                value['reasons'].append(reason);row['reasons'].append(reason)
         final_wrapper=None
         if (row['chip_status']=='MISSING' and receipt.get('provider')=='THS_UNADJUSTED'
             and board(stock['code'])[0]!='BSE' and stock.get('listed')!=as_of
