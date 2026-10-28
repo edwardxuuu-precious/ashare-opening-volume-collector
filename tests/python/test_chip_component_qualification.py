@@ -18,27 +18,27 @@ class ComponentQualification(unittest.TestCase):
     def test_coarse_displacement_cannot_hide_exact_mass_failure(self):
         summary, proof = self.judge('17.99', '8.201')
         self.assertEqual(summary['status'], 'FAIL')
-        self.assertEqual(summary['max_shift_fraction'], None)
-        self.assertEqual(summary['shift_evaluated_sessions'], 0)
+        self.assertEqual(summary['max_shift_fraction'], '0')
+        self.assertEqual(summary['shift_evaluated_sessions'], 2)
         self.assertEqual(summary['mass_evaluated_sessions'], 2)
-        self.assertIn('NATIVE_RESOLUTION_INSUFFICIENT', summary['reasons'])
+        self.assertNotIn('NATIVE_RESOLUTION_INSUFFICIENT', summary['reasons'])
         self.assertIn('ANCHOR_BAND_MASS_DECREASED', summary['reasons'])
         for day in proof['daily']:
-            self.assertEqual(day['shift_status'], 'UNKNOWN')
+            self.assertEqual(day['shift_status'], 'PASS')
             self.assertEqual(day['mass_status'], 'FAIL')
-            self.assertEqual(day['top_centers'], [])
+            self.assertEqual(day['top_centers'], ['110'])
             self.assertFalse(day['native_resolution_sufficient'])
 
-    def test_exact_ninety_percent_mass_does_not_resolve_displacement(self):
+    def test_exact_ninety_percent_mass_with_identical_region_passes(self):
         summary, proof = self.judge('18', '8.2')
-        self.assertEqual(summary['status'], 'UNKNOWN')
+        self.assertEqual(summary['status'], 'PASS')
         self.assertEqual(summary['min_mass_ratio'], '0.9')
         self.assertNotIn('ANCHOR_BAND_MASS_DECREASED', summary['reasons'])
-        self.assertEqual(proof['daily'][0]['status'], 'UNKNOWN')
+        self.assertEqual(proof['daily'][0]['status'], 'PASS')
 
-    def test_unchanged_coarse_distribution_cannot_generate_pass(self):
+    def test_unchanged_coarse_model_region_generates_exact_pass(self):
         summary, _ = self.judge('20', '8')
-        self.assertEqual(summary['status'], 'UNKNOWN')
+        self.assertEqual(summary['status'], 'PASS')
         self.assertEqual(summary['min_mass_ratio'], '1')
 
     def test_missing_later_day_does_not_erase_earlier_mass_failure(self):

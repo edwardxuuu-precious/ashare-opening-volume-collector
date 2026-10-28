@@ -24,10 +24,18 @@ POLICY_METADATA = {
     'approval_sha256': '4b3b865c968127332c40355f04c66a578c186311bc22fe97482da0727162e05f',
     'policy_known_at': '2026-10-25T12:02:40.551515+00:00',
     'known_at_basis': 'Current user approval observed during implementation; not a historical market-data clock',
+    'displacement_qualification': {
+        'version': 'EXACT_MODEL_TOP_REGION_IDENTITY_V1',
+        'source_id': 'USER-20261028-MODEL-REGION-IDENTITY',
+        'source_kind': 'CURRENT_USER_REQUEST_WITH_EXPLICIT_ENGINEERING_INTERPRETATION',
+        'known_at': '2026-10-28T06:59:31Z',
+        'scope': 'Identical complete modeled top regions have zero model displacement; not hidden-holder location precision',
+        'known_at_basis': 'Current 2026-10-28 request and implementation explanation; not historical market knowledge',
+    },
 }
 SHIFT, RETENTION, HEIGHT = Fraction(1, 100), Fraction(9, 10), Fraction(9, 10)
 MAX_CELLS = 20000
-COMPARISON_VERSION = 'uniform-halfstep.component-qualification.v3-bounds'
+COMPARISON_VERSION = 'uniform-halfstep.component-qualification.v4-model-identity'
 
 
 class InputError(ValueError):
@@ -248,26 +256,39 @@ def judge_snapshots(snapshots, baseline_date, required, *, first_limit_up_date):
                 summary['evaluated_sessions'] += 1
                 resolved = max(step, native_step) <= max_native_step
                 shift, current_top, day_audit = None, [], None
-                bounds, proven_movement = None, False
+                bounds, proven_movement, identical_region = None, False, False
+                model_intervals = None
+                shift_basis = None
                 if not resolved:
-                    unknown.append('NATIVE_RESOLUTION_INSUFFICIENT')
                     if step == native_step and [(a, b) for a, b, _ in original] == [(a, b) for a, b, _ in current]:
-                        bounded_top, _ = rebin(current, origin, step)
+                        bounded_top, bounded_audit = rebin(current, origin, step)
                         base_intervals = native_top_intervals(original, top)
                         current_intervals = native_top_intervals(current, bounded_top)
                         if base_intervals and current_intervals:
-                            bounds = relative_distance_bounds(base_intervals, current_intervals)
-                            proven_movement = bounds['lower_fraction'] > SHIFT
-                            proven_lower = bounds['lower_fraction'] if proven_lower is None else max(proven_lower, bounds['lower_fraction'])
-                            bound_evaluated += 1
-                            bounds.update(lower_fraction=text(bounds['lower_fraction']),
-                                          upper_fraction=text(bounds['upper_fraction'], upper=True),
-                                          nominal_center_fraction=text(bounds['nominal_center_fraction'], upper=True))
+                            identical_region = base_intervals == current_intervals and top == bounded_top
+                            if identical_region:
+                                shift = Fraction(0)
+                                maximum = shift if maximum is None else max(maximum, shift)
+                                current_top, day_audit = bounded_top, bounded_audit
+                                model_intervals = [[text(a), text(b)] for a, b in current_intervals]
+                                shift_basis = 'EXACT_MODEL_TOP_REGION_IDENTITY'
+                                shift_evaluated += 1
+                            else:
+                                bounds = relative_distance_bounds(base_intervals, current_intervals)
+                                proven_movement = bounds['lower_fraction'] > SHIFT
+                                proven_lower = bounds['lower_fraction'] if proven_lower is None else max(proven_lower, bounds['lower_fraction'])
+                                bound_evaluated += 1
+                                bounds.update(lower_fraction=text(bounds['lower_fraction']),
+                                              upper_fraction=text(bounds['upper_fraction'], upper=True),
+                                              nominal_center_fraction=text(bounds['nominal_center_fraction'], upper=True))
+                    if shift is None:
+                        unknown.append('NATIVE_RESOLUTION_INSUFFICIENT')
                 else:
                     try:
                         current_top, day_audit = rebin(current, origin, step)
                         shift = relative_distance(top, current_top)
                         maximum = shift if maximum is None else max(maximum, shift)
+                        shift_basis = 'QUALIFIED_COMPARISON_GRID_CENTERS'
                         shift_evaluated += 1
                     except ResourceBound:
                         unknown.append('COMPARISON_RESOURCE_BOUND')
@@ -281,6 +302,9 @@ def judge_snapshots(snapshots, baseline_date, required, *, first_limit_up_date):
                     'max_shift_fraction': text(shift, upper=True), 'min_mass_ratio': text(retention),
                     'shift_status': 'FAIL' if proven_movement else 'UNKNOWN' if shift is None else 'FAIL' if shift > SHIFT else 'PASS',
                     'displacement_bounds': bounds,
+                    'shift_basis': shift_basis,
+                    'exact_model_top_region_identity': identical_region,
+                    'model_top_region_intervals_cny': model_intervals,
                     'mass_status': 'FAIL' if retention < RETENTION else 'PASS',
                     'native_resolution_sufficient': resolved,
                     'native_step_cny': text(native_step), 'top_centers': [text(p) for p in current_top],

@@ -29,14 +29,14 @@ class NativeCellBounds(unittest.TestCase):
         self.assertEqual(bound['method'], 'SAME_NATIVE_GRID_CELL_INTERVALS_V1')
         self.assertEqual(bound['witness']['direction'], 'CURRENT_TO_BASELINE')
 
-    def test_coarse_identical_top_remains_unknown(self):
+    def test_coarse_identical_top_uses_exact_modeled_identity(self):
         base = snapshot(step='2')
         summary, proof = self.compare(base, copy.deepcopy(base))
-        self.assertEqual(summary['status'], 'UNKNOWN')
-        bound = proof['daily'][0]['displacement_bounds']
-        self.assertEqual(F(bound['lower_fraction']), 0)
-        self.assertGreater(F(bound['upper_fraction']), F('.01'))
-        self.assertEqual(proof['daily'][0]['shift_status'], 'UNKNOWN')
+        self.assertEqual(summary['status'], 'PASS')
+        self.assertIsNone(proof['daily'][0]['displacement_bounds'])
+        self.assertEqual(summary['max_shift_fraction'], '0')
+        self.assertEqual(proof['daily'][0]['shift_status'], 'PASS')
+        self.assertTrue(proof['daily'][0]['exact_model_top_region_identity'])
 
     def test_exact_one_percent_lower_bound_does_not_fail(self):
         base = snapshot(low='179', step='2')
