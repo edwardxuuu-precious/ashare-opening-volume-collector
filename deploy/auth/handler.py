@@ -167,7 +167,7 @@ def handler(event, context):
             return response(401, {'error': '请先登录'}, [cookie(ACCESS)])
         if method == 'GET' and path == '/auth/me':
             return response(200, {'username': user})
-        if method == 'GET' and re.fullmatch(r'/data/trend-volume/(?:manifest\.json|[a-f0-9]{16}/(?:summary|\d{6})\.json)', path):
+        if method == 'GET' and re.fullmatch(r'/data/trend-volume/(?:manifest\.json|[a-f0-9]{16}/(?:summary|\d{6})\.json|daily/(?:(?:manifest|status)\.json|[a-f0-9]{16}/(?:screening|\d{6})\.json))', path):
             try:
                 obj = s3.get_object(Bucket=BUCKET, Key=path.lstrip('/'))
                 raw = obj['Body'].read()

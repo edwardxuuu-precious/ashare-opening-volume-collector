@@ -4,11 +4,11 @@ import { trendPrefix, type TrendStock, type TrendScreen } from '@/lib/trend-volu
 
 export const volumeText = (value: number | null) => value === null ? '待核实' : value >= 1e8 ? `${(value / 1e8).toFixed(2)}亿` : value >= 1e4 ? `${(value / 1e4).toFixed(2)}万` : value.toLocaleString('zh-CN', { maximumFractionDigits: 1 });
 export function volumeUnitLabel(unit: string): string {
-  const labels: Record<string, string> = { provider_native_consistent_ratio_only: '原生量（仅比较比例）', hands_100_shares: '手（100股）', SOURCE_UNKNOWN: '单位待核实', UNKNOWN: '单位待核实' };
+  const labels: Record<string, string> = { provider_native_consistent_ratio_only: '原生量（仅比较比例）', hands_100_shares: '手（100股）', shares: '股', SOURCE_UNKNOWN: '单位待核实', UNKNOWN: '单位待核实' };
   return labels[unit] ?? unit;
 }
 
-export function TrendChart({ stock, date, screen }: { stock: TrendStock; date: string; screen: TrendScreen | null }) {
+export function TrendChart({ stock, date, screen, lengths = [35, 60, 120] }: { stock: Pick<TrendStock, 'history' | 'name' | 'volume_unit'>; date: string; screen: TrendScreen | null; lengths?: number[] }) {
   const [period, setPeriod] = useState(60), [hoverDate, setHoverDate] = useState<string | null>(null);
   const bars = trendPrefix(stock.history, date, period), selected = bars.find(b => b.date === hoverDate) ?? bars.at(-1), unit = volumeUnitLabel(stock.volume_unit);
   if (!selected || !bars.length) return <div className="tv-chart-empty">此样本未取得可展示的行情，保留数据不足状态。</div>;
@@ -21,7 +21,7 @@ export function TrendChart({ stock, date, screen }: { stock: TrendStock; date: s
   const recent = new Set(screen?.shrink_gate.recent_dates), reference = new Set(screen?.shrink_gate.reference_dates);
   const index = bars.findIndex(b => b.date === selected.date);
   return <section className="tv-chart" aria-label="截至观察日的行情">
-    <div className="tv-chart-toolbar"><span>日K线 / 成交量</span><div className="tv-segment" aria-label="图表长度">{[35, 60, 120].map(n => <button key={n} aria-pressed={period === n} onClick={() => setPeriod(n)}>{n}根</button>)}</div><small>不复权 · 截至 {date}</small></div>
+    <div className="tv-chart-toolbar"><span>日K线 / 成交量</span><div className="tv-segment" aria-label="图表长度">{lengths.map(n => <button key={n} aria-pressed={period === n} onClick={() => setPeriod(n)}>{n}根</button>)}</div><small>不复权 · 截至 {date}</small></div>
     <div className="tv-candle-readout" aria-live="polite"><b>{selected.date}</b><span>开 {selected.open.toFixed(2)}</span><span>高 {selected.high.toFixed(2)}</span><span>低 {selected.low.toFixed(2)}</span><span>收 {selected.close.toFixed(2)}</span><span>量 {volumeText(selected.volume)} {unit}</span></div>
     <div className="tv-chart-scroll"><svg viewBox={`0 0 ${W} ${H}`} aria-labelledby="tv-chart-title" onPointerLeave={() => setHoverDate(null)}><title id="tv-chart-title">{`${stock.name}截至${date}的日K线和成交量，未展示此后的K线`}</title>
       <rect width={W} height={H} fill="white" />

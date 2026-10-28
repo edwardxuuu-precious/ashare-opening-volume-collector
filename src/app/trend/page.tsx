@@ -1,112 +1,127 @@
 /* oxlint-disable next/no-html-link-for-pages -- Static CDN routes use document navigation. */
 'use client';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { ChevronLeft, ChevronRight, RefreshCw } from 'lucide-react';
 import { BrandIdentity } from '@/components/brand';
 import { AccountControls } from '@/components/auth-gate';
 import { StockNavigation } from '@/components/stock-navigation';
 import { authRead } from '@/lib/auth-fetch';
-import { categoryMatches, panelRows, parseTrendManifest, parseTrendStock, parseTrendSummary, prediction, rowKey, trendDailyCounts, trendReason, trendReferenceText, trendStateText, trendStatistics, type TrendCategory, type TrendIndexRow, type TrendScreen, type TrendState, type TrendStock, type TrendSummary, type TrendVersion } from '@/lib/trend-volume';
-import { TrendChart, volumeText, volumeUnitLabel } from './trend-chart';
+import { startPublicationFollow } from '@/lib/publication-follow';
+import { dailyInitialSelection, dailyMatches, dailyReason, dailySignalText, parseDailyManifest, parseDailyScreening, parseDailyStatus, parseDailyStock, type DailyCategory, type DailyManifest, type DailyRow, type DailyRunStatus, type DailyScreening, type DailyStock } from '@/lib/trend-daily';
+import { trendStateText, type TrendScreen, type TrendState } from '@/lib/trend-volume';
+import { TrendChart, volumeText } from './trend-chart';
 import '../chips/chips.css';
 import '../chips/workbench.css';
 import './trend.css';
+import './daily.css';
 
 export const dynamic = 'force-static';
 const api = (process.env.NEXT_PUBLIC_DATA_BASE || '').replace(/\/$/, '');
-type Load<T> = { kind: 'loading' } | { kind: 'error'; message: string } | { kind: 'ready'; value: T };
-type InspectorTab = 'conditions' | 'definition' | 'evidence';
-const categories: { id: TrendCategory; label: string }[] = [{ id: 'FOCUS', label: '重点样本' }, { id: 'SELECTED', label: '入选' }, { id: 'MISSED', label: '漏选' }, { id: 'NEGATIVE', label: '反例' }, { id: 'UNKNOWN', label: '数据不足' }, { id: 'ALL', label: '全部' }];
-const errorMessage = (error: unknown) => error instanceof Error ? error.message : '研究数据暂时无法读取，请重试。';
+type Publication = { manifest: DailyManifest; screening: DailyScreening };
+type Detail = { kind: 'ready'; key: string; value: DailyStock } | { kind: 'error'; key: string; message: string } | { kind: 'empty' };
+type InspectorTab = 'conditions' | 'rules';
+const categories: { value: DailyCategory; label: string }[] = [{ value: 'SELECTED', label: '当日入选' }, { value: 'WATCHING', label: '缩量观察' }, { value: 'NOT_MATCHED', label: '未满足' }, { value: 'UNKNOWN', label: '数据不足' }, { value: 'ALL', label: '全部' }];
+const emptyRows: DailyRow[] = [];
+const failed = (error: unknown) => error instanceof Error ? error.message : '当日筛选数据暂时无法读取。';
+const percent = (value: number | null) => value === null ? '待核实' : `${value.toFixed(2)}%`;
+const multiple = (value: number | null) => value === null ? '待核实' : `${value.toFixed(2)}倍`;
+function timeText(value: string) { return new Intl.DateTimeFormat('zh-CN', { timeZone: 'Asia/Shanghai', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false }).format(new Date(value)); }
 async function read<T>(path: string, signal: AbortSignal, parse: (value: unknown) => T): Promise<T> {
   return authRead(api + path, { signal, cache: 'no-store' }, async response => {
-    if (!response.ok) throw Error(response.status === 401 ? '登录已失效，请重新登录。' : `研究数据暂时无法读取（HTTP ${response.status}）。`);
+    if (!response.ok) throw Error(response.status === 401 ? '登录已失效，请重新登录。' : response.status === 404 ? '最新交易日的筛选结果尚未发布。' : `当日筛选数据暂时无法读取（HTTP ${response.status}）。`);
     return parse(await response.json());
   });
 }
-const percent = (value: number | null) => value === null ? '待核实' : `${value.toFixed(2)}%`;
-const ratio = (value: number | null) => value === null ? '待核实' : `${value.toFixed(2)}倍`;
-function Metric({ label, value, hint }: { label: string; value: string | number; hint?: string }) {
-  return <div className="tv-metric"><span>{label}</span><strong>{value}</strong>{hint && <small>{hint}</small>}</div>;
-}
-function State({ value, label }: { value: TrendState; label?: string }) { return <span className={`tv-state tv-state-${value.toLowerCase()}`}>{label ?? trendStateText[value]}</span>; }
+function State({ state }: { state: TrendState }) { return <span className={`tv-state tv-state-${state.toLowerCase()}`}>{trendStateText[state]}</span>; }
 function Check({ title, state, children }: { title: string; state: TrendState; children: React.ReactNode }) {
-  return <section className="tv-check"><div className="tv-section-heading"><h3>{title}</h3><State value={state} /></div>{children}</section>;
+  return <section className="tv-check"><div className="tv-section-heading"><h3>{title}</h3><State state={state} /></div>{children}</section>;
 }
-function Conditions({ screen, version, unit }: { screen: TrendScreen | null; version: TrendVersion; unit: string }) {
-  if (!screen) return <p className="tv-muted">此观察日没有可核对的筛选记录。</p>;
-  const pullback = screen.trend_gate.metrics.pullback_pct, shrinkRatio = screen.shrink_gate.metrics.recent_to_reference_volume;
-  return <>
-    <div className="tv-inspector-intro"><b>{version} 冻结条件</b><p>保留原计算结果，当前页面不调整参数。</p></div>
-    <Check title="01 趋势准备" state={screen.trend_gate.status}><dl><div><dt>准备日</dt><dd>{screen.setup_date ?? '未找到有效准备'}</dd></div><div><dt>距20日高点回落</dt><dd>{typeof pullback === 'number' ? percent(pullback) : '待核实'}</dd></div></dl><p>{version === 'V3' ? '回落≥5%，且20日或5日收盘斜率向下。' : '回落≥5%，且20日收盘斜率向下；信号前一日也检查趋势。'}</p></Check>
-    <Check title="02 缩量准备" state={screen.shrink_gate.status}><dl><div><dt>3日均量 / 此前10日均量</dt><dd>{typeof shrinkRatio === 'number' ? percent(shrinkRatio * 100) : '待核实'}</dd></div><div><dt>冻结基准 B</dt><dd>{volumeText(screen.baseline_mean)}{screen.baseline_mean !== null ? ` ${unit}` : ''}</dd></div><div><dt>准备距信号日</dt><dd>{screen.setup_age === null ? '待核实' : `${screen.setup_age}个交易日`}</dd></div></dl><p>比例≤{version === 'V2' ? '50%' : '70%'}；准备发生在信号前1至5个交易日。</p></Check>
-    <Check title="03 放量大涨" state={screen.surge_status}><dl><div><dt>当日量 / 冻结基准</dt><dd>{ratio(screen.volume_multiple)}</dd></div><div><dt>较前收盘涨幅</dt><dd>{percent(screen.close_return_pct)}</dd></div><div><dt>收盘高于开盘</dt><dd>{screen.bullish === null ? '待核实' : screen.bullish ? '是' : '否'}</dd></div></dl><p>成交量≥2B，涨幅≥4%，且为阳线。</p></Check>
-    {!screen.setup_date && <p className="tv-unknown-note">没有有效准备基准时，放量倍数保持待核实；不能据此判断没有放量。</p>}
-    {screen.reasons.length > 0 && <div className="tv-reasons"><h3>本日未满足 / 待核实原因</h3><ul>{[...new Set(screen.reasons)].map(r => <li key={r}>{trendReason(r)}</li>)}</ul></div>}
+function Conditions({ screen }: { screen: TrendScreen }) {
+  const pullback = screen.trend_gate.metrics.pullback_pct, ratio = screen.shrink_gate.metrics.recent_to_reference_volume;
+  return <><div className="tv-inspector-intro"><b>V3 当日条件核对</b><p>三项同时满足才列入当日入选。</p></div>
+    <Check title="01 趋势准备" state={screen.trend_gate.status}><dl><div><dt>有效准备日</dt><dd>{screen.setup_date ?? '未找到'}</dd></div><div><dt>距20日高点回落</dt><dd>{typeof pullback === 'number' ? percent(pullback) : '待核实'}</dd></div></dl><p>回落≥5%，且20日或5日收盘斜率向下。</p></Check>
+    <Check title="02 缩量准备" state={screen.shrink_gate.status}><dl><div><dt>3日均量 / 此前10日均量</dt><dd>{typeof ratio === 'number' ? percent(ratio * 100) : '待核实'}</dd></div><div><dt>固定基准 B</dt><dd>{volumeText(screen.baseline_mean)}{screen.baseline_mean === null ? '' : '股'}</dd></div><div><dt>距筛选日</dt><dd>{screen.setup_age === null ? '待核实' : `${screen.setup_age}个交易日`}</dd></div></dl><p>比例≤70%；在筛选日前1至5个交易日寻找有效准备。</p></Check>
+    <Check title="03 当日放量大涨" state={screen.surge_status}><dl><div><dt>当日量 / 固定基准</dt><dd>{multiple(screen.volume_multiple)}</dd></div><div><dt>当日收盘涨幅</dt><dd>{percent(screen.close_return_pct)}</dd></div><div><dt>收盘高于开盘</dt><dd>{screen.bullish === null ? '待核实' : screen.bullish ? '是' : '否'}</dd></div></dl><p>成交量≥2B，涨幅≥4%，且为阳线。</p></Check>
+    {!screen.setup_date && <p className="tv-unknown-note">没有有效准备基准时，放量倍数保持待核实，不能判断为没有放量。</p>}
+    {screen.reasons.length > 0 && <div className="tv-reasons"><h3>未满足或待核实原因</h3><ul>{[...new Set(screen.reasons)].map(reason => <li key={reason}>{dailyReason(reason)}</li>)}</ul></div>}
   </>;
 }
-function DailyCounts({ rows, version }: { rows: TrendIndexRow[]; version: TrendVersion }) {
-  const counts = trendDailyCounts(rows, version), max = Math.max(1, ...counts.map(d => d.known_selected));
-  return <section className="tv-daily"><div className="tv-section-heading"><h3>每日名单数量</h3><span>已知样本的入选下限 · {version}</span></div><ul className="tv-daily-bars" aria-label="每日已知入选数量">{counts.map((d, i) => <li key={d.date} className="tv-daily-column" aria-label={`${d.date}：已知入选${d.known_selected}条，缺失${d.unknown}条；完整数量${d.unknown ? "未知" : d.known_selected}`} title={`${d.date}：已知入选${d.known_selected}条，另${d.unknown}条未知；完整名单${d.unknown ? '未知' : d.known_selected}`}><b>{d.known_selected || ''}</b><i style={{ height: `${Math.max(2, d.known_selected / max * 34)}px` }} /><small>{i === 0 || i === counts.length - 1 || counts[i - 1]?.date.slice(0, 7) !== d.date.slice(0, 7) ? d.date.slice(5) : ''}</small></li>)}</ul><p>每个统计日均有缺失证券，完整名单数量仍为未知。柱高只表示已知数据内的结果。</p></section>;
-}
 
-export default function TrendPage() {
-  const [study, setStudy] = useState<Load<TrendSummary>>({ kind: 'loading' }), [refresh, setRefresh] = useState(0);
-  const [stock, setStock] = useState<Load<TrendStock>>({ kind: 'loading' });
-  const [version, setVersion] = useState<TrendVersion>('V3'), [period, setPeriod] = useState('ALL'), [category, setCategory] = useState<TrendCategory>('FOCUS'), [search, setSearch] = useState('');
-  const [selection, setSelection] = useState({ code: '601086', date: '2026-10-27' });
-  const [inspectorTab, setInspectorTab] = useState<InspectorTab>('conditions'), [page, setPage] = useState(0);
+export default function TrendDailyPage() {
+  const [publication, setPublication] = useState<Publication | null>(null), [status, setStatus] = useState<DailyRunStatus | null>(null), [settled, setSettled] = useState(false);
+  const [error, setError] = useState(''), [statusError, setStatusError] = useState(''), [detail, setDetail] = useState<Detail>({ kind: 'empty' }), [detailReload, setDetailReload] = useState(0);
+  const [code, setCode] = useState(''), [category, setCategory] = useState<DailyCategory>('SELECTED'), [search, setSearch] = useState(''), [page, setPage] = useState(0), [tab, setTab] = useState<InspectorTab>('conditions');
+  const follow = useRef<{ refresh: () => void; stop: () => void } | null>(null), currentCode = useRef(code), currentFilter = useRef({ category, search });
   useEffect(() => {
-    const controller = new AbortController();
-    read('/data/trend-volume/manifest.json', controller.signal, parseTrendManifest).then(m => read(`/data/trend-volume/${m.dataset_id}/summary.json`, controller.signal, value => parseTrendSummary(value, m.dataset_id))).then(value => { if (!controller.signal.aborted) setStudy({ kind: 'ready', value }); }).catch(error => { if (!controller.signal.aborted) setStudy({ kind: 'error', message: errorMessage(error) }); });
-    return () => controller.abort();
-  }, [refresh]);
-  const summary = study.kind === 'ready' ? study.value : null;
+    const controller = startPublicationFollow({
+      readStatus: signal => read('/data/trend-volume/daily/status.json', signal, parseDailyStatus),
+      readManifest: signal => read('/data/trend-volume/daily/manifest.json', signal, parseDailyManifest),
+      readPayload: (manifest, signal) => read(`/data/trend-volume/daily/${manifest.dataset_id}/screening.json`, signal, value => parseDailyScreening(value, manifest)),
+      onStatus: setStatus, onStatusError: value => setStatusError(value ? '更新状态暂不可读，保留已发布的完整结果。' : ''),
+      onPublication: (manifest, screening) => {
+        const filter = currentFilter.current, selected = dailyInitialSelection(screening.rows, currentCode.current, filter.category, filter.search);
+        currentCode.current = selected; setCode(selected); setPage(0); setPublication({ manifest, screening });
+      },
+      onPublicationError: value => setError(value?.message ?? ''), onSettled: () => setSettled(true),
+      isRunning: value => value.state === 'RUNNING' || value.state === 'SOURCE_PENDING', publishedDataset: value => value.state === 'COMMITTED' ? value.dataset_id : null,
+      activeManifestMs: 30000, idleManifestMs: 60000, activeStatusMs: 20000, idleStatusMs: 30000,
+    });
+    follow.current = controller;
+    return () => { controller.stop(); follow.current = null; };
+  }, []);
+  const manifest = publication?.manifest, rows = publication?.screening.rows ?? emptyRows;
+  const matched = useMemo(() => rows.filter(row => dailyMatches(row, category, search)), [rows, category, search]);
+  const visible = matched.slice(page * 60, (page + 1) * 60), selectedRow = rows.find(row => row.code === code);
+  const key = manifest && code ? `${manifest.dataset_id}:${code}` : '';
+  const stock = detail.kind === 'ready' && detail.key === key ? detail.value : null, detailError = detail.kind === 'error' && detail.key === key ? detail.message : '';
   useEffect(() => {
-    if (!summary) return;
-    const controller = new AbortController();
-    read(`/data/trend-volume/${summary.dataset_id}/${selection.code}.json`, controller.signal, value => parseTrendStock(value, summary, selection.code)).then(value => { if (!controller.signal.aborted) setStock({ kind: 'ready', value }); }).catch(error => { if (!controller.signal.aborted) setStock({ kind: 'error', message: errorMessage(error) }); });
+    if (!manifest || !selectedRow) return;
+    const controller = new AbortController(), detailKey = `${manifest.dataset_id}:${selectedRow.code}`;
+    read(`/data/trend-volume/daily/${manifest.dataset_id}/${selectedRow.code}.json`, controller.signal, value => parseDailyStock(value, manifest, selectedRow))
+      .then(value => { if (!controller.signal.aborted) setDetail({ kind: 'ready', key: detailKey, value }); })
+      .catch(value => { if (!controller.signal.aborted) setDetail({ kind: 'error', key: detailKey, message: failed(value) }); });
     return () => controller.abort();
-  }, [summary, selection.code]);
-  const scope = useMemo(() => panelRows(summary?.rows ?? [], period), [summary, period]);
-  const stats = useMemo(() => ({ V2: trendStatistics(scope, 'V2'), V3: trendStatistics(scope, 'V3') }), [scope]);
-  const names = useMemo(() => new Map(summary?.stocks.map(s => [s.code, s.name])), [summary]);
-  const filtered = useMemo(() => scope.filter(r => categoryMatches(r, category, version) && `${r.code} ${names.get(r.code) ?? ''} ${r.date}`.includes(search.trim())).sort((a, b) => a.date.localeCompare(b.date) || a.code.localeCompare(b.code)), [scope, category, version, search, names]);
-  const visible = filtered.slice(page * 60, (page + 1) * 60), activeStats = stats[version];
-  const availableStock = stock.kind === 'ready' && stock.value.code === selection.code && stock.value.dataset_id === summary?.dataset_id ? stock.value : null;
-  const observation = availableStock?.observations.find(o => o.date === selection.date) ?? null, screen = observation?.results[version] ?? null;
-  const selectedIndex = summary?.rows.find(r => rowKey(r) === rowKey(selection)), dates = availableStock?.observations.map(o => o.date).sort() ?? [], dateIndex = dates.indexOf(selection.date);
-  const select = (row: Pick<TrendIndexRow, 'code' | 'date'>) => { if (row.code !== selection.code) setStock({ kind: 'loading' }); setSelection({ code: row.code, date: row.date }); };
-  const reload = () => { setStudy({ kind: 'loading' }); setStock({ kind: 'loading' }); setRefresh(n => n + 1); };
-  const step = (direction: -1 | 1) => { const next = dates[dateIndex + direction]; if (next) setSelection({ ...selection, date: next }); };
-  const setFilter = (id: TrendCategory) => { setCategory(id); setPage(0); };
-  return <div className="chip-site chip-workbench tv-site">
-    <header className="chip-site-header cw-header"><a href="/" className="brand" aria-label="量序首页"><BrandIdentity /></a><StockNavigation active="trend" /><div className="cw-header-actions"><button className="tv-refresh" aria-label="刷新研究快照" onClick={reload}><RefreshCw size={14} /><span>刷新</span></button><AccountControls /></div></header>
-    {study.kind === 'loading' && <main className="tv-load"><h1>趋势量价研究</h1><output>正在读取冻结研究快照…</output></main>}
-    {study.kind === 'error' && <main className="tv-load" role="alert"><h1>研究快照暂不可用</h1><p>{study.message}</p><button className="tv-button" onClick={reload}>重新读取</button></main>}
-    {summary && <>
-      <div className="tv-page-heading"><div><h1>趋势量价研究 <span>冻结 V3</span></h1><p>趋势 → 缩量 → 放量大涨 · 开发样本复算 · 黄金分割未加入</p></div><label>统计范围<select value={period} onChange={e => { setPeriod(e.target.value); setPage(0); }} aria-label="统计时间段"><option value="ALL">全部时间段</option>{summary.periods.map(p => <option key={p.id} value={p.id}>{p.label}</option>)}</select></label></div>
-      <section className="tv-overview" aria-label="V2与V3统计对比">
-        <div className="tv-coverage"><Metric label="行情覆盖" value={`${activeStats.knownStocks} / ${activeStats.stocks}`} hint={`已知${activeStats.known} · 缺失${activeStats.unknown}个证券日`} /><Metric label="参考正例" value={activeStats.positiveCount} hint={`${activeStats.uncertain}条形态待定另计`} /></div>
-        <div className="tv-comparison-wrap"><table className="tv-comparison"><caption className="tv-sr">冻结V2和V3对比，国芳单例不计入</caption><thead><tr><th>版本</th><th>命中 / 正例</th><th>漏选</th><th>误选</th><th>入选证券日 / 证券</th></tr></thead><tbody>{(['V2', 'V3'] satisfies TrendVersion[]).map(v => <tr key={v} data-active={version === v}><th><button onClick={() => { setVersion(v); setPage(0); }} aria-pressed={version === v}>{v}{v === 'V3' && <small>当前冻结</small>}</button></th><td>{stats[v].tp}<span> / {stats[v].positiveCount}</span></td><td>{stats[v].fn}<small>{stats[v].missRate === null ? '待核实' : `${(stats[v].missRate * 100).toFixed(0)}%`}</small></td><td>{stats[v].fp}<small>观察值</small></td><td>{stats[v].selected}<span> / {stats[v].selectedStocks}</span></td></tr>)}</tbody></table></div>
-      </section>
-      <div className="tv-stat-note">模型代理参考 · 非独立验证 · {activeStats.negativeCount}条自动反例多数由共同涨幅门槛排除，零误选不足以证明控制有效。国芳集团单例不计入上述统计。</div>
-      <div className="tv-shell">
-        <aside className="tv-sidebar" aria-label="研究样本列表"><div className="tv-list-heading"><h2>样本观察</h2><span>{filtered.length}个证券日</span></div><div className="tv-search"><input aria-label="搜索研究样本" placeholder="代码、名称或日期" value={search} onChange={e => { setSearch(e.target.value); setPage(0); }} /></div><div className="tv-filters" aria-label="名单分类">{categories.map(c => <button key={c.id} onClick={() => setFilter(c.id)} aria-pressed={category === c.id}>{c.label}<span>{scope.filter(r => categoryMatches(r, c.id, version)).length}</span></button>)}</div><button className="tv-guofang" aria-pressed={selection.code === '601086'} onClick={() => select({ code: '601086', date: '2026-10-27' })}><strong>国芳集团 <small>601086</small></strong><span>原视频单例核对 <ChevronRight size={12} /></span></button><ul className="tv-list" aria-label={`${version}筛选后的样本`}>
-          {!visible.length && <li className="tv-list-empty">当前分类没有样本，调整分类或搜索条件。</li>}
-          {visible.map(r => <li key={rowKey(r)}><button className="tv-row" aria-pressed={rowKey(selection) === rowKey(r)} onClick={() => select(r)}><span><strong>{names.get(r.code) || r.code}</strong><State value={prediction(r, version)} label={prediction(r, version) === 'PASS' ? '入选' : prediction(r, version) === 'UNKNOWN' ? '数据不足' : r.reference === 'POSITIVE' ? '漏选' : '未入选'} /></span><span><small>{r.code} · {r.date}</small><b className={r.close_return_pct !== null && r.close_return_pct >= 0 ? 'tv-up' : 'tv-down'}>{r.close_return_pct === null ? '未知' : `${r.close_return_pct >= 0 ? '+' : ''}${r.close_return_pct.toFixed(2)}%`}</b></span><em>{trendReferenceText[r.reference]}{r.case_id ? ` · ${r.case_id}` : ''}</em></button></li>)}
-        </ul><footer className="tv-list-footer"><span>当前列表 {filtered.length}条</span><div><button aria-label="上一页样本" disabled={page === 0} onClick={() => setPage(n => n - 1)}><ChevronLeft size={14} /></button><span>{page + 1} / {Math.max(1, Math.ceil(filtered.length / 60))}</span><button aria-label="下一页样本" disabled={(page + 1) * 60 >= filtered.length} onClick={() => setPage(n => n + 1)}><ChevronRight size={14} /></button></div><small>列表筛选不改变上方统计分母。</small></footer></aside>
-        <main className="tv-workspace"><div className="tv-stock-heading"><div><h2>{names.get(selection.code) || selection.code} <small>{selection.code}</small></h2><p>{selection.code === '601086' ? '原视频单例 · 与面板统计分开' : selectedIndex ? trendReferenceText[selectedIndex.reference] : '样本核对'} · 保存行情复盘</p></div><div className="tv-version-switch" aria-label="条件版本">{(['V2', 'V3'] satisfies TrendVersion[]).map(v => <button key={v} aria-pressed={version === v} onClick={() => { setVersion(v); setPage(0); }}>{v}</button>)}</div></div>
-          <div className="tv-observation-bar"><div><span>观察日</span><button className="tv-step" aria-label="上一个观察日" disabled={dateIndex <= 0} onClick={() => step(-1)}><ChevronLeft size={15} /></button><select aria-label="观察日期" value={selection.date} disabled={!availableStock || !dates.length} onChange={e => setSelection({ ...selection, date: e.target.value })}>{dates.length ? dates.map(d => <option key={d}>{d}</option>) : <option>{selection.date}</option>}</select><button className="tv-step" aria-label="下一个观察日" disabled={dateIndex < 0 || dateIndex >= dates.length - 1} onClick={() => step(1)}><ChevronRight size={15} /></button></div>{selectedIndex && <State value={prediction(selectedIndex, version)} label={`${version} ${prediction(selectedIndex, version) === 'PASS' ? '当日入选' : prediction(selectedIndex, version) === 'UNKNOWN' ? '数据不足' : '当日未入选'}`} />}</div>
-          {stock.kind === 'loading' && <output className="tv-chart-empty">正在读取个股行情与条件记录…</output>}
-          {stock.kind === 'error' && <div className="tv-chart-empty" role="alert">{stock.message}<button className="tv-button" onClick={reload}>重试</button></div>}
-          {availableStock && <><TrendChart stock={availableStock} date={selection.date} screen={screen} /><div className="tv-result-strip"><Metric label="准备日" value={screen?.setup_date ?? '未找到有效准备'} /><Metric label="缩量比例" value={typeof screen?.shrink_gate.metrics.recent_to_reference_volume === 'number' ? percent(screen.shrink_gate.metrics.recent_to_reference_volume * 100) : '待核实'} /><Metric label="当日放量" value={ratio(screen?.volume_multiple ?? null)} /><Metric label="当日涨幅" value={percent(screen?.close_return_pct ?? null)} /></div><details className="tv-candidates" open={!screen?.setup_date}><summary>前5个交易日的准备检查 <span>{screen?.candidates.length ?? 0}条</span></summary><p>趋势与缩量须在同一天同时满足。以下为原筛选器保存的逐日检查。</p><div className="tv-table-scroll"><table><thead><tr><th>准备候选日</th><th>趋势</th><th>缩量</th><th>回落</th><th>3 / 10日量</th></tr></thead><tbody>{screen?.candidates.map(c => <tr key={c.date} data-chosen={c.date === screen.setup_date}><td>{c.date}{c.date === screen.setup_date ? ' ✓' : ''}</td><td><State value={c.trend_status} /></td><td><State value={c.shrink_status} /></td><td>{percent(c.pullback_pct)}</td><td>{c.shrink_ratio === null ? '待核实' : percent(c.shrink_ratio * 100)}</td></tr>)}</tbody></table></div>{!screen?.candidates.length && <p>没有可用的候选记录。</p>}</details><p className="tv-source-note">来源 {availableStock.provider} · 成交量原始单位 {volumeUnitLabel(availableStock.volume_unit)} · 历史采集时点未核定，按保存的K线前缀复盘。</p></>}
-          <DailyCounts rows={scope} version={version} />
-        </main>
-        <aside className="tv-inspector" aria-label="条件与研究定义"><div className="tv-inspector-tabs" role="tablist" aria-label="研究核对面板">{([{ id: 'conditions', label: '条件核对' }, { id: 'definition', label: '待验证定义' }, { id: 'evidence', label: '口径与来源' }] satisfies { id: InspectorTab; label: string }[]).map(t => <button key={t.id} role="tab" aria-selected={inspectorTab === t.id} aria-controls={`tv-panel-${t.id}`} id={`tv-tab-${t.id}`} onClick={() => setInspectorTab(t.id)}>{t.label}</button>)}</div><div className="tv-inspector-body" role="tabpanel" id={`tv-panel-${inspectorTab}`} aria-labelledby={`tv-tab-${inspectorTab}`}>
-          {inspectorTab === 'conditions' && <Conditions screen={screen} version={version} unit={volumeUnitLabel(availableStock?.volume_unit ?? '')} />}
-          {inspectorTab === 'definition' && <><div className="tv-definition-status">新定义 · 尚未计算</div><h2>下跌状态如何持续</h2><p className="tv-definition-lead">下跌趋势里的缩量、小涨，先保留下跌状态。大量且大涨后，再评估启动或反转。</p><ol className="tv-rule-list">{summary.rules.persistence.map((r, i) => <li key={i}>{r}</li>)}</ol><h3>后续需要观察的统计</h3><dl className="tv-pending-metrics">{['下跌段数量与持续天数', '下跌中缩量的次数和时长', '大量且大涨的联合事件', '启动后的结构确认与失败'].map(label => <div key={label}><dt>{label}</dt><dd>未计算</dd></div>)}</dl><p className="tv-unknown-note">新状态定义未写入V3。这里没有把单日放量大涨自动记成上升趋势，也没有加入黄金分割。</p><h3>剩余11个漏选的复看</h3><p>数值定义待研究 {summary.diagnosis.numeric_review}个，形态待定 {summary.diagnosis.unresolved}个。明确不符形态 {summary.diagnosis.mismatch_supported}个。</p><p className="tv-muted">复看是模型代理意见，原11个漏选统计保持不变。</p></>}
-          {inspectorTab === 'evidence' && <><h2>统计与证据口径</h2><ul className="tv-limitations">{summary.limitations.map((r, i) => <li key={i}>{r}</li>)}</ul><details className="tv-rule-detail"><summary>查看 V2 / V3 冻结条件</summary>{(['V2', 'V3'] satisfies TrendVersion[]).map(v => <section key={v}><h3>{v}</h3><ol>{summary.rules[v].map((r, i) => <li key={i}>{r}</li>)}</ol></section>)}</details><h3>来源快照</h3>{summary.sources.map(s => <details className="tv-source-hash" key={s.label}><summary>{s.label}</summary><code>{s.sha256}</code></details>)}<p className="tv-muted">研究批次 {summary.dataset_id}<br />{summary.created_at.replace('T', ' ').slice(0, 19)}</p></>}
+  }, [manifest, selectedRow, detailReload]);
+  function select(row: DailyRow) { currentCode.current = row.code; setCode(row.code); }
+  function filter(nextCategory: DailyCategory, nextSearch: string) {
+    const next = dailyInitialSelection(rows, code, nextCategory, nextSearch);
+    currentCode.current = next; currentFilter.current = { category: nextCategory, search: nextSearch };
+    setCategory(nextCategory); setSearch(nextSearch); setPage(0); setCode(next);
+  }
+  const running = status?.state === 'RUNNING', newerTarget = manifest && ((status?.as_of ?? '') > manifest.as_of || manifest.requested_as_of > manifest.as_of);
+  return <div className="chip-site chip-workbench tv-site td-site">
+    <header className="chip-site-header cw-header"><a href="/" className="brand" aria-label="量序首页"><BrandIdentity /></a><StockNavigation active="trend" /><div className="cw-header-actions"><button className="tv-refresh" aria-label="刷新最新筛选" onClick={() => follow.current?.refresh()}><RefreshCw size={14} /><span>刷新</span></button><AccountControls /></div></header>
+    <div className="tv-page-heading td-heading"><div><h1>趋势量价筛选 <span>冻结 V3</span></h1><p>趋势 → 缩量 → 当日放量大涨 <a href="/trend/research">历史样本验证</a></p></div><div className="td-date"><span>已发布筛选日期</span><strong>{manifest?.as_of ?? '等待发布'}</strong>{manifest && <small>北京时间 {timeText(manifest.generated_at)} 更新</small>}</div></div>
+    {!publication && <main className="td-initial" aria-live="polite"><h2>{!settled ? '正在获取最新交易日筛选…' : running ? '最新一批正在筛选' : '最新筛选结果尚未可用'}</h2>{status && <p>目标日期 {status.as_of} · 已处理 {status.scanned_count.toLocaleString()} / {status.universe_total.toLocaleString()} 只</p>}{settled && error && <p>{error}</p>}<p>完整结果发布后自动显示，不用历史样本替代当日名单。</p><button className="tv-button" onClick={() => follow.current?.refresh()}>重新读取</button></main>}
+    {publication && <>
+      <section className="td-overview" aria-label="当前日期筛选统计">{categories.filter(item => item.value !== 'ALL').map(item => <button key={item.value} aria-pressed={category === item.value} onClick={() => filter(item.value, search)} className={`td-count td-count-${item.value.toLowerCase()}`}><span>{item.label}</span><strong>{item.value === 'ALL' ? rows.length.toLocaleString() : manifest?.counts[item.value].toLocaleString()}</strong><small>{item.value === 'SELECTED' ? '三项同时满足' : item.value === 'WATCHING' ? '已有准备，启动未满足' : item.value === 'UNKNOWN' ? '不当作排除或入选' : '当日条件未满足'}</small></button>)}<div className="td-coverage"><span>当前网站证券清单</span><strong>{manifest?.universe_total.toLocaleString()}只</strong><small>行情可核 {manifest?.source_known_count.toLocaleString()}只 · 日期 {manifest?.as_of}</small></div></section>
+      <div className={`td-update${newerTarget || error || status?.state === 'FAILED' ? ' td-update-pending' : ''}`} aria-live="polite">
+        {running ? <span>正在筛选 {status.as_of} · {status.scanned_count.toLocaleString()} / {status.universe_total.toLocaleString()}只；当前显示 {manifest?.as_of} 已发布结果。</span>
+          : newerTarget ? <span>最新目标 {status?.as_of && status.as_of > (manifest?.requested_as_of ?? '') ? status.as_of : manifest?.requested_as_of} 尚未发布，当前筛选日期为 {manifest?.as_of}。</span>
+          : status?.state === 'FAILED' || status?.state === 'SOURCE_PENDING' ? <span>{status.message} 当前保留 {manifest?.as_of} 完整结果。</span>
+          : <span>{manifest?.as_of} 收盘筛选已发布。{manifest?.source_generation_stale ? '行情有更新批次，等待后续筛选更新。' : '自动跟随已发布的最新完整批次。'}</span>}
+        {(error || statusError) && <span>{error || statusError}</span>}
+      </div>
+      <div className="tv-shell td-shell">
+        <aside className="tv-sidebar" aria-label="当日股票名单"><div className="tv-list-heading"><h2>{manifest?.as_of} 名单</h2><span>{matched.length.toLocaleString()}只</span></div><div className="tv-search"><input aria-label="搜索当日股票" placeholder="股票名称或代码" value={search} onChange={event => filter(category, event.target.value)} /></div><div className="tv-filters td-filters" aria-label="当日名单分类">{categories.map(item => <button key={item.value} aria-pressed={category === item.value} onClick={() => filter(item.value, search)}>{item.label}<span>{item.value === 'ALL' ? rows.length : manifest?.counts[item.value]}</span></button>)}</div>
+          <ul className="tv-list" aria-label="当前筛选名单">{!visible.length && <li className="tv-list-empty">{category === 'SELECTED' && !search ? <>{manifest?.as_of} 已核对数据中，没有同时满足三项条件的股票。{manifest && manifest.counts.UNKNOWN > 0 && <p>另有 {manifest.counts.UNKNOWN} 只数据不足，仍待核实。</p>}<button className="tv-button" onClick={() => filter('WATCHING', '')}>查看缩量观察</button></> : '当前条件没有股票，请调整分类或搜索。'}</li>}{visible.map(row => <li key={row.code}><button className="tv-row" aria-pressed={row.code === code} onClick={() => select(row)}><span><strong>{row.name}</strong><b className={row.close_return_pct !== null && row.close_return_pct >= 0 ? 'tv-up' : 'tv-down'}>{row.close_return_pct === null ? '涨幅待核' : `${row.close_return_pct >= 0 ? '+' : ''}${row.close_return_pct.toFixed(2)}%`}</b></span><span><small>{row.code}</small><small>{row.close_cny === null ? '收盘待核' : row.close_cny.toFixed(2)}</small></span><em>{dailySignalText[row.signal_state]} · 筛选 {row.date}</em></button></li>)}</ul>
+          <footer className="tv-list-footer"><span>列表 {matched.length.toLocaleString()}只</span><div><button aria-label="上一页股票" disabled={page === 0} onClick={() => setPage(value => value - 1)}><ChevronLeft size={14} /></button><span>{page + 1} / {Math.max(1, Math.ceil(matched.length / 60))}</span><button aria-label="下一页股票" disabled={(page + 1) * 60 >= matched.length} onClick={() => setPage(value => value + 1)}><ChevronRight size={14} /></button></div><small>分类和搜索只改变列表，不改变统计。</small></footer>
+        </aside>
+        <main className="tv-workspace" aria-label="当日量价详情">{!selectedRow ? <div className="td-no-selection"><h2>{category === 'SELECTED' ? '当前没有当日入选股票' : '选择股票查看当日条件'}</h2><p>筛选日期 {manifest?.as_of}。可切换分类查看缩量观察、未满足或数据不足。</p></div> : <>
+          <div className="tv-stock-heading"><div><h2>{selectedRow.name} <small>{selectedRow.code}</small></h2><p>{manifest?.as_of} 收盘筛选 · 不复权</p></div><span className={`td-signal td-signal-${selectedRow.signal_state.toLowerCase()}`}>{dailySignalText[selectedRow.signal_state]}</span></div>
+          <div className="td-selected-summary"><span>收盘 <b>{selectedRow.close_cny?.toFixed(2) ?? '待核实'}</b></span><span>当日涨幅 <b className={selectedRow.close_return_pct !== null && selectedRow.close_return_pct >= 0 ? 'tv-up' : 'tv-down'}>{percent(selectedRow.close_return_pct)}</b></span><strong>筛选日 {selectedRow.date}</strong></div>
+          {!stock && !detailError && <output className="tv-chart-empty">正在读取 {manifest?.as_of} 的行情与条件…</output>}
+          {detailError && <div className="tv-chart-empty" role="alert">{detailError}<button className="tv-button" onClick={() => setDetailReload(value => value + 1)}>重试详情</button></div>}
+          {stock && <>{stock.source_status === 'KNOWN' ? <TrendChart stock={stock} date={stock.as_of} screen={stock.screen} lengths={[35, 60]} /> : <div className="tv-chart-empty">筛选日行情不足，保留未知状态，不用较早日期的K线代替。</div>}
+            <div className="tv-result-strip"><div className="tv-metric"><span>准备日</span><strong>{stock.screen.setup_date ?? '未找到有效准备'}</strong></div><div className="tv-metric"><span>缩量比例</span><strong>{selectedRow.shrink_ratio === null ? '待核实' : percent(selectedRow.shrink_ratio * 100)}</strong></div><div className="tv-metric"><span>当日放量</span><strong>{multiple(selectedRow.volume_multiple)}</strong></div><div className="tv-metric"><span>当日涨幅</span><strong>{percent(selectedRow.close_return_pct)}</strong></div></div>
+            {selectedRow.signal_state === 'WATCHING' && <p className="td-watch-note">已找到近期缩量准备；{stock.as_of} 尚未同时满足放量与大涨，不列入当日入选。</p>}
+            <details className="tv-candidates" open={!stock.screen.setup_date}><summary>筛选前5个交易日的准备检查 <span>{stock.screen.candidates.length}条</span></summary><p>趋势和缩量需在同一个准备日满足；准备日不等于本次筛选日期。</p><div className="tv-table-scroll"><table><thead><tr><th>准备候选日</th><th>趋势</th><th>缩量</th><th>回落</th><th>3 / 10日量</th></tr></thead><tbody>{stock.screen.candidates.map(candidate => <tr key={candidate.date} data-chosen={candidate.date === stock.screen.setup_date}><td>{candidate.date}{candidate.date === stock.screen.setup_date ? ' ✓' : ''}</td><td><State state={candidate.trend_status} /></td><td><State state={candidate.shrink_status} /></td><td>{percent(candidate.pullback_pct)}</td><td>{candidate.shrink_ratio === null ? '待核实' : percent(candidate.shrink_ratio * 100)}</td></tr>)}</tbody></table></div></details>
+            <p className="tv-source-note">行情来源 {stock.provider} · 成交量单位为股 · 仅使用截至 {stock.as_of} 的收盘行情。</p>
+          </>}
+        </>}</main>
+        <aside className="tv-inspector" aria-label="当日筛选条件"><div className="tv-inspector-tabs" role="tablist" aria-label="筛选核对面板">{([{ value: 'conditions', label: '条件核对' }, { value: 'rules', label: '规则与数据' }] satisfies { value: InspectorTab; label: string }[]).map(item => <button key={item.value} role="tab" aria-selected={tab === item.value} aria-controls={`td-panel-${item.value}`} id={`td-tab-${item.value}`} onClick={() => setTab(item.value)}>{item.label}</button>)}</div><div className="tv-inspector-body" role="tabpanel" id={`td-panel-${tab}`} aria-labelledby={`td-tab-${tab}`}>
+          {tab === 'conditions' && (stock ? <Conditions screen={stock.screen} /> : <p className="tv-muted">{selectedRow ? '条件记录加载后显示在这里。' : '从当日名单选择股票，核对趋势、缩量和量价启动。'}</p>)}
+          {tab === 'rules' && <><h2>当前采用冻结 V3</h2><ol className="tv-rule-list"><li>准备日较20日最高价回落≥5%，20日或5日收盘斜率向下。</li><li>3日均量≤此前不重叠10日均量的70%；从前5个交易日选最近有效准备，固定基准 B。</li><li>筛选当日成交量≥2B、涨幅≥4%、收盘价高于开盘价，三项同时满足才入选。</li></ol><h3>缩量观察的含义</h3><p className="tv-muted">准备有效而当日启动条件未满足，单独归入观察。观察名单不等于当日入选。</p><h3>当前数据范围</h3><p className="tv-muted">{manifest?.scope}</p><ul className="tv-limitations">{manifest?.limitations.map((item, index) => <li key={index}>{item}</li>)}</ul><details className="td-pending-definition"><summary>新下跌持续定义仍待验证</summary><p>当前筛选继续使用冻结 V3。高低点逐级降低、下跌状态持续到大量且大涨的定义尚未替换进来，不能把这里的缩量观察当作已实现的新状态模型。</p></details><p className="tv-muted">黄金分割未加入。这里统计当日条件，不评价收益或漏选、误选率。</p><a href="/trend/research" className="td-history-link">查看历史 V2 / V3 样本验证</a><details className="tv-source-hash"><summary>数据批次</summary><p>筛选 {manifest?.dataset_id}<br />行情 {manifest?.source_dataset_id}<br />更新 {manifest && timeText(manifest.generated_at)} 北京时间</p></details></>}
         </div></aside>
       </div>
     </>}

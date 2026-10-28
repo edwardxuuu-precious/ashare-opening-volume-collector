@@ -163,3 +163,5 @@ const reasonLabels: Record<string, string> = {
   CONTEXT_AND_LOCAL_SLOPES_NOT_NEGATIVE: '20日和5日斜率均未向下', INCOMPLETE_BAR: 'K线未完成',
 };
 export const trendReason = (reason: string) => reasonLabels[reason] ?? reason.replaceAll('_', ' ');
+
+export { parseScreen as parseTrendScreen };

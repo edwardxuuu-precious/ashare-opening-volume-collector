@@ -11,6 +11,10 @@ class TrendVolumeGateway(AuthTests):
         '/data/trend-volume/manifest.json',
         '/data/trend-volume/abcdef0123456789/summary.json',
         '/data/trend-volume/abcdef0123456789/601086.json',
+        '/data/trend-volume/daily/manifest.json',
+        '/data/trend-volume/daily/status.json',
+        '/data/trend-volume/daily/abcdef0123456789/screening.json',
+        '/data/trend-volume/daily/abcdef0123456789/601086.json',
     )
 
     def test_trend_snapshot_requires_current_cognito_session_before_s3(self):
@@ -55,6 +59,11 @@ class TrendVolumeGateway(AuthTests):
     def test_paths_cannot_escape_namespace_or_expand_resource_names(self):
         self.auth.cognito.get_user.return_value = {'Username': 'research-viewer'}
         invalid = (
+            '/data/trend-volume/daily/lease.json',
+            '/data/trend-volume/daily/abcdef0123456789/summary.json',
+            '/data/trend-volume/daily/ABCDEF0123456789/screening.json',
+            '/data/trend-volume/daily/abcdef0123456789/601086.json/extra',
+            '/data/trend-volume/daily/abcdef0123456789/../601086.json',
             '/data/trend-volume/../manifest.json',
             '/data/trend-volume/%2e%2e/manifest.json',
             '/data/trend-volume/manifest.json.bak',

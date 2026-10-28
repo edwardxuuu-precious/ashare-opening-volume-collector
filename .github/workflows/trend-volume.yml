@@ -1,0 +1,49 @@
+name: Latest saved-session trend volume screen
+on:
+  workflow_dispatch:
+  workflow_run:
+    workflows: [Daily whole-market chip estimates]
+    types: [completed]
+    branches: [main]
+permissions:
+  contents: read
+concurrency:
+  group: stock-trend-volume-daily-writer
+  cancel-in-progress: false
+jobs:
+  trend:
+    if: >-
+      github.ref == 'refs/heads/main' &&
+      (github.event_name == 'workflow_dispatch' ||
+      (vars.DISABLE_TREND_VOLUME_UPDATE != 'true' &&
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.head_branch == 'main' &&
+      github.event.workflow_run.head_repository.full_name == 'edwardxuuu-precious/ashare-opening-volume-collector'))
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      AWS_EC2_METADATA_DISABLED: 'true'
+      AWS_DEFAULT_REGION: us-east-1
+      STOCK_BUCKET: ${{ vars.STOCK_BUCKET }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.11'
+      - run: pip install 'boto3>=1.40,<2'
+      - uses: aws-actions/configure-aws-credentials@ff717079ee2060e4bcee96c4779b553acc87447c
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          role-duration-seconds: 3600
+          role-session-name: trend-${{ github.run_id }}
+          aws-region: us-east-1
+      - name: Screen every current saved stock and publish manifest last
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m backend.trend_volume.daily --bucket "$STOCK_BUCKET" --max-seconds 900 --workers 8 --receipt "$RUNNER_TEMP/trend-volume-receipt.json"
