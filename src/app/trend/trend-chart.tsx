@@ -12,7 +12,7 @@ export function TrendChart({ stock, date, screen }: { stock: TrendStock; date: s
   const [period, setPeriod] = useState(60), [hoverDate, setHoverDate] = useState<string | null>(null);
   const bars = trendPrefix(stock.history, date, period), selected = bars.find(b => b.date === hoverDate) ?? bars.at(-1), unit = volumeUnitLabel(stock.volume_unit);
   if (!selected || !bars.length) return <div className="tv-chart-empty">此样本未取得可展示的行情，保留数据不足状态。</div>;
-  const W = 800, H = 350, left = 14, right = 730, top = 22, bottom = 225, volumeTop = 255, volumeBottom = 318;
+  const W = 800, H = 300, left = 14, right = 730, top = 22, bottom = 195, volumeTop = 220, volumeBottom = 273;
   const rawMin = Math.min(...bars.map(b => b.low)), rawMax = Math.max(...bars.map(b => b.high)), pad = (rawMax - rawMin || rawMax * .03) * .12;
   const min = rawMin - pad, max = rawMax + pad, maxVolume = Math.max(1, ...bars.map(b => b.volume));
   const step = (right - left) / bars.length, width = Math.max(2, Math.min(9, step * .66));

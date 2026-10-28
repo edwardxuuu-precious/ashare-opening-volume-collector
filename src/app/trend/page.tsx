@@ -1,6 +1,6 @@
+/* oxlint-disable next/no-html-link-for-pages -- Static CDN routes use document navigation. */
 'use client';
 import { useEffect, useMemo, useState } from 'react';
-import Link from 'next/link';
 import { ChevronLeft, ChevronRight, RefreshCw } from 'lucide-react';
 import { BrandIdentity } from '@/components/brand';
 import { AccountControls } from '@/components/auth-gate';
@@ -81,7 +81,7 @@ export default function TrendPage() {
   const step = (direction: -1 | 1) => { const next = dates[dateIndex + direction]; if (next) setSelection({ ...selection, date: next }); };
   const setFilter = (id: TrendCategory) => { setCategory(id); setPage(0); };
   return <div className="chip-site chip-workbench tv-site">
-    <header className="chip-site-header cw-header"><Link href="/" className="brand" aria-label="量序首页"><BrandIdentity /></Link><StockNavigation active="trend" /><div className="cw-header-actions"><button className="tv-refresh" aria-label="刷新研究快照" onClick={reload}><RefreshCw size={14} /><span>刷新</span></button><AccountControls /></div></header>
+    <header className="chip-site-header cw-header"><a href="/" className="brand" aria-label="量序首页"><BrandIdentity /></a><StockNavigation active="trend" /><div className="cw-header-actions"><button className="tv-refresh" aria-label="刷新研究快照" onClick={reload}><RefreshCw size={14} /><span>刷新</span></button><AccountControls /></div></header>
     {study.kind === 'loading' && <main className="tv-load"><h1>趋势量价研究</h1><output>正在读取冻结研究快照…</output></main>}
     {study.kind === 'error' && <main className="tv-load" role="alert"><h1>研究快照暂不可用</h1><p>{study.message}</p><button className="tv-button" onClick={reload}>重新读取</button></main>}
     {summary && <>
