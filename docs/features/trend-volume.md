@@ -47,3 +47,5 @@ V3 数值条件保持冻结。入选须同时具有有效趋势与缩量准备�
 ## 验证
 
 `tests/frontend/trend-volume.test.mjs` 覆盖统计分母、名单分类、观察日前缀及数据身份拒绝。`tests/python/test_trend_volume_auth.py` 覆盖认证、精确路径、禁止写入、gzip、缺失与损坏载荷。实际部署还需核对静态文件身份、匿名拒绝、登录内读取及桌面和手机交互。
+
+最新筛选运行入口为 `python -m backend.trend_volume.daily --bucket "$STOCK_BUCKET" --max-seconds 900 --workers 8`。工作流只安装 Boto3，沿用现有仓库身份读取私有保存行情。认证发布以当前云端配置为基线，只替换 `Function.Code` 并核对实际 Lambda 源文件；不要用未包含当前全部权限字段的历史模板生成器整包覆盖云配置。
