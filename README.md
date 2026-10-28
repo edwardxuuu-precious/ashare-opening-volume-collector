@@ -1,6 +1,6 @@
 # 量序 · A股数据
 
-[线上网站](https://stock.iteready.com) · [筹码工作台](https://stock.iteready.com/chips) · [黄金分割统计](https://stock.iteready.com/golden)
+[线上网站](https://stock.iteready.com) · [筹码工作台](https://stock.iteready.com/chips) · [黄金分割统计](https://stock.iteready.com/golden) · [趋势量价研究](https://stock.iteready.com/trend)
 
 本仓库统一维护网站、认证 API、采集器和每日筹码筛选代码。网站与行情接口沿用账号登录；源码公开不改变行情访问权限。2026-10-20按用户明确要求，将原本独立的网站源码并入现有 main，原 `.github/workflows`、采集调度器和依赖清单保持原样。
 

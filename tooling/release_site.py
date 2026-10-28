@@ -5,7 +5,7 @@ from aws_stock import aws,verify_account
 
 def package(root,output):
     client=root/'dist/client'
-    for relative in ('index.html','chips.html','chips/calibration.html','golden.html'):
+    for relative in ('index.html','chips.html','chips/calibration.html','golden.html','trend.html'):
         if not (client/relative).is_file():raise RuntimeError('Missing protected route: '+relative)
     if (client/'data').exists():raise RuntimeError('Public data directory is forbidden')
     files=sorted(p for p in client.rglob('*') if p.is_file())
@@ -24,7 +24,7 @@ def main():
         if not a.expected_sha256 or digest!=a.expected_sha256:raise RuntimeError('Reviewed artifact SHA-256 is required and must match')
         with zipfile.ZipFile(artifact) as z:
             names=z.namelist()
-            if not all(name in names for name in ('index.html','chips.html','chips/calibration.html','golden.html')):raise RuntimeError('Reviewed artifact is missing a protected route')
+            if not all(name in names for name in ('index.html','chips.html','chips/calibration.html','golden.html','trend.html')):raise RuntimeError('Reviewed artifact is missing a protected route')
             if any(name.startswith(('/', 'data/')) or '..' in Path(name).parts or Path(name).name.startswith('.env') or Path(name).suffix in ('.pem','.key') for name in names):raise RuntimeError('Unexpected public or sensitive artifact path')
         value={'artifact':str(artifact),'sha256':digest,'bytes':artifact.stat().st_size,'files':len(names),'reused_reviewed_artifact':True}
     else:

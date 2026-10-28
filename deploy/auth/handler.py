@@ -167,6 +167,19 @@ def handler(event, context):
             return response(401, {'error': '请先登录'}, [cookie(ACCESS)])
         if method == 'GET' and path == '/auth/me':
             return response(200, {'username': user})
+        if method == 'GET' and re.fullmatch(r'/data/trend-volume/(?:manifest\.json|[a-f0-9]{16}/(?:summary|\d{6})\.json)', path):
+            try:
+                obj = s3.get_object(Bucket=BUCKET, Key=path.lstrip('/'))
+                raw = obj['Body'].read()
+                if raw[:2] == b'\x1f\x8b':
+                    raw = gzip.decompress(raw)
+                return data_response(json.loads(raw), headers.get('accept-encoding', ''))
+            except ClientError as exc:
+                if exc.response['Error']['Code'] == 'NoSuchKey':
+                    return response(404, {'error': '该研究快照尚未发布'})
+                raise
+            except (ValueError, UnicodeError, OSError, EOFError):
+                return response(503, {'error': '服务暂时不可用，请稍后重试'})
         # Daily visual-review data and shared annotations stay behind the same
         # Cognito validation. Only the exact twenty symbols may be written.
         annotation = re.fullmatch(r'/data/golden-workbench/annotations/(sh000001|\d{6})\.json', path)
