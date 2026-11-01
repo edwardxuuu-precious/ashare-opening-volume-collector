@@ -17,6 +17,7 @@ const pages = {
   '/': () => import('../app/page'),
   '/chips': () => import('../app/chips/page'),
   '/chips/calibration': () => import('../app/chips/calibration/page'),
+  '/concentration': () => import('../app/concentration/page'),
   '/trend': () => import('../app/trend/page'),
   '/trend/research': () => import('../app/trend/research/page'),
   '/golden': () => import('../app/golden/page'),

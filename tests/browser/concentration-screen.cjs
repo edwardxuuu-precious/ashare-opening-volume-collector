@@ -1,0 +1,241 @@
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+const { chromium } = require('playwright');
+
+const SITE = process.env.CONCENTRATION_UI_URL || 'http://127.0.0.1:4230';
+const OUT = process.env.CONCENTRATION_UI_OUT;
+assert.ok(OUT, 'An explicit output directory is required');
+assert.ok(['localhost', '127.0.0.1'].includes(new URL(SITE).hostname));
+const API = 'https://api.stock.iteready.com';
+const sessions = ['2026-09-24', '2026-09-28', '2026-09-29', '2026-09-30', '2026-10-08', '2026-10-09', '2026-10-12', '2026-10-13', '2026-10-14', '2026-10-15', '2026-10-16', '2026-10-19', '2026-10-20', '2026-10-21', '2026-10-22', '2026-10-23', '2026-10-26', '2026-10-27', '2026-10-28', '2026-10-29', '2026-10-30'];
+const groups = [3, 5, 10, 15, 20];
+const model = 'chip-estimate.eastmoney-nodes150.ohlc4.zero-start.decay2.window210.v1';
+const rule = 'CENTRAL_90_STRICT_DECLINE_INDEPENDENT_210_V1';
+const all = state => Object.fromEntries(groups.map(n => [n, state]));
+const row = (code, name, values, streak, boundary, states, reasons = {}, short = 0) => ({
+  security_id: code, name, close_cny: '10.00', values, streak_days: streak,
+  streak_boundary: boundary, groups: states, point_reasons: reasons, short_history_days: short,
+});
+const rows = [
+  row('999901', '虚构甲20日', Array.from({ length: 21 }, (_, i) => 40 - i), 20, 'WINDOW_LIMIT', all('PASS')),
+  row('999902', '虚构乙5日', [...Array(16).fill(20), 19, 18, 17, 16, 15], 5, 'NON_DECREASE', { 3: 'PASS', 5: 'PASS', 10: 'FAIL', 15: 'FAIL', 20: 'FAIL' }),
+  row('999903', '虚构丙3日', [...Array(18).fill(10), 9, 8, 7], 3, 'NON_DECREASE', { 3: 'PASS', 5: 'FAIL', 10: 'FAIL', 15: 'FAIL', 20: 'FAIL' }),
+  row('999904', '虚构丁短历史', [...Array(15).fill(null), 20, 19, 18, 17, 16, 15], 5, 'UNAVAILABLE', { 3: 'PASS', 5: 'PASS', 10: 'UNKNOWN', 15: 'UNKNOWN', 20: 'UNKNOWN' }, Object.fromEntries(Array.from({ length: 15 }, (_, i) => [i, 'SOURCE_SESSION_MISSING'])), 6),
+  row('999905', '虚构戊有效零', Array(21).fill(0), 0, 'NON_DECREASE', all('FAIL')),
+  row('999906', '虚构己无交易', [...Array.from({ length: 20 }, (_, i) => 40 - i), null], 0, 'NO_TRADE', all('FAIL'), { 20: 'NO_TRADE' }),
+  ...Array.from({ length: 66 }, (_, i) => row(String(998000 + i), '虚构分页样本' + i, [...Array(18).fill(30), 29, 28, 27], 3, 'NON_DECREASE', { 3: 'PASS', 5: 'FAIL', 10: 'FAIL', 15: 'FAIL', 20: 'FAIL' })),
+];
+function publication(dataset = '0123456789abcdef', empty = false) {
+  const values = empty ? rows.map(r => ({ ...r, values: Array(21).fill(10), point_reasons: {}, groups: all('FAIL'), streak_days: 0, streak_boundary: 'NON_DECREASE' })) : rows;
+  const source = { schema: 'stock.chips.market.manifest.v1', dataset_id: dataset, active_slot: dataset, as_of: sessions.at(-1), universe_total: values.length, scanned_count: values.length, coefficient: 2, model_version: model, universe_coverage: 'SITE_CATALOG_UNVERIFIED' };
+  return {
+    source,
+    scan: {
+      schema: 'stock.chips.concentration.v1', rule_version: rule, dataset_id: dataset, active_slot: dataset,
+      as_of: source.as_of, coefficient: 2, model_version: model,
+      window_policy: 'EACH_DATE_INDEPENDENT_TRAILING_210_OBSERVED_BARS', sessions,
+      universe_total: values.length, processed_count: values.length, source_universe_coverage: source.universe_coverage,
+      input_fingerprint: 'f'.repeat(64), rows: values,
+      groups: Object.fromEntries(groups.map(n => [n, Object.fromEntries(['PASS', 'FAIL', 'UNKNOWN'].map(s => [s, values.filter(r => r.groups[n] === s).length]))])),
+    },
+  };
+}
+
+const results = [];
+async function setup(browser, options = {}) {
+  const context = await browser.newContext({ viewport: { width: options.width || 1440, height: 960 }, hasTouch: options.width === 375, serviceWorkers: 'block' });
+  const page = await context.newPage();
+  page.setDefaultTimeout(20000);
+  const state = { auth: options.auth !== false, authReads: 0, documents: 0, writes: [], unexpected: [], errors: [], reads: [], failSummary: options.failSummary || false, failManifest: false, held: options.held || false, release: null, data: publication(undefined, options.empty) };
+  page.on('pageerror', error => state.errors.push(error.message));
+  await context.route('**/*', async route => {
+    const request = route.request(), url = new URL(request.url());
+    if (url.origin === new URL(SITE).origin) {
+      if (request.isNavigationRequest()) state.documents++;
+      return route.continue();
+    }
+    if (url.origin !== API) { state.unexpected.push(url.origin + url.pathname); return route.abort(); }
+    if (request.method() !== 'GET') { state.writes.push(request.method() + ' ' + url.pathname); return route.abort(); }
+    const json = (value, status = 200) => route.fulfill({ status, json: value, headers: { 'access-control-allow-origin': new URL(SITE).origin, 'access-control-allow-credentials': 'true' } });
+    if (url.pathname === '/auth/me') {
+      state.authReads++;
+      return json(state.auth ? { username: '隔离验收' } : { error: 'expired' }, state.auth ? 200 : 401);
+    }
+    state.reads.push(url.pathname);
+    if (!state.auth) return json({ error: 'expired' }, 401);
+    if (url.pathname === '/data/chips/daily/manifest.json') return json(state.failManifest ? {} : state.data.source, state.failManifest ? 404 : 200);
+    if (/^\/data\/chips\/daily\/[a-f0-9]{16}\/concentration\.json$/.test(url.pathname)) {
+      if (state.held) await new Promise(resolve => { state.release = resolve; });
+      try { return await json(state.failSummary ? {} : state.data.scan, state.failSummary ? 404 : 200); }
+      catch (error) { if (!/closed|handled|aborted|canceled/i.test(error.message)) throw error; return; }
+    }
+    return json({ error: 'No isolated fixture for this existing page' }, 404);
+  });
+  return { context, page, state };
+}
+async function ready(page, group = 3) {
+  await page.getByRole('heading', { name: '至少连续下降' + group + '个交易日', exact: true }).waitFor();
+}
+const mainRows = page => page.locator('.conc-table-wrap').first().locator('tbody tr');
+const chooseGroup = (page, n) => page.getByRole('button', { name: new RegExp('^连续' + n + '天') }).click();
+async function check(browser, name, options, run) {
+  const view = await setup(browser, options);
+  try {
+    await run(view.page, view.state);
+    assert.deepEqual(view.state.errors, [], 'No browser runtime errors');
+    assert.deepEqual(view.state.writes, [], 'Browser checks never write an API');
+    assert.deepEqual(view.state.unexpected, [], 'No external network destinations');
+    results.push({ name, status: 'passed' });
+  } catch (error) {
+    await view.page.screenshot({ path: path.join(OUT, name + '-failure.png'), fullPage: false }).catch(() => {});
+    results.push({ name, status: 'failed', error: error.stack });
+  } finally {
+    if (view.state.release) view.state.release();
+    await view.context.close();
+  }
+  console.log(JSON.stringify(results.at(-1)));
+}
+
+(async () => {
+  fs.mkdirSync(OUT, { recursive: true });
+  const browser = await chromium.launch({ channel: 'chrome', headless: true });
+  try {
+    await check(browser, 'groups-search-sort-pagination-and-detail', {}, async (page, state) => {
+      await page.goto(SITE + '/concentration');
+      await ready(page);
+      assert.deepEqual(state.reads, ['/data/chips/daily/manifest.json', '/data/chips/daily/0123456789abcdef/concentration.json']);
+      assert.equal(await mainRows(page).count(), 60);
+      assert.match(await mainRows(page).first().innerText(), /虚构甲20日/);
+      assert.match(await mainRows(page).first().innerText(), /≥20天/);
+      for (const n of groups) {
+        await chooseGroup(page, n);
+        await ready(page, n);
+        assert.equal(await page.getByRole('button', { name: new RegExp('^连续' + n + '天') }).getAttribute('aria-pressed'), 'true');
+        if (n >= 10) assert.equal(await mainRows(page).count(), 1);
+      }
+      assert.equal(state.reads.length, 2, 'Group changes do not refetch the market');
+      await chooseGroup(page, 5);
+      await page.getByLabel('集中度排序').selectOption('lowest');
+      assert.match(await mainRows(page).first().innerText(), /虚构乙5日/);
+      await page.getByLabel('搜索集中度股票').fill('  999904  ');
+      assert.equal(await mainRows(page).count(), 1);
+      assert.match(await page.locator('.conc-detail').innerText(), /虚构丁短历史/);
+      await page.getByText('展开21个交易日的精确读数与缺失说明', { exact: true }).click();
+      assert.equal(await page.locator('.conc-series-table tbody tr').count(), 21);
+      assert.match(await page.locator('.conc-series-table').innerText(), /缺少该交易日行情/);
+      await page.getByRole('tab', { name: '口径与范围', exact: true }).click();
+      assert.match(await page.getByRole('tabpanel').innerText(), /N\+1/);
+      await page.getByLabel('搜索集中度股票').fill('');
+      await chooseGroup(page, 3);
+      await page.getByRole('button', { name: '下一页股票', exact: true }).click();
+      assert.equal(await mainRows(page).count(), 10);
+      await page.getByRole('button', { name: '上一页股票', exact: true }).click();
+      await page.getByLabel('集中度排序').selectOption('streak');
+      await page.getByRole('tab', { name: '逐日读数', exact: true }).click();
+      await page.locator('.wb-workspace').evaluate(el => { el.scrollTop = 0; });
+      await page.screenshot({ path: path.join(OUT, 'desktop-synthetic.png') });
+    });
+    await check(browser, 'unknown-zero-and-known-no-trade', {}, async page => {
+      await page.goto(SITE + '/concentration'); await ready(page);
+      await chooseGroup(page, 10);
+      await page.getByLabel('集中度名单状态').selectOption('UNKNOWN');
+      assert.equal(await mainRows(page).count(), 1);
+      assert.match(await mainRows(page).innerText(), /虚构丁短历史/);
+      assert.match(await mainRows(page).innerText(), /无法判断/);
+      await chooseGroup(page, 3);
+      await page.getByLabel('集中度名单状态').selectOption('FAIL');
+      await page.getByLabel('集中度排序').selectOption('lowest');
+      assert.match(await mainRows(page).first().innerText(), /虚构戊有效零/);
+      assert.match(await mainRows(page).first().innerText(), /0\.00%/);
+      await page.getByLabel('搜索集中度股票').fill('999906');
+      await page.getByText('展开21个交易日的精确读数与缺失说明', { exact: true }).click();
+      assert.match(await page.locator('.conc-series-table').innerText(), /确认无成交/);
+    });
+    await check(browser, 'keyboard-selection-remains-visible', {}, async page => {
+      await page.goto(SITE + '/concentration'); await ready(page);
+      await mainRows(page).first().locator('button').focus();
+      for (let i = 0; i < 18; i++) await page.keyboard.press('ArrowDown');
+      const selected = page.locator('.conc-table-wrap').first().locator('button[aria-pressed=true]');
+      await selected.waitFor();
+      const visible = await selected.evaluate(el => { const r = el.getBoundingClientRect(); return r.top >= 0 && r.bottom <= innerHeight; });
+      assert.equal(visible, true, 'Selected keyboard row stays in the viewport');
+      assert.equal(await selected.evaluate(el => el === document.activeElement), true);
+    });
+    await check(browser, 'refresh-recovery-retains-context', {}, async (page, state) => {
+      await page.goto(SITE + '/concentration'); await ready(page);
+      await chooseGroup(page, 5);
+      await page.getByLabel('搜索集中度股票').fill('999904');
+      await page.getByLabel('集中度排序').selectOption('lowest');
+      state.failSummary = true;
+      await page.getByRole('button', { name: '刷新集中度筛选', exact: true }).click();
+      await page.getByRole('alert').waitFor();
+      assert.match(await page.getByRole('alert').innerText(), /上次完整结果/);
+      assert.equal(await page.getByLabel('搜索集中度股票').inputValue(), '999904');
+      assert.equal(await page.getByLabel('集中度排序').inputValue(), 'lowest');
+      assert.equal(await mainRows(page).count(), 1);
+      state.failSummary = false;
+      await page.getByRole('button', { name: '重新读取', exact: true }).click();
+      await page.getByRole('alert').waitFor({ state: 'detached' });
+      await ready(page, 5);
+      assert.equal(await mainRows(page).count(), 1);
+    });
+    await check(browser, 'missing-summary-does-not-mean-empty-group', { failSummary: true }, async (page, state) => {
+      await page.goto(SITE + '/concentration');
+      await page.getByRole('alert').waitFor();
+      assert.match(await page.getByRole('alert').innerText(), /尚未发布/);
+      assert.equal(await page.getByText('暂无连续下降3天的股票', { exact: true }).count(), 0);
+      state.failSummary = false;
+      await page.getByRole('button', { name: '重新读取', exact: true }).click();
+      await ready(page);
+    });
+    await check(browser, 'complete-empty-groups-are-explicit', { empty: true }, async page => {
+      await page.goto(SITE + '/concentration'); await ready(page);
+      await page.getByRole('heading', { name: '暂无连续下降3天的股票', exact: true }).waitFor();
+      assert.equal(await page.locator('.conc-detail').count(), 0);
+      await chooseGroup(page, 20);
+      await page.getByRole('heading', { name: '暂无连续下降20天的股票', exact: true }).waitFor();
+    });
+    await check(browser, 'shared-auth-navigation-back-forward', {}, async (page, state) => {
+      await page.goto(SITE + '/concentration'); await ready(page);
+      for (const href of ['/chips', '/trend', '/golden', '/', '/concentration']) {
+        await page.locator('nav[aria-label="主要功能"] a[href="' + href + '"]').click();
+        await page.waitForURL(SITE + href);
+      }
+      await ready(page);
+      await page.goBack();
+      await page.waitForURL(SITE + '/');
+      await page.goForward();
+      await page.waitForURL(SITE + '/concentration'); await ready(page);
+      assert.equal(state.authReads, 1);
+      assert.equal(state.documents, 1);
+      assert.equal(state.reads.some(x => x.includes('_rsc')), false);
+    });
+    await check(browser, 'expired-session-unmounts-private-results', {}, async (page, state) => {
+      await page.goto(SITE + '/concentration'); await ready(page);
+      state.auth = false;
+      await page.getByRole('button', { name: '刷新集中度筛选', exact: true }).click();
+      await page.locator('input[type=password]').waitFor();
+      assert.equal(await page.locator('.conc-table').count(), 0);
+    });
+    await check(browser, 'anonymous-direct-route-is-protected', { auth: false }, async (page, state) => {
+      await page.goto(SITE + '/concentration');
+      await page.locator('input[type=password]').waitFor();
+      assert.deepEqual(state.reads, []);
+    });
+    for (const width of [900, 760, 375]) {
+      await check(browser, 'responsive-' + width, { width }, async page => {
+        await page.goto(SITE + '/concentration'); await ready(page);
+        assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+        for (const n of groups) assert.equal(await page.getByRole('button', { name: new RegExp('^连续' + n + '天') }).isVisible(), true);
+        await page.screenshot({ path: path.join(OUT, 'width-' + width + '-synthetic.png') });
+        await page.getByLabel('搜索集中度股票').fill('999901');
+        await page.locator('.conc-detail').scrollIntoViewIfNeeded();
+        await page.screenshot({ path: path.join(OUT, 'detail-' + width + '-synthetic.png') });
+      });
+    }
+  } finally { await browser.close(); }
+  const report = { data: 'ALL CONCENTRATION VALUES AND STOCKS ARE SYNTHETIC', site: SITE, passed: results.every(r => r.status === 'passed'), checks: results };
+  fs.writeFileSync(path.join(OUT, 'browser.json'), JSON.stringify(report, null, 2));
+  if (!report.passed) process.exitCode = 1;
+})().catch(error => { console.error(error); process.exitCode = 1; });

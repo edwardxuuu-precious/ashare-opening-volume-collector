@@ -2,6 +2,7 @@ export const sitePaths = [
   '/',
   '/chips',
   '/chips/calibration',
+  '/concentration',
   '/trend',
   '/trend/research',
   '/golden',
