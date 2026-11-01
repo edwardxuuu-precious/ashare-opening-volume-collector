@@ -17,7 +17,10 @@ import { useStockListNavigation } from '@/components/use-stock-list-navigation';
 import { stockListMatches } from '@/lib/stock-list';
 import { authRead } from '@/lib/auth-fetch';
 import {
-  concentrationGroups,
+  concentrationGroupRegistry,
+  concentrationSeries,
+  concentrationStartValue,
+  concentrationDrop,
   concentrationReason,
   concentrationStateText,
   concentrationStreakText,
@@ -49,11 +52,7 @@ type Sort = 'streak' | 'lowest' | 'drop';
 type Tab = 'series' | 'method';
 const percent = (value: number | null | undefined) =>
   value === null || value === undefined ? '待核实' : `${value.toFixed(2)}%`;
-const drop = (row: ConcentrationRow, group: ConcentrationGroup) => {
-  const start = row.values[20 - group],
-    current = row.values[20];
-  return start === null || current === null ? null : start - current;
-};
+const drop = concentrationDrop;
 
 async function read<T>(
   path: string,
@@ -93,24 +92,27 @@ function chartRange(values: number[]) {
 
 function SeriesChart({
   row,
-  sessions,
+  scan,
   group,
 }: {
   row: ConcentrationRow;
-  sessions: string[];
+  scan: ConcentrationScan;
   group: ConcentrationGroup;
 }) {
-  const available = row.values.filter(
-    (value): value is number => value !== null,
+  const { sessions, values, highlightFrom } = concentrationSeries(
+    scan,
+    row,
+    group,
   );
+  const available = values.filter((value): value is number => value !== null);
   if (!available.length)
     return <p className="conc-note">当前股票没有可绘制的集中度读数。</p>;
   const { low, high } = chartRange(available);
-  const x = (index: number) => 48 + (index / 20) * 686;
+  const x = (index: number) => 48 + (index / (values.length - 1)) * 686;
   const y = (value: number) => 180 - ((value - low) / (high - low)) * 164;
   const segments: string[] = [];
   let current: string[] = [];
-  for (const [index, value] of row.values.entries()) {
+  for (const [index, value] of values.entries()) {
     if (value === null) {
       if (current.length) segments.push(current.join(' '));
       current = [];
@@ -121,13 +123,13 @@ function SeriesChart({
     <svg
       className="conc-chart"
       viewBox="0 0 760 220"
-      aria-label={`${row.name}近21个交易日90%筹码集中度`}
+      aria-label={`${row.name}${values.length}个交易日90%筹码集中度`}
     >
       <title>{row.name}，数值越小，成本越集中；缺失日期留空。</title>
       <rect
-        x={x(20 - group)}
+        x={x(highlightFrom)}
         y="12"
-        width={x(20) - x(20 - group)}
+        width={x(values.length - 1) - x(highlightFrom)}
         height="168"
         className="conc-chart-window"
       />
@@ -151,7 +153,7 @@ function SeriesChart({
       {segments.map((points, index) => (
         <polyline key={index} points={points} className="conc-chart-line" />
       ))}
-      {row.values.map((value, index) =>
+      {values.map((value, index) =>
         value === null ? null : (
           <circle
             key={sessions[index]}
@@ -166,11 +168,14 @@ function SeriesChart({
           </circle>
         ),
       )}
-      {[0, 5, 10, 15, 20].map((index) => (
-        <text key={index} x={x(index)} y="205" textAnchor="middle">
-          {sessions[index].slice(5)}
-        </text>
-      ))}
+      {[0, 1, 2, 3, 4].map((tick) => {
+        const index = Math.round((tick * (values.length - 1)) / 4);
+        return (
+          <text key={index} x={x(index)} y="205" textAnchor="middle">
+            {sessions[index].slice(5)}
+          </text>
+        );
+      })}
     </svg>
   );
 }
@@ -193,22 +198,31 @@ export default function ConcentrationPage() {
   const busy = load.kind === 'loading' || load.kind === 'refreshing';
   useEffect(() => {
     const controller = new AbortController();
-    void read(
-      '/data/chips/daily/manifest.json',
-      controller.signal,
-      parseConcentrationSource,
-    )
-      .then(async (value) => {
-        const result = await read(
-          `/data/chips/daily/${value.active_slot}/concentration.json`,
+    async function publicationPair() {
+      for (let attempt = 0; attempt < 2; attempt++) {
+        const source = await read(
+          '/data/chips/daily/manifest.json',
           controller.signal,
-          (input) => parseConcentrationScan(input, value),
+          parseConcentrationSource,
         );
-        if (!controller.signal.aborted)
-          setLoad({
-            kind: 'ready',
-            publication: { source: value, scan: result },
-          });
+        const raw = await read(
+          `/data/chips/daily/${source.active_slot}/concentration-v2.json`,
+          controller.signal,
+          (value) => value,
+        );
+        const current = await read(
+          '/data/chips/daily/manifest.json',
+          controller.signal,
+          parseConcentrationSource,
+        );
+        if (JSON.stringify(current) !== JSON.stringify(source)) continue;
+        return { source, scan: parseConcentrationScan(raw, source) };
+      }
+      throw Error('筹码批次正在切换，请重新读取完整结果。');
+    }
+    void publicationPair()
+      .then((publication) => {
+        if (!controller.signal.aborted) setLoad({ kind: 'ready', publication });
       })
       .catch((error) => {
         if (controller.signal.aborted) return;
@@ -296,6 +310,11 @@ export default function ConcentrationPage() {
     }
   }
   const selectedDrop = selected ? drop(selected, group) : null;
+  const groupDefinition = concentrationGroupRegistry.find(
+    (entry) => entry.key === group,
+  );
+  const selectedSeries =
+    scan && selected ? concentrationSeries(scan, selected, group) : null;
   return (
     <div className="chip-site chip-workbench wb-site concentration-page">
       <SiteHeader active="concentration">
@@ -311,15 +330,15 @@ export default function ConcentrationPage() {
       </SiteHeader>
       <WorkbenchPageBar
         title="连续集中度筛选"
-        description="90%筹码成本集中度逐日严格下降 · 历史换手衰减系数2"
+        description="90%筹码成本集中度逐日下降或持平 · 历史换手衰减系数2"
         date={scan?.as_of}
         dateLabel="筛选截至"
       />
       <WorkbenchShell
         sidebar={
-          <aside className="wb-sidebar conc-sidebar" aria-label="连续下降分组">
+          <aside className="wb-sidebar conc-sidebar" aria-label="连续不增分组">
             <WorkbenchListHeader
-              title="连续下降分组"
+              title="连续不增分组"
               count={scan?.groups[group][category] ?? null}
               ready={!!scan}
               search={{
@@ -331,13 +350,15 @@ export default function ConcentrationPage() {
                   setCode('');
                 },
               }}
-              filters={concentrationGroups.map((value) => ({
-                id: String(value),
-                label: `连续${value}天`,
-                count: scan?.groups[value].PASS ?? null,
-                active: value === group,
-                onSelect: () => chooseGroup(value),
-              }))}
+              filters={concentrationGroupRegistry.map(
+                ({ key: value, label }) => ({
+                  id: String(value),
+                  label,
+                  count: scan?.groups[value].PASS ?? null,
+                  active: value === group,
+                  onSelect: () => chooseGroup(value),
+                }),
+              )}
             />
             <div className="conc-sidebar-note">
               <p>每组按“至少N个交易日”筛选，名单可重叠。</p>
@@ -352,10 +373,10 @@ export default function ConcentrationPage() {
                 </div>
                 <div>
                   <dt>比较方式</dt>
-                  <dd>逐日严格降低</dd>
+                  <dd>逐日下降或持平</dd>
                 </div>
               </dl>
-              <p>相等会中断。缺少所需历史时显示无法判断。</p>
+              <p>相等有效，增加会中断。历史不足时保留已确认下界。</p>
             </div>
           </aside>
         }
@@ -393,7 +414,7 @@ export default function ConcentrationPage() {
             )}
             <div className="conc-toolbar">
               <div>
-                <h2>至少连续下降{group}个交易日</h2>
+                <h2>{groupDefinition?.title}</h2>
                 <p>
                   本组入选 {scan!.groups[group].PASS.toLocaleString()}只 ·
                   无法判断 {scan!.groups[group].UNKNOWN.toLocaleString()}只
@@ -422,7 +443,7 @@ export default function ConcentrationPage() {
                     value={sort}
                     onChange={(event) => chooseSort(event.target.value)}
                   >
-                    <option value="streak">连续下降天数</option>
+                    <option value="streak">实际连续不增天数</option>
                     <option value="lowest">当前集中度从低到高</option>
                     <option value="drop">区间降幅从高到低</option>
                   </select>
@@ -430,8 +451,9 @@ export default function ConcentrationPage() {
               </div>
             </div>
             <p className="conc-note">
-              比较起点 {scan!.sessions[20 - group]}，截至 {scan!.as_of}
-              。连续下降{group}天使用{group + 1}个连续交易日读数。
+              {group === 'LONG'
+                ? '大于20天需要至少21次比较、22个连续交易日读数；每股展示实际已确认长度与起点。'
+                : `比较起点 ${scan!.sessions[20 - group]}，截至 ${scan!.as_of}。连续不增${group}天使用${group + 1}个连续交易日读数。`}
             </p>
             {matched.length ? (
               <>
@@ -445,7 +467,7 @@ export default function ConcentrationPage() {
                       <tr>
                         <th>股票</th>
                         <th>当前集中度</th>
-                        <th>连续下降</th>
+                        <th>实际连续不增</th>
                         <th>起点集中度</th>
                         <th>区间降幅（百分点）</th>
                         <th>状态</th>
@@ -487,7 +509,9 @@ export default function ConcentrationPage() {
                             </td>
                             <td>{percent(row.values[20])}</td>
                             <td>{concentrationStreakText(row)}</td>
-                            <td>{percent(row.values[20 - group])}</td>
+                            <td>
+                              {percent(concentrationStartValue(row, group))}
+                            </td>
                             <td>
                               {delta === null ? '待核实' : delta.toFixed(2)}
                             </td>
@@ -512,7 +536,9 @@ export default function ConcentrationPage() {
                   title: search.trim()
                     ? '没有匹配的股票'
                     : category === 'PASS'
-                      ? `暂无连续下降${group}天的股票`
+                      ? group === 'LONG'
+                        ? '暂无连续不增大于20天的股票'
+                        : `暂无连续不增${group}天的股票`
                       : '当前分类没有股票',
                   message: search.trim()
                     ? '可以调整名称、代码或分组。'
@@ -531,16 +557,20 @@ export default function ConcentrationPage() {
                 </div>
                 <div className="conc-metrics">
                   <span>
-                    已确认连续下降{' '}
+                    已确认连续不增{' '}
                     <strong>{concentrationStreakText(selected)}</strong>
                   </span>
                   <span>
-                    本组净下降{' '}
+                    本组净变化{' '}
                     <strong>
                       {selectedDrop === null
                         ? '待核实'
                         : `${selectedDrop.toFixed(2)}个百分点`}
                     </strong>
+                  </span>
+                  <span>
+                    连续段起点{' '}
+                    <strong>{selected.streak_start_session ?? '待核实'}</strong>
                   </span>
                 </div>
                 {selected.short_history_days > 0 && (
@@ -549,11 +579,7 @@ export default function ConcentrationPage() {
                     个日期使用不足210根的已保存可用历史估算。
                   </p>
                 )}
-                <SeriesChart
-                  row={selected}
-                  sessions={scan!.sessions}
-                  group={group}
-                />
+                <SeriesChart row={selected} scan={scan!} group={group} />
                 <p className="conc-note">
                   浅色区间为当前分组的比较窗口。缺失读数留空，图表缩放不影响筛选。
                 </p>
@@ -581,7 +607,10 @@ export default function ConcentrationPage() {
                     aria-labelledby="concentration-inspector-series-tab"
                   >
                     <details className="conc-series-table">
-                      <summary>展开21个交易日的精确读数与缺失说明</summary>
+                      <summary>
+                        展开{selectedSeries!.values.length}
+                        个交易日的精确读数与缺失说明
+                      </summary>
                       <div className="conc-table-wrap">
                         <table className="conc-table">
                           <thead>
@@ -592,18 +621,18 @@ export default function ConcentrationPage() {
                             </tr>
                           </thead>
                           <tbody>
-                            {scan!.sessions.map((date, index) => (
+                            {selectedSeries!.sessions.map((date, index) => (
                               <tr key={date}>
                                 <td>{date}</td>
                                 <td>
-                                  {selected.values[index] === null
+                                  {selectedSeries!.values[index] === null
                                     ? '无法计算'
-                                    : `${selected.values[index]}%`}
+                                    : `${selectedSeries!.values[index]}%`}
                                 </td>
                                 <td>
-                                  {selected.point_reasons[String(index)]
+                                  {selectedSeries!.reasons[String(index)]
                                     ? concentrationReason(
-                                        selected.point_reasons[String(index)],
+                                        selectedSeries!.reasons[String(index)],
                                       )
                                     : '有效读数'}
                                 </td>
@@ -629,7 +658,7 @@ export default function ConcentrationPage() {
                       每个日期独立使用截至当日最近210根有效不复权行情；历史不足时按已核验的可用输入估算并保留说明。模型为系数2、150个动态价格节点、OHLC4三角成交分配与零初始化，未认证为某款看盘软件的完全等价实现。
                     </p>
                     <p>
-                      筛选比较未四舍五入的数值。连续下降N天需要N+1个连续市场交易日，每一日均严格低于前一日；相等、上升或确认无交易会中断。缺数据不跳过，有已知反例的窗口为未满足，其余所需读数缺失为无法判断。各组按至少N天计入，允许重叠；“≥20天”表示当前窗口至少已确认20次下降。
+                      筛选比较未四舍五入的数值。连续不增N天需要N+1个连续市场交易日，每一日均小于等于前一日；相等有效，增加或确认无交易会中断。缺数据不跳过，有已知反例的窗口为未满足，其余所需读数缺失为无法判断。各组按至少N天计入，允许重叠；大于20天需要至少21次比较。仅增加边界给出精确长度，其余边界显示“≥N天”。长期组显示完整N+1点，原五组显示近21点。
                     </p>
                     <p>
                       当前股票池范围沿用已发布目录，不套用其他页面的价格、涨停或主峰条件。短历史读数{' '}
