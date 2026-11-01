@@ -217,8 +217,37 @@ async function check(browser, name, options, run) {
       await page.getByText('展开67个交易日的精确读数与缺失说明', {exact: true}).click();
       assert.equal(await page.locator('.conc-series-table tbody tr').count(), 67);
       assert.match(await page.locator('.conc-series-table tbody tr').first().innerText(), new RegExp(streakSessions.at(-67)));
+      for (const width of [760, 375]) {
+        await page.setViewportSize({width, height: 960});
+        assert.equal(await page.locator('.conc-chart').evaluate(chart => {
+          const bounds = chart.getBoundingClientRect();
+          return [...chart.querySelectorAll('text')].every(label => {
+            const rect = label.getBoundingClientRect();
+            return rect.left >= bounds.left - 1 && rect.right <= bounds.right + 1;
+          });
+        }), true, 'All mobile concentration axis labels fit inside their chart');
+      }
       await chooseGroup(page, 3);
       assert.equal(await page.locator('.conc-chart-point').count(), 21);
+    });
+    await check(browser, 'mobile-axis-labels-fit-full-scale', {}, async (page, state) => {
+      const row = state.data.scan.rows.find(row => row.security_id === '999901');
+      row.values = Array.from({length: 21}, (_, i) => 100 - i * 5);
+      row.streak_values = [...Array(46).fill(100), ...row.values];
+      row.streak_boundary.previous_value = 99;
+      row.streak_boundary.anchor_value = 100;
+      await page.goto(SITE + '/concentration'); await ready(page);
+      await chooseGroup(page, 'LONG'); await ready(page, 'LONG');
+      for (const width of [760, 375]) {
+        await page.setViewportSize({width, height: 960});
+        assert.equal(await page.locator('.conc-chart').evaluate(chart => {
+          const bounds = chart.getBoundingClientRect();
+          return [...chart.querySelectorAll('text')].every(label => {
+            const rect = label.getBoundingClientRect();
+            return rect.left >= bounds.left - 1 && rect.right <= bounds.right + 1;
+          });
+        }), true, 'Full-scale mobile labels fit inside the concentration chart');
+      }
     });
     await check(browser, 'long-no-trade-before-boundary-retains-lower-bound', {}, async (page, state) => {
       const zero = state.data.scan.rows.find(row => row.security_id === '999905');

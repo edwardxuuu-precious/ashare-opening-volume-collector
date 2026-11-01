@@ -108,7 +108,7 @@ function SeriesChart({
   if (!available.length)
     return <p className="conc-note">当前股票没有可绘制的集中度读数。</p>;
   const { low, high } = chartRange(available);
-  const x = (index: number) => 48 + (index / (values.length - 1)) * 686;
+  const x = (index: number) => 90 + (index / (values.length - 1)) * 644;
   const y = (value: number) => 180 - ((value - low) / (high - low)) * 164;
   const segments: string[] = [];
   let current: string[] = [];
@@ -138,13 +138,13 @@ function SeriesChart({
         return (
           <g key={index}>
             <line
-              x1="48"
+              x1="90"
               x2="734"
               y1={y(value)}
               y2={y(value)}
               className="conc-chart-grid"
             />
-            <text x="40" y={y(value) + 4} textAnchor="end">
+            <text x="82" y={y(value)} textAnchor="end" dominantBaseline="middle">
               {value.toFixed(1)}%
             </text>
           </g>
@@ -171,7 +171,12 @@ function SeriesChart({
       {[0, 1, 2, 3, 4].map((tick) => {
         const index = Math.round((tick * (values.length - 1)) / 4);
         return (
-          <text key={index} x={x(index)} y="205" textAnchor="middle">
+          <text
+            key={index}
+            x={x(index)}
+            y="205"
+            textAnchor={tick === 0 ? 'start' : tick === 4 ? 'end' : 'middle'}
+          >
             {sessions[index].slice(5)}
           </text>
         );
