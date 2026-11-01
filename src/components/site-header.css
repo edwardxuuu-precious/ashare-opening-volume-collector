@@ -121,25 +121,53 @@
   gap: 8px;
   flex-wrap: nowrap;
 }
-.stock-header .account-controls > span {
-  max-width: 100px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.stock-header .account-controls > button {
-  display: grid;
-  place-items: center;
-  width: 32px;
-  height: 32px;
+.stock-header .account-menu-trigger {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  min-width: 44px;
+  min-height: 34px;
+  padding: 3px 4px;
   border: 0;
   border-radius: 10px;
   background: transparent;
   color: var(--ui-muted);
+  cursor: pointer;
 }
-.stock-header .account-controls > button:hover {
+.stock-header .account-menu-trigger:hover,
+.stock-header .account-menu-trigger[data-popup-open] {
   background: var(--ui-selected);
   color: var(--ui-accent);
+}
+.account-avatar {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border: 1px solid #345cd61a;
+  border-radius: 50%;
+  background: var(--ui-selected);
+  color: var(--ui-accent);
+  font: 500 12px/1 var(--ui-font);
+}
+.account-menu {
+  width: 200px;
+  max-width: calc(100vw - 24px);
+  border-radius: 12px;
+  padding: 7px;
+  font: 12px/1.5 var(--ui-font);
+  box-shadow: var(--ui-shadow-popover);
+}
+.account-menu-user {
+  padding: 8px;
+  color: var(--ui-text);
+  overflow-wrap: anywhere;
+}
+.account-menu [role='menuitem'] {
+  min-height: 34px;
+  padding: 7px 8px;
+  font-size: 12px;
 }
 .stock-header .account-controls p {
   position: absolute;
@@ -210,9 +238,6 @@
   .stock-header .account-controls {
     font-size: 11px;
     gap: 6px;
-  }
-  .stock-header .account-controls > span {
-    max-width: 70px;
   }
   .stock-header .sync-detail-panel {
     position: fixed;

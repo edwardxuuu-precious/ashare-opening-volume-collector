@@ -93,7 +93,7 @@ export function ChipStockHistory({stock,previousDate,initialDate=null,onDateChan
         <button type="button" aria-label="前一交易日" aria-keyshortcuts="ArrowLeft" disabled={!previousAvailableDate} title={previousAvailableDate?`切换到${previousAvailableDate}（←）`:'已到最早可用日期'} onClick={()=>stepDate(-1)}>{workbench?'‹':'前一交易日'}</button>
         <button type="button" aria-label="后一交易日" aria-keyshortcuts="ArrowRight" disabled={!nextAvailableDate} title={nextAvailableDate?`切换到${nextAvailableDate}（→）`:'已到最新可用日期'} onClick={()=>stepDate(1)}>{workbench?'›':'后一交易日'}</button>
       </div>
-      <button className="chip-site-link" disabled={date===stock.as_of} onClick={()=>selectDate(stock.as_of)}>{workbench?'最新':'回到最新'}</button>
+      {date===stock.as_of?<output className="chip-history-latest">最新交易日</output>:<button className="chip-site-link" onClick={()=>selectDate(stock.as_of)}>回到最新</button>}
     </div>;
   return <div className={workbench?'chip-history-workbench':undefined}>
     {workbench&&<StockDetailHeader name={stock.name} code={stock.security_id} date={displayDate} close={quote.close} percent={quote.percent} quoteNote={!quote.hasCandle?(current?.market_session_status==='SOURCE_CONFIRMED_NO_TRADE'?`未交易 · 最近交易 ${current.last_trade_date}`:'当日行情待补齐'):undefined} badge={screeningRow&&<span className={`cw-screen-badge cw-screen-${chipScreenState(screeningRow).toLowerCase()}`}>{chipScreenState(screeningRow)==='PASS'?'当日入选':chipScreenState(screeningRow)==='UNKNOWN'?'数据不足':'未满足'}</span>}/>}

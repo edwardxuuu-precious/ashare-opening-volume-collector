@@ -330,7 +330,14 @@ export default function ConcentrationPage() {
       </SiteHeader>
       <WorkbenchPageBar
         title="连续集中度筛选"
-        description="90%筹码成本集中度逐日下降或持平 · 历史换手衰减系数2"
+        explanation={{
+          label: '筛选条件',
+          content: <>
+            <p>90%筹码成本集中度逐日小于等于前一日，下降或持平均有效，增加会中断。</p>
+            <p>每组按至少N个交易日筛选，名单可重叠。大于20天需要至少21次比较，并显示实际已确认天数。历史不足时保留下界与原因。模型衰减系数2。</p>
+            {scan && <p>本批包含{scan.universe_total.toLocaleString()}只已保存股票。</p>}
+          </>,
+        }}
         date={scan?.as_of}
         dateLabel="筛选截至"
       />
@@ -339,7 +346,7 @@ export default function ConcentrationPage() {
           <aside className="wb-sidebar conc-sidebar" aria-label="连续不增分组">
             <WorkbenchListHeader
               title="连续不增分组"
-              count={scan?.groups[group][category] ?? null}
+              count={scan ? matched.length : null}
               ready={!!scan}
               search={{
                 value: search,
@@ -360,37 +367,9 @@ export default function ConcentrationPage() {
                 }),
               )}
             />
-            <div className="conc-sidebar-note">
-              <p>每组按“至少N个交易日”筛选，名单可重叠。</p>
-              <dl>
-                <div>
-                  <dt>集中度口径</dt>
-                  <dd>90%成本区间</dd>
-                </div>
-                <div>
-                  <dt>衰减系数</dt>
-                  <dd>2</dd>
-                </div>
-                <div>
-                  <dt>比较方式</dt>
-                  <dd>逐日下降或持平</dd>
-                </div>
-              </dl>
-              <p>相等有效，增加会中断。历史不足时保留已确认下界。</p>
-            </div>
           </aside>
         }
         contentClassName="conc-workspace"
-        footer={
-          <>
-            <span>
-              {scan
-                ? `${scan.universe_total.toLocaleString()}只已保存股票 · 数据截至${scan.as_of}`
-                : '读取已发布筹码数据'}
-            </span>
-            <span>系数2 · 90%成本集中度</span>
-          </>
-        }
       >
         {!publication && (
           <WorkbenchState
@@ -409,7 +388,7 @@ export default function ConcentrationPage() {
             {source?.universe_coverage !==
               'OFFICIAL_CURRENT_LIST_RECONCILED' && (
               <p className="conc-coverage" role="note">
-                当前按已保存的股票池筛选，最新上市名单覆盖仍待核实。
+                股票池覆盖范围待核实。
               </p>
             )}
             <div className="conc-toolbar">

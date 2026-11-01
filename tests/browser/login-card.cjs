@@ -338,10 +338,12 @@ async function assertOnScreen(locator, viewport) {
     loginMode = 'success';
     await submit.click();
     await page.locator('.account-controls').waitFor();
+    await page.getByRole('button', { name: '账户菜单', exact: true }).click();
     assert.match(
-      await page.locator('.account-controls').innerText(),
+      await page.getByRole('menu').innerText(),
       /登录界面验收/,
     );
+    await page.keyboard.press('Escape');
     await page.locator('.results tbody tr').first().waitFor();
     assert.ok(
       (await page.locator('.results tbody tr').first().innerText()).includes(
@@ -367,7 +369,8 @@ async function assertOnScreen(locator, viewport) {
     await page.locator('.account-controls').waitFor();
     assert.ok(counts.me >= 2);
     checks.push('a mocked authenticated session survives reload');
-    await page.getByRole('button', { name: '退出登录', exact: true }).click();
+    await page.getByRole('button', { name: '账户菜单', exact: true }).click();
+    await page.getByRole('menuitem', { name: '退出登录', exact: true }).click();
     await page.locator('.auth-form-panel form').waitFor();
     assert.equal(counts.logout, 1);
     assert.equal(await page.locator('input[name="password"]').inputValue(), '');

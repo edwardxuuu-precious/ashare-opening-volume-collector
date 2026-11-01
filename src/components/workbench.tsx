@@ -1,34 +1,49 @@
+'use client';
+
 import type { ReactNode } from 'react';
-import { Search } from 'lucide-react';
+import { ChevronDown, Search } from 'lucide-react';
 import { priceChangeClass, priceChangeText } from '@/lib/chart-readout';
+import { Popover, PopoverContent, PopoverTitle, PopoverTrigger } from './ui/popover';
 import './workbench.css';
 
 export function WorkbenchPageBar({
   title,
-  description,
+  modeLabel,
   date,
-  dateLabel = '结果日期',
+  dateLabel = '筛选日',
+  explanation,
+  status,
   children,
 }: {
   title: string;
-  description?: string;
+  modeLabel?: string;
   date?: string | null;
   dateLabel?: string;
+  explanation?: { label: string; content: ReactNode };
+  status?: ReactNode;
   children?: ReactNode;
 }) {
   return (
     <div className="wb-page-bar">
-      <div>
-        <h1>{title}</h1>
-        {description && <p>{description}</p>}
-      </div>
-      <div className="wb-page-actions">
-        {children}
+      <h1 className="wb-page-title">{title}</h1>
+      <div className="wb-page-context">
+        {modeLabel && <span className="wb-mode-label">{modeLabel}</span>}
         <span className="wb-date">
           <small>{dateLabel}</small>
           <time>{date ?? '—'}</time>
         </span>
+        {explanation && <Popover>
+          <PopoverTrigger className="wb-explanation-trigger">
+            {explanation.label}<ChevronDown size={12} aria-hidden="true" />
+          </PopoverTrigger>
+          <PopoverContent className="wb-explanation" align="start" sideOffset={8}>
+            <PopoverTitle>{explanation.label}</PopoverTitle>
+            <div className="wb-explanation-body">{explanation.content}</div>
+          </PopoverContent>
+        </Popover>}
+        {status && <output className="wb-context-status">{status}</output>}
       </div>
+      {children && <div className="wb-page-actions">{children}</div>}
     </div>
   );
 }
@@ -36,24 +51,19 @@ export function WorkbenchPageBar({
 export function WorkbenchShell({
   sidebar,
   children,
-  footer,
   className = '',
   contentClassName = '',
 }: {
   sidebar: ReactNode;
   children: ReactNode;
-  footer?: ReactNode;
   className?: string;
   contentClassName?: string;
 }) {
   return (
-    <>
-      <div className={`wb-shell ${className}`}>
-        {sidebar}
-        <main className={`wb-workspace ${contentClassName}`}>{children}</main>
-      </div>
-      <footer className="wb-footer">{footer}</footer>
-    </>
+    <div className={`wb-shell ${className}`}>
+      {sidebar}
+      <main className={`wb-workspace ${contentClassName}`}>{children}</main>
+    </div>
   );
 }
 
@@ -83,7 +93,7 @@ export function WorkbenchListHeader({
     <div className="wb-list-tools">
       <div className="wb-list-title">
         <h2>{title}</h2>
-        <span>{count === null ? '—' : `${count.toLocaleString()}${unit}`}</span>
+        {(!filters.length || search.value.trim()) && <span>{search.value.trim() ? '匹配 ' : ''}{count === null ? '—' : `${count.toLocaleString()}${unit}`}</span>}
       </div>
       <div className="wb-search">
         <Search size={14} aria-hidden="true" />
@@ -105,7 +115,7 @@ export function WorkbenchListHeader({
             disabled={!ready}
             onClick={filter.onSelect}
           >
-            {filter.label}
+            <span>{filter.label}</span>
             <b>{filter.count?.toLocaleString() ?? '—'}</b>
           </button>
         ))}
@@ -285,9 +295,7 @@ export function WorkbenchListFooter({
   pageSize = 60,
   onPageChange,
   dateKeys = false,
-  unit = '只',
 }: {
-  unit?: string;
   count: number;
   page: number;
   pageSize?: number;
@@ -297,10 +305,6 @@ export function WorkbenchListFooter({
   return (
     <footer className="wb-list-footer">
       <div>
-        <span>
-          {count.toLocaleString()}
-          {unit}
-        </span>
         <div className="wb-pagination">
           <button
             aria-label="上一页股票"

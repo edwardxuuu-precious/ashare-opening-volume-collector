@@ -114,8 +114,8 @@ export default function TrendDailyPage() {
   const updateMessage = running ? `正在更新 ${status.as_of} · ${status.scanned_count.toLocaleString()} / ${status.universe_total.toLocaleString()}只` : newerTarget ? `新结果待发布 · 当前查看 ${manifest?.as_of}` : status?.state === 'FAILED' || status?.state === 'SOURCE_PENDING' ? status.message : manifest?.source_generation_stale ? '行情已更新，筛选结果更新中。' : '';
   return <div className="chip-site chip-workbench tv-site td-site wb-site">
     <SiteHeader active="trend"><button className="stock-header-refresh" aria-label="刷新最新筛选" onClick={refreshData}><RefreshCw size={14}/><span>刷新</span></button></SiteHeader>
-    <WorkbenchPageBar title="趋势量价筛选" description="趋势准备 · 缩量观察 · 放量启动" date={manifest?.as_of}><SiteLink href="/trend/research">历史研究</SiteLink></WorkbenchPageBar>
-    <WorkbenchShell contentClassName="tv-workspace" footer={<><span>{manifest?`全市场 ${manifest.universe_total.toLocaleString()}只 · 入选 ${manifest.counts.SELECTED.toLocaleString()}只`:'正在读取每日结果…'}</span><span>{manifest?`更新至 ${manifest.as_of}`:'趋势量价'}</span></>} sidebar={
+    <WorkbenchPageBar title="趋势量价筛选" date={manifest?.as_of} explanation={{label:'筛选条件',content:<ol><li><b>趋势准备</b><p>先确认有效准备日，再观察后续缩量。</p></li><li><b>缩量观察</b><p>准备期均量不高于此前参考均量的70%。</p></li><li><b>放量启动</b><p>当日成交量达到冻结基准2倍，涨幅≥4%，且收盘高于开盘。</p></li></ol>}}><SiteLink href="/trend/research">历史研究</SiteLink></WorkbenchPageBar>
+    <WorkbenchShell contentClassName="tv-workspace" sidebar={
       <aside className="tv-sidebar wb-sidebar" aria-label="当日股票名单">
         <WorkbenchListHeader count={manifest?matched.length:null} ready={!!manifest} search={{label:'搜索当日股票',value:search,onChange:value=>filter(category,value)}} filters={categories.map(item=>({id:item.value,label:item.label,count:manifest?(item.value==='ALL'?rows.length:manifest.counts[item.value]):null,active:category===item.value,onSelect:()=>filter(item.value,search)}))}/>
         <ul ref={listArea} className="tv-list wb-stock-list" aria-label="当前筛选名单">

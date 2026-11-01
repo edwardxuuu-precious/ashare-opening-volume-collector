@@ -14,12 +14,12 @@ import {
   CircleHelp,
   LoaderCircle,
   LogOut,
-  UserRound,
 } from 'lucide-react';
 import { readResponse } from '../lib/read-request.ts';
 import { BrandIdentity } from './brand';
 import { SiteHeader } from './site-header';
 import { WorkbenchPageBar, WorkbenchShell, WorkbenchState, WorkbenchListSkeleton } from './workbench';
+import { DropdownMenu, DropdownMenuContent, DropdownMenuGroup, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from './ui/dropdown-menu';
 
 const AccountContext = createContext<{
   user: string;
@@ -35,17 +35,21 @@ export function AccountControls() {
   if (!account) return null;
   return (
     <div className="account-controls">
-      <UserRound size={16} aria-hidden="true" />
-      <span>{account.user}</span>
-      <button
-        type="button"
-        disabled={account.busy}
-        onClick={account.logout}
-        aria-label="退出登录"
-        title="退出登录"
-      >
-        <LogOut size={16} aria-hidden="true" />
-      </button>
+      <DropdownMenu>
+        <DropdownMenuTrigger className="account-menu-trigger" aria-label="账户菜单" disabled={account.busy}>
+          <span className="account-avatar" aria-hidden="true">{account.user.slice(0, 1).toLocaleUpperCase()}</span>
+          <ChevronDown size={12} aria-hidden="true" />
+        </DropdownMenuTrigger>
+        <DropdownMenuContent className="account-menu" align="end" sideOffset={8}>
+          <DropdownMenuGroup>
+            <DropdownMenuLabel className="account-menu-user">{account.user}</DropdownMenuLabel>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem onClick={account.logout} disabled={account.busy}>
+              <LogOut size={15} aria-hidden="true" />退出登录
+            </DropdownMenuItem>
+          </DropdownMenuGroup>
+        </DropdownMenuContent>
+      </DropdownMenu>
       {account.error && <p role="alert">{account.error}</p>}
     </div>
   );
@@ -182,7 +186,7 @@ export function AuthGate({ children }: { children: ReactNode }) {
       <div className="chip-site chip-workbench wb-site app-session-loading" aria-live="polite">
         <SiteHeader />
         <WorkbenchPageBar title="量序" />
-        <WorkbenchShell sidebar={<aside className="wb-sidebar"><WorkbenchListSkeleton /></aside>} footer={<span>正在打开工作台…</span>}>
+        <WorkbenchShell sidebar={<aside className="wb-sidebar"><WorkbenchListSkeleton /></aside>}>
           <WorkbenchState state={{kind:'loading',label:'正在验证登录…'}} />
         </WorkbenchShell>
       </div>

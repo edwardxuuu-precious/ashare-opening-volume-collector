@@ -9,7 +9,6 @@ import {
   Check,
   X,
   Share2,
-  Info,
   RefreshCw,
   ChevronLeft,
   ChevronRight,
@@ -631,7 +630,12 @@ export default function Home() {
           latestDate={manifest?.dates[0]?.date ?? null}
         />
       </SiteHeader>
-      <WorkbenchPageBar title="开盘量查询" description="首15分钟成交量 · 全天占比 · 日行情" dateLabel="数据更新至" date={manifest?.dates[0]?.date}/>
+      <WorkbenchPageBar title="开盘量查询" dateLabel="数据更新至" date={manifest?.dates[0]?.date} explanation={{label:'口径与来源',content:<>
+        <p>开盘占比 = 09:45首根15分钟成交量 ÷ 同日日线成交量 × 100%。统一按股计算，竞价沿用来源口径。</p>
+        {showQuoteColumns&&<p>涨跌幅 =（收盘 − 前收盘）÷ 前收盘；振幅 =（最高 − 最低）÷ 前收盘。价格取同日日线，不复权。</p>}
+        <p>缺失与无成交留空。开盘量为0且全天量为正数时，占比为0%。</p>
+        {manifest&&<p>{day?.scope==='full'?'已加载全市场数据':'当前查询为已保存数据'} · {loadedStocks.toLocaleString()}只 · {manifest.dates.length}个保存日。当前上市名单不代表历史当日全体成分。{missingRows>0&&` 当前有${missingRows}条缺失记录。`}</p>}
+      </>}}/>
       <aside className="query-panel" aria-label="股票查询">
         <div className="rail-brand-row">
           <h2>股票查询</h2>
@@ -1338,38 +1342,8 @@ export default function Home() {
               </section>
             </>
           )}
-          <footer className="data-footer">
-            <details className="method">
-              <summary>
-                <Info size={13} aria-hidden="true" />
-                口径与来源
-                <ChevronDown size={12} aria-hidden="true" />
-              </summary>
-              <div className="method-content">
-                <p>
-                  开盘占比 = 09:45 首根15分钟成交量 ÷ 同日日线成交量 ×
-                  100%。统一按股计算，竞价沿用来源口径。
-                </p>
-                {showQuoteColumns && (
-                  <p>
-                    涨跌幅 =（收盘 − 前收盘）÷ 前收盘；振幅 =（最高 − 最低）÷
-                    前收盘。价格取同日日线，不复权。
-                  </p>
-                )}
-                <p>缺失与无成交留空。开盘量为0且全天量为正数时，占比为0%。</p>
-                {manifest && (
-                  <p>
-                    {day?.scope === 'full'
-                      ? '已加载全市场数据'
-                      : '当前查询为已保存数据'}{' '}
-                    · {loadedStocks.toLocaleString()} 只 ·{' '}
-                    {manifest.dates.length}{' '}
-                    个保存日。当前上市名单不代表历史当日全体成分。
-                    {missingRows > 0 && ` 当前有 ${missingRows} 条缺失记录。`}
-                  </p>
-                )}
-              </div>
-            </details>
+          {(missingRows>0||(filters.mode==='range'&&!!day?.dates?.length))&&<footer className="data-footer">
+            {missingRows>0&&<output>当前有{missingRows}条缺失记录</output>}
             <span>
               {filters.mode === 'range' && day?.dates?.length ? (
                 <>
@@ -1378,7 +1352,7 @@ export default function Home() {
                 </>
               ) : null}
             </span>
-          </footer>
+          </footer>}
         </div>
       </main>
       <RecordDetail
