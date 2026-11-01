@@ -11,7 +11,7 @@ export function InspectorTabs<T extends string>({ tabs, value, onChange, idPrefi
   className?: string;
 }) {
   return <div className={className} role="tablist" aria-label={label}>
-    {tabs.map((tab, index) => <button key={tab.id} type="button" role="tab" id={`${idPrefix}-${tab.id}-tab`} aria-controls={`${idPrefix}-${tab.id}`} aria-selected={value === tab.id} tabIndex={value === tab.id ? 0 : -1} onClick={() => onChange(tab.id)} onKeyDown={event => {
+    {tabs.map((tab, index) => <button key={tab.id} type="button" role="tab" id={`${idPrefix}-${tab.id}-tab`} aria-controls={`${idPrefix}-${tab.id}`} aria-selected={value === tab.id} tabIndex={value === tab.id ? 0 : -1} onFocus={event => event.currentTarget.scrollIntoView({block:'nearest',inline:'nearest'})} onClick={() => onChange(tab.id)} onKeyDown={event => {
       if (event.defaultPrevented || event.nativeEvent.isComposing || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
       const next = inspectorTabIndex(event.key, index, tabs.length);
       if (next === null) return;
