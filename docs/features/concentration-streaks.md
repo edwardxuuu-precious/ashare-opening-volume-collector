@@ -52,4 +52,16 @@ python -m backend.chips.concentration_runner --bucket EXISTING_PRIVATE_BUCKET --
 
 页面构建基于当前已上线视觉版本 `0fa84de`，保留job89的公共样式和114个复制静态资源。新增路由使Vite将原筹码CSS中的一段图表读数样式移入共享文件，样式内容完整保留。保护构建包含七个页面与404，没有公开行情目录；最新样式通过12项隔离浏览器交互、错误恢复、登录保护及900、760、375px布局检查。正式登录和线上静态文件验收以发布后回执为准。
 
-私有证据目录为项目根目录下 `outputs/concentration-screen-20261101/`。`data-validation.json`记录全量核对，`data-publication.json`记录最终读回恢复，`auth-execution.json`记录认证部署，`artifact-validation.json`记录发布包，`browser-job89-style/browser.json`记录最新样式浏览器检查。原始行情、凭据和隔离测试数据均不进入发布包。
+本机私有证据目录为 `/Users/edward/Desktop/Stock/outputs/concentration-screen-20261101/`，与发布checkout分开。`data-validation.json`记录全量核对，`data-publication.json`记录最终读回恢复，`auth-execution.json`记录认证部署，`artifact-validation.json`记录发布包，`browser-job89-style/browser.json`记录最新样式浏览器检查。原始行情、凭据和隔离测试数据均不进入发布包。
+
+## 上线与真实验收
+
+2026-11-01 已上线[连续集中度筛选](https://stock.iteready.com/concentration)，主导航“连续集中度”。发布源码为 `b6a5178210b2591394725529e184db5bdb7e2293`，Amplify production job91的 `DEPLOY` 与 `VERIFY` 均为 `SUCCEED`。发布包173个文件、5357146字节，SHA-256为 `30ff2f1dfc2b37874b560851024e00c9ba8384921634bb93c0aa8923a28f205d`。
+
+首次托管上传连接返回 `URLError`，job90保持PENDING且没有执行步骤。其上传能力无法从服务审计记录恢复；随后明确取消job90并读回CANCELLED。改将同一发布包条件保存到既有私有桶，完整读回验证后，通过托管平台支持的临时S3下载地址启动job91。没有重复启动job90，没有重复发布数据摘要，也没有新增公开桶或修改访问权限。
+
+真实账号浏览器自动验收通过。私有压缩接口200，完整5577行与核对草稿一致；五组计数、20天组的三只股票、代码搜索、集中度排序和21日日期序列正确。1440px与375px实际界面已截图；主导航切页与返回、前进保留会话，不重载文档。脚本错误与意外写入均为0，实际写入仅为本次验收会话的登录和退出，没有修改行情、画线或批注记录。该证据不替代用户人工验收。
+
+线上七个HTML页面与44个JS、CSS文件共51个文件逐字节指纹匹配发布包。匿名摘要接口401，退出后再次读取401，静态站点原始摘要路径404，私有存储匿名读取403。20天组为煌上煌002695、中远海特600428、国联股份603613，均仅表示当前模型和日期窗口下的入选。
+
+发布与验收证据为同目录下 `deployment.json`、`job90-stop.json`、`production-readback.json`、`live-browser.json`，截图为 `live-desktop.png`、`live-mobile.png`、`live-mobile-detail.png`。源码已同步GitHub main；后续派生计算已接入原筹码workflow，首次未来交易日的自动执行结果仍待其实际运行验证。
