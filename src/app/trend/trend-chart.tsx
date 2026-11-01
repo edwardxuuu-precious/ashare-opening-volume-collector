@@ -68,6 +68,6 @@ export function TrendChart({ stock, date, screen, lengths = [60, 120, 250, 500],
       {screen?.baseline_mean !== null && screen?.baseline_mean !== undefined && screen.baseline_mean <= maxVolume && <g><line x1={left} x2={right} y1={vy(screen.baseline_mean)} y2={vy(screen.baseline_mean)} stroke="#345cd6" strokeDasharray="4 4" opacity=".7" /><text x={right + 10} y={vy(screen.baseline_mean) + 4} fontSize="10" fill="#345cd6">基准 B</text></g>}
       {hovered && <line x1={x(index)} x2={x(index)} y1={top} y2={volumeBottom} stroke="#65758d" strokeDasharray="3 4" opacity=".45" pointerEvents="none" />}
     </svg></div>
-    <div className="tv-chart-legend"><span><i className="tv-legend-recent" />准备期3日量</span><span><i className="tv-legend-reference" />此前10日量</span></div>
+    {screen && <div className="tv-chart-legend"><span><i className="tv-legend-recent" />准备期3日量</span><span><i className="tv-legend-reference" />此前10日量</span></div>}
   </section>;
 }

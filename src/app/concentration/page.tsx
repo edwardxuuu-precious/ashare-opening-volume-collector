@@ -32,6 +32,7 @@ import {
 import '../chips/chips.css';
 import '../chips/workbench.css';
 import './concentration.css';
+import { ConcentrationCandles } from './concentration-candles';
 
 export const dynamic = 'force-static';
 const api = (process.env.NEXT_PUBLIC_DATA_BASE || '').replace(/\/$/, '');
@@ -184,6 +185,7 @@ export default function ConcentrationPage() {
     [page, setPage] = useState(0),
     [code, setCode] = useState('');
   const [tab, setTab] = useState<Tab>('series');
+  const [chartPeriod, setChartPeriod] = useState(120);
   const listArea = useRef<HTMLDivElement>(null);
   const publication = 'publication' in load ? load.publication : null;
   const scan = publication?.scan,
@@ -547,6 +549,20 @@ export default function ConcentrationPage() {
                     个日期使用不足210根的已保存可用历史估算。
                   </p>
                 )}
+                <SeriesChart
+                  row={selected}
+                  sessions={scan!.sessions}
+                  group={group}
+                />
+                <p className="conc-note">
+                  浅色区间为当前分组的比较窗口。缺失读数留空，图表缩放不影响筛选。
+                </p>
+                <ConcentrationCandles
+                  source={publication.source}
+                  security={selected}
+                  period={chartPeriod}
+                  onPeriodChange={setChartPeriod}
+                />
                 <InspectorTabs<Tab>
                   idPrefix="concentration-inspector"
                   label="集中度核对资料"
@@ -564,14 +580,6 @@ export default function ConcentrationPage() {
                     role="tabpanel"
                     aria-labelledby="concentration-inspector-series-tab"
                   >
-                    <SeriesChart
-                      row={selected}
-                      sessions={scan!.sessions}
-                      group={group}
-                    />
-                    <p className="conc-note">
-                      浅色区间为当前分组的比较窗口。缺失读数留空，图表缩放不影响筛选。
-                    </p>
                     <details className="conc-series-table">
                       <summary>展开21个交易日的精确读数与缺失说明</summary>
                       <div className="conc-table-wrap">

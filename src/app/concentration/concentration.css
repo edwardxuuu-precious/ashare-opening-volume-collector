@@ -339,3 +339,58 @@
     font-size: 22px;
   }
 }
+.conc-candles {
+  min-width: 0;
+  margin: 22px 0;
+}
+.conc-candles h3 {
+  font-size: 14px;
+  font-weight: 600;
+  margin: 0 0 14px;
+}
+.conc-candles .tv-chart {
+  min-width: 0;
+}
+.conc-candles .tv-chart-toolbar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+  color: var(--ui-muted);
+  font-size: 11px;
+}
+.conc-candles .tv-chart-toolbar > small {
+  margin-left: auto;
+  font-size: 10px;
+}
+.conc-candles .tv-chart-scroll {
+  width: 100%;
+  height: var(--ui-chart-height);
+  overflow: hidden;
+}
+.conc-candles .tv-chart-scroll svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  touch-action: pan-y;
+  cursor: crosshair;
+}
+.conc-candle-state {
+  min-height: calc(var(--ui-chart-height) + 100px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--ui-muted);
+  font-size: 12px;
+}
+@media (max-width: 820px) {
+  .conc-candles .tv-chart-toolbar {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .conc-candles .tv-chart-toolbar > small {
+    margin-left: 0;
+  }
+}

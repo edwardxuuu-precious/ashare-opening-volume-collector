@@ -42,12 +42,23 @@ function publication(dataset = '0123456789abcdef', empty = false) {
   };
 }
 
+function stockFrame(dataset, code) {
+  const security = rows.find(row => row.security_id === code);
+  assert.ok(security, 'Only selected synthetic stocks can be read');
+  const count = code === '999904' ? 18 : 140;
+  const history = Array.from({ length: count }, (_, i) => ({
+    date: new Date(Date.UTC(2026, 9, 30 - (count - 1) + i)).toISOString().slice(0, 10),
+    open: '10', high: '13', low: '9', close: i === 19 ? '10' : '12', volume_shares: String(123456 + i),
+  }));
+  return { schema: 'stock.chips.market.stock.v1', dataset_id: dataset, as_of: sessions.at(-1), security_id: code, name: security.name, history };
+}
+
 const results = [];
 async function setup(browser, options = {}) {
   const context = await browser.newContext({ viewport: { width: options.width || 1440, height: 960 }, hasTouch: options.width === 375, serviceWorkers: 'block' });
   const page = await context.newPage();
   page.setDefaultTimeout(20000);
-  const state = { auth: options.auth !== false, authReads: 0, documents: 0, writes: [], unexpected: [], errors: [], reads: [], failSummary: options.failSummary || false, failManifest: false, held: options.held || false, release: null, data: publication(undefined, options.empty) };
+  const state = { auth: options.auth !== false, authReads: 0, documents: 0, writes: [], unexpected: [], errors: [], reads: [], failSummary: options.failSummary || false, failManifest: false, failStock: options.failStock || false, emptyStock: options.emptyStock || false, staleStock: options.staleStock || false, heldStock: options.heldStock || false, releaseStock: null, held: options.held || false, release: null, data: publication(undefined, options.empty) };
   page.on('pageerror', error => state.errors.push(error.message));
   await context.route('**/*', async route => {
     const request = route.request(), url = new URL(request.url());
@@ -69,6 +80,16 @@ async function setup(browser, options = {}) {
       if (state.held) await new Promise(resolve => { state.release = resolve; });
       try { return await json(state.failSummary ? {} : state.data.scan, state.failSummary ? 404 : 200); }
       catch (error) { if (!/closed|handled|aborted|canceled/i.test(error.message)) throw error; return; }
+    }
+    const stockPath = url.pathname.match(/^\/data\/chips\/daily\/([a-f0-9]{16})\/(\d{6})\.json$/);
+    if (stockPath) {
+      if (state.heldStock && stockPath[2] === '999901') await new Promise(resolve => { state.releaseStock = resolve; });
+      try {
+        const frame = stockFrame(stockPath[1], stockPath[2]);
+        if (state.emptyStock) frame.history = [];
+        if (state.staleStock) frame.history.pop();
+        return await json(state.failStock ? {} : frame, state.failStock ? 503 : 200);
+      } catch (error) { if (!/closed|handled|aborted|canceled/i.test(error.message)) throw error; return; }
     }
     return json({ error: 'No isolated fixture for this existing page' }, 404);
   });
@@ -92,6 +113,7 @@ async function check(browser, name, options, run) {
     results.push({ name, status: 'failed', error: error.stack });
   } finally {
     if (view.state.release) view.state.release();
+    if (view.state.releaseStock) view.state.releaseStock();
     await view.context.close();
   }
   console.log(JSON.stringify(results.at(-1)));
@@ -104,7 +126,7 @@ async function check(browser, name, options, run) {
     await check(browser, 'groups-search-sort-pagination-and-detail', {}, async (page, state) => {
       await page.goto(SITE + '/concentration');
       await ready(page);
-      assert.deepEqual(state.reads, ['/data/chips/daily/manifest.json', '/data/chips/daily/0123456789abcdef/concentration.json']);
+      assert.deepEqual(state.reads.filter(path => !/\/\d{6}\.json$/.test(path)), ['/data/chips/daily/manifest.json', '/data/chips/daily/0123456789abcdef/concentration.json']);
       assert.equal(await mainRows(page).count(), 60);
       assert.match(await mainRows(page).first().innerText(), /虚构甲20日/);
       assert.match(await mainRows(page).first().innerText(), /≥20天/);
@@ -114,7 +136,7 @@ async function check(browser, name, options, run) {
         assert.equal(await page.getByRole('button', { name: new RegExp('^连续' + n + '天') }).getAttribute('aria-pressed'), 'true');
         if (n >= 10) assert.equal(await mainRows(page).count(), 1);
       }
-      assert.equal(state.reads.length, 2, 'Group changes do not refetch the market');
+      assert.equal(state.reads.filter(path => !/\/\d{6}\.json$/.test(path)).length, 2, 'Group changes do not refetch the market');
       await chooseGroup(page, 5);
       await page.getByLabel('集中度排序').selectOption('lowest');
       assert.match(await mainRows(page).first().innerText(), /虚构乙5日/);
@@ -223,7 +245,80 @@ async function check(browser, name, options, run) {
       await page.locator('input[type=password]').waitFor();
       assert.deepEqual(state.reads, []);
     });
-    for (const width of [900, 760, 375]) {
+    await check(browser, 'candles-period-readout-and-order', {}, async (page, state) => {
+      await page.goto(SITE + '/concentration'); await ready(page);
+      const candles = page.locator('.conc-candles');
+      await candles.locator('[data-candle-date]').first().waitFor();
+      assert.equal(await candles.locator('[data-candle-date]').count(), 120);
+      assert.equal(await candles.getByRole('button', { name: '120根', exact: true }).getAttribute('aria-pressed'), 'true');
+      assert.equal(await candles.locator('.tv-chart-legend').count(), 0);
+      for (const [field, value] of [['open', '开 10.00'], ['high', '高 13.00'], ['low', '低 9.00'], ['close', '收 12.00']]) assert.equal(await candles.locator('[data-field=' + field + ']').innerText(), value);
+      assert.match(await candles.locator('[data-field=volume]').innerText(), /股/);
+      assert.equal(await candles.locator('[data-volume-date]').count(), 120);
+      assert.equal(await page.locator('.conc-detail').evaluate(el => {
+        const plot = el.querySelector('.conc-chart'), candles = el.querySelector('.conc-candles'), tabs = el.querySelector('[role=tablist]');
+        return !!(plot.compareDocumentPosition(candles) & Node.DOCUMENT_POSITION_FOLLOWING) && !!(candles.compareDocumentPosition(tabs) & Node.DOCUMENT_POSITION_FOLLOWING);
+      }), true);
+      const control = candles.getByRole('slider', { name: '查看K线日期' });
+      await control.focus(); await page.keyboard.press('Home');
+      assert.match(await candles.locator('.tv-candle-readout').innerText(), /20\.00%/);
+      await page.keyboard.press('End');
+      const lastDate = await control.getAttribute('aria-valuetext');
+      const svg = candles.locator('svg'); await svg.scrollIntoViewIfNeeded();
+      const box = await svg.boundingBox();
+      await page.mouse.move(box.x + 40, box.y + 45);
+      assert.notEqual(await control.getAttribute('aria-valuetext'), lastDate);
+      await page.mouse.move(box.x + box.width - 3, box.y + 3);
+      assert.equal(await control.getAttribute('aria-valuetext'), lastDate);
+      await candles.getByRole('button', { name: '60根', exact: true }).click();
+      assert.equal(await candles.locator('[data-candle-date]').count(), 60);
+      await page.getByLabel('搜索集中度股票').fill('999904');
+      await candles.getByText('可用 18 根', { exact: true }).waitFor();
+      assert.equal(await candles.getByRole('button', { name: '60根', exact: true }).getAttribute('aria-pressed'), 'true');
+      assert.equal(await candles.locator('[data-candle-date]').count(), 18);
+      const before = state.reads.filter(path => path.endsWith('/999904.json')).length;
+      await page.getByRole('button', { name: '刷新集中度筛选', exact: true }).click(); await ready(page);
+      assert.equal(await candles.getByRole('button', { name: '60根', exact: true }).getAttribute('aria-pressed'), 'true');
+      assert.equal(state.reads.filter(path => path.endsWith('/999904.json')).length, before);
+      state.data = publication('fedcba9876543210');
+      await Promise.all([page.waitForResponse(response => response.url().endsWith('/fedcba9876543210/999904.json')), page.getByRole('button', { name: '刷新集中度筛选', exact: true }).click()]);
+      await candles.locator('[data-candle-date]').first().waitFor();
+    });
+    await check(browser, 'candles-delayed-selection-isolation', { heldStock: true }, async (page, state) => {
+      await page.goto(SITE + '/concentration'); await ready(page);
+      await page.waitForFunction(() => !!document.querySelector('.conc-candles'));
+      for (let i = 0; i < 20 && !state.releaseStock; i++) await page.waitForTimeout(10);
+      assert.equal(typeof state.releaseStock, 'function');
+      await mainRows(page).filter({ hasText: '虚构乙5日' }).locator('button').click();
+      await page.locator('.conc-candles [data-candle-date]').first().waitFor();
+      assert.match(await page.locator('.conc-candles svg title').first().textContent(), /虚构乙5日/);
+      if (state.releaseStock) state.releaseStock();
+      await page.waitForTimeout(100);
+      assert.match(await page.locator('.conc-candles svg title').first().textContent(), /虚构乙5日/);
+      assert.equal(await page.locator('.conc-candles').getByText('正在读取虚构甲20日日K线…').count(), 0);
+    });
+    await check(browser, 'candles-own-error-retry-preserves-context', { failStock: true }, async (page, state) => {
+      await page.goto(SITE + '/concentration'); await ready(page);
+      await chooseGroup(page, 5); await page.getByLabel('搜索集中度股票').fill('999904');
+      await page.locator('.conc-candles [role=alert]').waitFor();
+      state.failStock = false;
+      await page.locator('.conc-candles').getByRole('button', { name: '重新读取', exact: true }).click();
+      await page.locator('.conc-candles [data-candle-date]').first().waitFor();
+      assert.equal(await page.getByLabel('搜索集中度股票').inputValue(), '999904');
+      assert.equal(await page.getByRole('button', { name: /^连续5天/ }).getAttribute('aria-pressed'), 'true');
+      assert.equal(await page.locator('.conc-candles').getByRole('button', { name: '120根', exact: true }).getAttribute('aria-pressed'), 'true');
+    });
+    await check(browser, 'candles-valid-empty', { emptyStock: true }, async page => {
+      await page.goto(SITE + '/concentration'); await ready(page);
+      await page.getByText('本批次没有已保存的虚构甲20日日K线。', { exact: true }).waitFor();
+      assert.equal(await page.locator('.conc-candles [role=alert]').count(), 0);
+    });
+    await check(browser, 'candles-last-saved-bar-is-explicit', { staleStock: true }, async page => {
+      await page.goto(SITE + '/concentration'); await ready(page);
+      await page.getByText('最后保存的行情为 2026-10-29，筛选数据截至 2026-10-30。', { exact: true }).waitFor();
+      assert.equal(await page.locator('.conc-candles [data-candle-date="2026-10-30"]').count(), 0);
+    });
+    for (const width of [1440, 900, 760, 375]) {
       await check(browser, 'responsive-' + width, { width }, async page => {
         await page.goto(SITE + '/concentration'); await ready(page);
         assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
@@ -231,6 +326,15 @@ async function check(browser, name, options, run) {
         await page.screenshot({ path: path.join(OUT, 'width-' + width + '-synthetic.png') });
         await page.getByLabel('搜索集中度股票').fill('999901');
         await page.locator('.conc-detail').scrollIntoViewIfNeeded();
+        await page.locator('.conc-candles [data-candle-date]').first().waitFor();
+        const svg = page.locator('.conc-candles svg');
+        assert.equal(await svg.evaluate(el => getComputedStyle(el).touchAction), 'pan-y');
+        if (width === 375) {
+          await svg.scrollIntoViewIfNeeded(); const bounds = await svg.boundingBox();
+          await page.touchscreen.tap(bounds.x + 20, bounds.y + 50);
+          assert.notEqual(await page.getByRole('slider', { name: '查看K线日期' }).getAttribute('aria-valuetext'), sessions.at(-1));
+          assert.equal(Math.round(bounds.height), 310);
+        }
         await page.screenshot({ path: path.join(OUT, 'detail-' + width + '-synthetic.png') });
       });
     }
