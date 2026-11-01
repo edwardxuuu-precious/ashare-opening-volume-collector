@@ -56,6 +56,8 @@ gh workflow run collector.yml \
 
 ## 手动恢复与发布
 
+连续集中度由同一 `chips.yml` 在实际每日筹码发布后派生，只生成20天与大于20天两组；既有后续唤醒可续算。任务总上限仍310分钟，源阶段绝对截止为任务起点加282分钟，预留派生与收尾时间。手动模式 `derive` 排除源采集和自动额度认领，仅验证或恢复已发布源批次的派生。工作流副本、同批次约束、当前发布与实机证据见[连续集中度说明](../features/concentration-streaks.md)。
+
 维护入口为 `deploy/actions/`，运行器为 `backend/server/actions_runner.py`。`deploy/actions/package.py` 的明确文件清单继续用于采集器运行包；按用户2026-10-20要求，网站源码也在同一 Git 仓库维护。提交前检查源码 diff 和忽略规则，不提交工作区中的数据、凭据、依赖、构建或验证产物。修改后运行相应检查并提交到现有仓库 main。
 
 ```sh
