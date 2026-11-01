@@ -57,14 +57,6 @@ const sortColumns = [
   { key: 'start', label: '起点集中度' },
   { key: 'drop', label: '区间降幅（百分点）' },
 ] satisfies { key: ConcentrationSort['key']; label: string; title?: string }[];
-const sortOptions = sortColumns.flatMap((column) =>
-  (['asc', 'desc'] as const).map((direction) => ({
-    key: column.key,
-    direction,
-    value: `${column.key}-${direction}`,
-    label: `${column.label}${direction === 'asc' ? '从低到高' : '从高到低'}`,
-  })),
-);
 type Tab = 'series' | 'method';
 const percent = (value: number | null | undefined) =>
   value === null || value === undefined ? '待核实' : `${value.toFixed(2)}%`;
@@ -322,10 +314,6 @@ export default function ConcentrationPage() {
       setCode('');
     }
   }
-  function chooseSort(value: string) {
-    const option = sortOptions.find((entry) => entry.value === value);
-    if (option) setSort({ key: option.key, direction: option.direction });
-  }
   function sortBy(key: ConcentrationSort['key']) {
     setSort((previous) => ({
       key,
@@ -435,18 +423,6 @@ export default function ConcentrationPage() {
                         {concentrationStateText[value]} ·{' '}
                         {scan!.groups[group][value].toLocaleString()}
                       </option>
-                    ))}
-                  </select>
-                </label>
-                <label>
-                  排序
-                  <select
-                    aria-label="集中度排序"
-                    value={`${sort.key}-${sort.direction}`}
-                    onChange={(event) => chooseSort(event.target.value)}
-                  >
-                    {sortOptions.map((option) => (
-                      <option key={option.value} value={option.value}>{option.label}</option>
                     ))}
                   </select>
                 </label>
