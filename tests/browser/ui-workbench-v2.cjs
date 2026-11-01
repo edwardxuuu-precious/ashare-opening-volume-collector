@@ -246,8 +246,9 @@ async function bounds(page) {
         await ready(page, 'chips');
         await link(page, '/golden', '黄金画格核对');
         await ready(page, 'golden');
+        await page.getByRole('button', { name: '账户菜单', exact: true }).click();
         await page
-          .getByRole('button', { name: '退出登录', exact: true })
+          .getByRole('menuitem', { name: '退出登录', exact: true })
           .click();
         await page
           .getByRole('heading', { name: '登录你的账户', exact: true })
@@ -605,8 +606,9 @@ async function bounds(page) {
         await ready(page, 'chips');
         await link(page, '/trend', '趋势量价筛选');
         await ready(page, 'trend');
+        await page.getByRole('button', { name: '账户菜单', exact: true }).click();
         await page
-          .getByRole('button', { name: '退出登录', exact: true })
+          .getByRole('menuitem', { name: '退出登录', exact: true })
           .click();
         await page
           .getByRole('heading', { name: '登录你的账户', exact: true })

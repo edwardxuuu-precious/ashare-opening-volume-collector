@@ -1,35 +1,3 @@
-.concentration-page .conc-sidebar .wb-filters {
-  grid-template-columns: 1fr;
-  gap: 5px;
-  padding-bottom: 16px;
-}
-.concentration-page .conc-sidebar .wb-filters button {
-  justify-content: space-between;
-  padding: 10px 9px;
-  font-size: 12px;
-}
-.conc-sidebar-note {
-  padding: 16px;
-  color: var(--ui-muted);
-  font-size: 11px;
-  line-height: 1.9;
-}
-.conc-sidebar-note p {
-  margin: 0 0 14px;
-}
-.conc-sidebar-note dl {
-  margin: 0 0 14px;
-}
-.conc-sidebar-note dl > div {
-  display: flex;
-  justify-content: space-between;
-  gap: 12px;
-  margin: 6px 0;
-}
-.conc-sidebar-note dd {
-  margin: 0;
-  color: var(--ui-text);
-}
 .conc-coverage {
   margin: 0 0 16px;
   border: 1px solid var(--ui-border-soft);
@@ -291,25 +259,6 @@
   }
 }
 @media (max-width: 760px) {
-  .concentration-page .conc-sidebar .wb-filters {
-    display: grid;
-    grid-template-columns: repeat(5, minmax(0, 1fr));
-    gap: 4px;
-    padding: 0 12px 12px;
-  }
-  .concentration-page .conc-sidebar .wb-filters button {
-    padding: 7px 2px;
-    flex-direction: column;
-    align-items: center;
-    gap: 4px;
-    font-size: 10px;
-  }
-  .concentration-page .conc-sidebar .wb-filters button:last-child {
-    grid-column: auto;
-  }
-  .conc-sidebar-note {
-    display: none;
-  }
   .conc-toolbar h2 {
     font-size: 17px;
   }

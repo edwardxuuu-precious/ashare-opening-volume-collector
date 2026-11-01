@@ -99,8 +99,8 @@ export default function TrendPage() {
   const quoteBar=availableStock?.history.find(bar=>bar.date===selection.date);
   return <div className="chip-site chip-workbench tv-site wb-site">
     <SiteHeader active="trend"><button className="stock-header-refresh" aria-label="刷新研究快照" onClick={reload}><RefreshCw size={14}/><span>刷新</span></button></SiteHeader>
-    <WorkbenchPageBar title="趋势历史研究" description="观察日复盘 · V2 / V3 条件对照" dateLabel="观察日期" date={summary?selection.date:null}><SiteLink href="/trend">每日筛选</SiteLink></WorkbenchPageBar>
-    <WorkbenchShell contentClassName="tv-workspace" footer={<><span>{summary?`${summary.stocks.length}只股票 · ${scope.length}个证券日`:'正在读取研究样本…'}</span><span>历史研究 · {version}</span></>} sidebar={
+    <WorkbenchPageBar title="趋势历史研究" modeLabel="历史研究" dateLabel="观察日" date={summary?selection.date:null} explanation={{label:'研究说明',content:<><p>按观察日复盘，比较V2与V3条件；只使用观察日及以前行情。</p><p>当前版本 {version}。{summary?`${summary.stocks.length}只股票 · ${scope.length}个证券日。`:'正在读取研究样本。'}</p><p>证券日按股票与观察日期分别计数。</p></>}}><SiteLink href="/trend">每日筛选</SiteLink></WorkbenchPageBar>
+    <WorkbenchShell contentClassName="tv-workspace" sidebar={
       <aside className="tv-sidebar wb-sidebar" aria-label="研究样本列表">
         <WorkbenchListHeader title="研究样本" count={summary?filtered.length:null} unit="个证券日" ready={!!summary} search={{label:'搜索研究样本',value:search,onChange:value=>{setSearch(value);setPage(0);}}} filters={categories.map(c=>({id:c.id,label:c.label,count:summary?scope.filter(r=>categoryMatches(r,c.id,version)).length:null,active:category===c.id,onSelect:()=>setFilter(c.id)}))}/>
         {summary&&<button className="tv-guofang" aria-pressed={selection.code==='601086'} onClick={()=>select({code:'601086',date:'2026-10-27'})}><strong>国芳集团 <small>601086</small></strong><span>单例核对 <ChevronRight size={12}/></span></button>}
@@ -108,7 +108,7 @@ export default function TrendPage() {
           {!summary&&study.kind==='loading'&&<li><WorkbenchListSkeleton/></li>}
           {summary&&!visible.length&&<li className="tv-list-empty">当前范围没有结果。</li>}
           {visible.map(r=><li key={rowKey(r)}><button className="tv-row wb-stock-row" aria-label={`${names.get(r.code)||r.code} ${r.code} ${r.date}`} data-stock-key={rowKey(r)} aria-pressed={rowKey(selection)===rowKey(r)} onClick={()=>select(r)}><span><strong>{names.get(r.code)||r.code}</strong><b className={priceChangeClass(r.close_return_pct)}>{priceChangeText(r.close_return_pct)}</b></span><span><small>{r.code} · {r.date.slice(5)}</small><em className="wb-row-status">{prediction(r,version)==='PASS'?'当日入选':prediction(r,version)==='UNKNOWN'?'数据不足':r.reference==='POSITIVE'?'漏选':'未满足'}</em></span></button></li>)}
-        </ul><WorkbenchListFooter count={filtered.length} unit="个证券日" page={page} onPageChange={setPage}/>
+        </ul><WorkbenchListFooter count={filtered.length} page={page} onPageChange={setPage}/>
       </aside>}>
       {summary&&refreshing&&<output className="wb-update-note">正在更新…</output>}
       {summary&&refreshError&&<RetryMessage message={`刷新失败，仍显示上次结果。${refreshError}`} onRetry={reload}/>}

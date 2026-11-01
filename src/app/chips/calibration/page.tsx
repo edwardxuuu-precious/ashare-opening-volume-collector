@@ -83,7 +83,7 @@ export default function ChipsPage() {
   function showStock(value: string) { setCode(value); setTab('distribution'); }
   return <div className="chip-site chip-calibration wb-site wb-calibration-site">
     <SiteHeader active="chips"><button className="stock-header-refresh" aria-label="刷新历史筹码校准" onClick={() => setRetry(value => value + 1)}><RefreshCw size={14}/><span>刷新</span></button></SiteHeader>
-    <WorkbenchPageBar title="历史筹码校准" description="旧模型样本 · 成交均价顶点 · 0.01元价格档" dateLabel="样本日期" date={manifest?day||manifest.as_of:null}><SiteLink href="/chips">每日筹码</SiteLink></WorkbenchPageBar>
+    <WorkbenchPageBar title="历史筹码校准" modeLabel="历史校准 · 旧模型" dateLabel="样本日" date={manifest?day||manifest.as_of:null} explanation={{label:'校准说明',content:<><p>使用历史旧模型样本，三角顶点取成交均价，价格档为0.01元。</p><p>可手动指定样本与对比日；此页用于模型校准，每日名单见“每日筹码”。</p></>}}><SiteLink href="/chips">每日筹码</SiteLink></WorkbenchPageBar>
     <main className="chip-site-main">
       <div className="chip-site-tabs" aria-label="筹码视图"><button type="button" aria-pressed={tab === 'distribution'} onClick={() => setTab('distribution')}>筹码分布</button><button type="button" aria-pressed={tab === 'screen'} onClick={() => setTab('screen')}>样本数据检查</button></div>
       {catalogError && <RetryMessage message={catalogError} onRetry={() => setRetry(value => value + 1)}/>}

@@ -103,8 +103,8 @@ export default function ChipsPage(){
   const nodeModel=manifest?.model_version==='chip-estimate.eastmoney-nodes150.ohlc4.zero-start.decay2.window210.v1';
   return <div className="chip-site chip-workbench wb-site">
     <SiteHeader active="chips"><button className="stock-header-refresh" onClick={refreshData} aria-label="刷新每日筹码" title="重新读取已发布批次"><RefreshCw size={14}/><span>刷新</span></button></SiteHeader>
-    <WorkbenchPageBar title="每日筹码筛选" description="涨停回看 · 成本位置 · 顶格稳定" date={manifest?.as_of}><SiteLink href="/chips/calibration">历史校准</SiteLink></WorkbenchPageBar>
-    <WorkbenchShell contentClassName="cw-workspace chip-detail" footer={<><span>{manifest?`全市场 ${manifest.universe_total.toLocaleString()}只 · 入选 ${screenCounts.PASS.toLocaleString()}只`:'正在读取每日结果…'}</span><span>{run?.state==='RUNNING'?'新结果计算中':manifest?`更新至 ${manifest.as_of}`:'每日筹码'}</span></>} sidebar={
+    <WorkbenchPageBar title="每日筹码筛选" date={manifest?.as_of} status={run?.state==='RUNNING'?'新结果计算中':undefined} explanation={{label:'筛选条件',content:<><ol><li><b>近期涨停</b><p>近10个交易日至少一次收盘涨停。</p></li><li><b>成本位置</b><p>筛选日收盘高于当日平均成本。</p></li><li><b>顶格稳定</b><p>固定顶格区偏移≤1%，原区占比保留≥90%。</p></li></ol><p>三项同时满足入选。行情不复权，模型系数2；完整口径见图表下方“计算与数据说明”。</p></>}}><SiteLink href="/chips/calibration">历史校准</SiteLink></WorkbenchPageBar>
+    <WorkbenchShell contentClassName="cw-workspace chip-detail" sidebar={
       <aside className="cw-sidebar wb-sidebar" aria-label="每日筛选结果">
         <WorkbenchListHeader count={manifest?matched.length:null} ready={!!manifest} search={{label:'查找股票',value:search,onChange:value=>{setSearch(value);setPage(0);}}} filters={(['PASS','FAIL','UNKNOWN','ALL'] as const).map(k=>({id:k,label:k==='PASS'?'当日入选':k==='ALL'?'全部':k==='UNKNOWN'?'数据不足':'未满足',count:manifest?(k==='ALL'?manifest.universe_total:screenCounts[k]):null,active:filter===k,onSelect:()=>{setFilter(k);setPage(0);}}))}/>
         <div className="cw-stock-list wb-stock-list" ref={listArea}>
