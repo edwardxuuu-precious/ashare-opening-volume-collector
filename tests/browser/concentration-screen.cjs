@@ -13,7 +13,6 @@ const groups = [20, 'LONG'];
 const streakSessions = [...Array.from({length: 100}, (_, i) => new Date(Date.UTC(2026, 5, 16 + i)).toISOString().slice(0, 10)), ...sessions];
 const model = 'chip-estimate.eastmoney-nodes150.ohlc4.zero-start.decay2.window210.v1';
 const rule = 'CENTRAL_90_NONINCREASING_INDEPENDENT_210_TWO_V1';
-const all = state => Object.fromEntries(groups.map(n => [n, state]));
 const row = (code, name, values, reasons = {}, short = 0) => {
   let streak = 0;
   let boundary = {kind: 'CALENDAR_LIMIT', session: sessions[0], reason: 'SUPPORTED_CALENDAR_START'};
@@ -56,7 +55,7 @@ const rows = [
   ...Array.from({length: 66}, (_, i) => row(String(998000+i), '虚构分页样本'+i, Array.from({length:21}, (_, j) => 50-j))),
 ];
 function publication(dataset = '0123456789abcdef', empty = false) {
-  const values = empty ? rows.map(r => row(r.security_id, r.name, [...Array(20).fill(10), 11])) : rows;
+  const values = empty ? rows.map(r => row(r.security_id, r.name, [...Array(20).fill(10), 11])) : structuredClone(rows);
   const source = { schema: 'stock.chips.market.manifest.v1', dataset_id: dataset, active_slot: dataset, as_of: sessions.at(-1), universe_total: values.length, scanned_count: values.length, coefficient: 2, model_version: model, universe_coverage: 'SITE_CATALOG_UNVERIFIED' };
   return {
     source,
@@ -129,6 +128,24 @@ async function ready(page, group = 20) {
   await page.getByRole('heading', { name: group === 'LONG' ? '连续不增大于20个交易日' : '至少连续不增' + group + '个交易日', exact: true }).waitFor();
 }
 const mainRows = page => page.locator('.conc-table-wrap').first().locator('tbody tr');
+async function assertFocusedRowVisible(page, code, input) {
+  const geometry = await mainRows(page).locator('[data-stock-key="'+code+'"]').evaluate(async element => {
+    await new Promise(requestAnimationFrame);
+    await new Promise(requestAnimationFrame);
+    const list = element.closest('.conc-table-wrap');
+    const bounds = list.getBoundingClientRect();
+    const row = element.getBoundingClientRect();
+    return {
+      focused: element === document.activeElement,
+      top: row.top,
+      bottom: row.bottom,
+      visibleTop: Math.max(0, bounds.top, ...[...list.querySelectorAll('thead th')].map(header => header.getBoundingClientRect().bottom)),
+      visibleBottom: Math.min(window.innerHeight, bounds.bottom),
+    };
+  });
+  assert.equal(geometry.focused, true, input+' focuses '+code);
+  assert.ok(geometry.top >= geometry.visibleTop && geometry.bottom <= geometry.visibleBottom, input+' reveals '+code+' below the sticky header '+JSON.stringify(geometry));
+}
 const chooseGroup = (page, n) => page.getByRole('button', { name: n === 'LONG' ? /^大于20天/ : new RegExp('^连续' + n + '天') }).click();
 async function check(browser, name, options, run) {
   const view = await setup(browser, options);
@@ -153,6 +170,131 @@ async function check(browser, name, options, run) {
   fs.mkdirSync(OUT, { recursive: true });
   const browser = await chromium.launch({ channel: 'chrome', headless: true });
   try {
+    await check(browser, 'raw-precision-and-null-last-both-directions', {}, async (page, state) => {
+      const target = state.data.scan.rows;
+      target[target.findIndex(r => r.security_id === '999902')] = row('999902','虚构乙增加',[...Array(20).fill(1),1.001]);
+      target[target.findIndex(r => r.security_id === '999903')] = row('999903','虚构丙增加',[...Array(20).fill(1),1.002]);
+      await page.goto(SITE + '/concentration'); await ready(page);
+      await page.getByLabel('集中度名单状态').selectOption('FAIL');
+      const select = page.getByLabel('集中度排序');
+      for (const direction of ['asc','desc']) {
+        await select.selectOption('current-'+direction);
+        const codes = await mainRows(page).locator('[data-stock-key]').evaluateAll(items => items.map(item => item.dataset.stockKey));
+        assert.deepEqual(codes, direction === 'asc' ? ['999902','999903','999906'] : ['999903','999902','999906']);
+        assert.equal(await mainRows(page).nth(0).locator('td').nth(1).innerText(), '1.00%');
+        assert.equal(await mainRows(page).nth(1).locator('td').nth(1).innerText(), '1.00%');
+        await select.selectOption('streak-'+direction);
+        assert.equal(await mainRows(page).last().locator('[data-stock-key]').getAttribute('data-stock-key'), '999906');
+      }
+    });
+    await check(browser, 'sortable-headers-selection-and-pagination', {}, async (page, state) => {
+      await page.goto(SITE + '/concentration'); await ready(page);
+      const headers = page.locator('.conc-table-wrap').first().locator('thead th');
+      const select = page.getByLabel('集中度排序');
+      assert.equal(await headers.count(), 5);
+      assert.equal(await select.locator('option').count(), 10);
+      assert.equal(await headers.locator('[data-stock-key]').count(), 0);
+      assert.match(await headers.nth(0).locator('button').getAttribute('title'), /六位股票代码/);
+      await page.locator('.conc-candles').getByRole('button', {name:'60根',exact:true}).click();
+      const selected = '999901';
+      await mainRows(page).locator('[data-stock-key="'+selected+'"]').click();
+      for (const [index, key] of ['code','current','streak','start','drop'].entries()) {
+        if (key === 'streak') await select.selectOption('code-desc');
+        const button = headers.nth(index).locator('button');
+        await button.click();
+        assert.equal(await select.inputValue(), key + '-asc');
+        assert.equal(await headers.nth(index).getAttribute('aria-sort'), 'ascending');
+        await button.focus(); await page.keyboard.press('Enter');
+        assert.equal(await select.inputValue(), key + '-desc');
+        assert.equal(await headers.nth(index).getAttribute('aria-sort'), 'descending');
+        assert.equal(await button.evaluate(el => el === document.activeElement), true);
+        await page.keyboard.press('Space');
+        assert.equal(await select.inputValue(), key + '-asc');
+        await page.locator('tr[aria-selected=true] [data-stock-key="'+selected+'"]').waitFor();
+        assert.equal(await page.locator('.conc-candles').getByRole('button', {name:'60根',exact:true}).getAttribute('aria-pressed'), 'true');
+        for (const direction of ['asc','desc']) {
+          await select.selectOption(key+'-'+direction);
+          assert.equal(await headers.nth(index).getAttribute('aria-sort'), direction === 'asc' ? 'ascending' : 'descending');
+          const previous = page.getByRole('button', {name:'上一页股票',exact:true});
+          if (await previous.isEnabled()) await previous.click();
+          const actual = await mainRows(page).locator('[data-stock-key]').evaluateAll(items => items.map(item => item.dataset.stockKey));
+          await page.getByRole('button', {name:'下一页股票',exact:true}).click();
+          actual.push(...await mainRows(page).locator('[data-stock-key]').evaluateAll(items => items.map(item => item.dataset.stockKey)));
+          const metric = row => key === 'current' ? row.values[20] : key === 'streak' ? row.streak_days : key === 'start' ? row.values[0] : row.values[0]-row.values[20];
+          const expected = state.data.scan.rows.filter(row => row.groups[20] === 'PASS').sort((a,b) => {
+            const primary = key === 'code' ? a.security_id.localeCompare(b.security_id) : metric(a)-metric(b);
+            return (direction === 'asc' ? primary : -primary) || a.security_id.localeCompare(b.security_id);
+          }).map(row => row.security_id);
+          assert.deepEqual(actual, expected, key+' '+direction+' sorts the full list before paging');
+        }
+      }
+      await select.selectOption('code-asc');
+      assert.equal(await mainRows(page).count(), 8, 'Selected stock relocates to second page');
+      await page.getByRole('button', {name:'上一页股票',exact:true}).click();
+      assert.equal(await mainRows(page).count(), 60, 'Ordinary paging stays on requested page');
+      assert.match(await mainRows(page).first().innerText(), /998000/);
+      await mainRows(page).last().locator('button').focus();
+      await mainRows(page).last().locator('button').click();
+      await page.keyboard.press('ArrowDown');
+      await page.locator('tr[aria-selected=true] [data-stock-key="998060"]').waitFor();
+      await assertFocusedRowVisible(page, '998060', 'Cross-page ArrowDown');
+      const before = await page.locator('.conc-detail h2').innerText();
+      state.data = publication('fedcba9876543210');
+      state.data.scan.rows.reverse();
+      await Promise.all([page.waitForResponse(response => response.url().endsWith('/concentration-two-v1.json')), page.getByRole('button', {name:'刷新集中度筛选',exact:true}).click()]);
+      await ready(page);
+      assert.equal(await page.locator('.conc-detail h2').innerText(), before);
+      assert.equal(await select.inputValue(), 'code-asc');
+      await page.locator('tr[aria-selected=true] [data-stock-key="998060"]').waitFor();
+    });
+    for (const headerHeight of [null, 44]) {
+    await check(browser, 'sortable-header-visible-with-selected-row'+(headerHeight ? '-integer-height' : ''), {}, async page => {
+      await page.goto(SITE + '/concentration'); await ready(page);
+      if (headerHeight) await page.addStyleTag({content: '.conc-sort-table th {height:'+headerHeight+'px}'});
+      const list = page.locator('.conc-table-wrap').first();
+      const headers = list.locator('thead th');
+      const button = headers.first().locator('button');
+      const select = page.getByLabel('集中度排序');
+      if (headerHeight) assert.equal(await headers.first().evaluate(el => el.getBoundingClientRect().height), headerHeight);
+      await mainRows(page).locator('[data-stock-key="998030"]').click();
+      await select.selectOption('code-asc');
+      for (const input of ['click', 'Enter', 'Space']) {
+        if (input === 'click') await button.click();
+        else await page.keyboard.press(input);
+        const direction = input === 'Enter' ? 'asc' : 'desc';
+        assert.equal(await select.inputValue(), 'code-'+direction);
+        await list.locator('tr[aria-selected=true] [data-stock-key="998030"]').waitFor();
+        const geometry = await button.evaluate(async element => {
+          await new Promise(requestAnimationFrame);
+          await new Promise(requestAnimationFrame);
+          const header = element.getBoundingClientRect();
+          const list = element.closest('.conc-table-wrap').getBoundingClientRect();
+          return {
+            focused: element === document.activeElement,
+            top: header.top,
+            bottom: header.bottom,
+            listTop: list.top,
+            listBottom: list.bottom,
+            viewportHeight: window.innerHeight,
+            scrollTop: element.closest('.conc-table-wrap').scrollTop,
+          };
+        });
+        assert.equal(geometry.focused, true, input+' retains header focus');
+        assert.ok(geometry.scrollTop > 0, input+' exposes the selected row below the top');
+        assert.ok(geometry.top >= Math.max(0, geometry.listTop) && geometry.bottom <= Math.min(geometry.viewportHeight, geometry.listBottom), input+' keeps the focused sorting control visible '+JSON.stringify(geometry));
+      }
+      await mainRows(page).locator('[data-stock-key="998030"]').click();
+      for (let index = 1; index <= 12; index++) {
+        await page.keyboard.press('ArrowUp');
+        await assertFocusedRowVisible(page, String(998030 + index), 'ArrowUp '+index);
+      }
+      await page.keyboard.press('Shift+Tab');
+      await assertFocusedRowVisible(page, '998043', 'Native reverse Tab');
+      await page.keyboard.press('Tab');
+      await assertFocusedRowVisible(page, '998042', 'Native Tab');
+      assert.equal(await list.locator('tr[aria-selected=true] [data-stock-key]').getAttribute('data-stock-key'), '998042', 'Tab focus preserves the explicit selection');
+    });
+    }
     await check(browser, 'groups-search-sort-pagination-and-detail', {}, async (page, state) => {
       await page.goto(SITE + '/concentration');
       await ready(page);
@@ -169,7 +311,7 @@ async function check(browser, name, options, run) {
       }
       assert.equal(state.reads.filter(path => !/\/\d{6}\.json$/.test(path)).length, 3, 'Group changes do not refetch the market');
       await chooseGroup(page, 20);
-      await page.getByLabel('集中度排序').selectOption('lowest');
+      await page.getByLabel('集中度排序').selectOption('current-asc');
       assert.match(await mainRows(page).first().innerText(), /虚构戊有效零/);
       await page.getByLabel('集中度名单状态').selectOption('UNKNOWN');
       await page.getByLabel('搜索集中度股票').fill('  999904  ');
@@ -186,7 +328,7 @@ async function check(browser, name, options, run) {
       await page.getByRole('button', { name: '下一页股票', exact: true }).click();
       assert.equal(await mainRows(page).count(), 8);
       await page.getByRole('button', { name: '上一页股票', exact: true }).click();
-      await page.getByLabel('集中度排序').selectOption('streak');
+      await page.getByLabel('集中度排序').selectOption('streak-desc');
       await page.getByRole('tab', { name: '逐日读数', exact: true }).click();
       await page.locator('.wb-workspace').evaluate(el => { el.scrollTop = 0; });
       await page.screenshot({ path: path.join(OUT, 'desktop-synthetic.png') });
@@ -197,11 +339,11 @@ async function check(browser, name, options, run) {
       await page.getByLabel('集中度名单状态').selectOption('UNKNOWN');
       assert.equal(await mainRows(page).count(), 1);
       assert.match(await mainRows(page).innerText(), /虚构丁短历史/);
-      assert.match(await mainRows(page).innerText(), /无法判断/);
+      assert.equal(await page.getByLabel('集中度名单状态').inputValue(), 'UNKNOWN');
       assert.match(await page.getByLabel('连续天数追溯边界').innerText(), /缺少该交易日行情/);
       await chooseGroup(page, 20);
       await page.getByLabel('集中度名单状态').selectOption('PASS');
-      await page.getByLabel('集中度排序').selectOption('lowest');
+      await page.getByLabel('集中度排序').selectOption('current-asc');
       assert.match(await mainRows(page).first().innerText(), /虚构戊有效零/);
       assert.match(await mainRows(page).first().innerText(), /0\.00%/);
       await mainRows(page).first().locator('button').click();
@@ -294,13 +436,13 @@ async function check(browser, name, options, run) {
       await chooseGroup(page, 20);
       await page.getByLabel('集中度名单状态').selectOption('UNKNOWN');
       await page.getByLabel('搜索集中度股票').fill('999904');
-      await page.getByLabel('集中度排序').selectOption('lowest');
+      await page.getByLabel('集中度排序').selectOption('current-asc');
       state.failSummary = true;
       await page.getByRole('button', { name: '刷新集中度筛选', exact: true }).click();
       await page.getByRole('alert').waitFor();
       assert.match(await page.getByRole('alert').innerText(), /上次完整结果/);
       assert.equal(await page.getByLabel('搜索集中度股票').inputValue(), '999904');
-      assert.equal(await page.getByLabel('集中度排序').inputValue(), 'lowest');
+      assert.equal(await page.getByLabel('集中度排序').inputValue(), 'current-asc');
       assert.equal(await mainRows(page).count(), 1);
       state.failSummary = false;
       await page.getByRole('button', { name: '重新读取', exact: true }).click();

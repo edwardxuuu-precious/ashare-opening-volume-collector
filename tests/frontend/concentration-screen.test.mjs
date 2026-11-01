@@ -8,6 +8,7 @@ import {
   concentrationSeries,
   concentrationStartValue,
   concentrationDrop,
+  compareConcentrationRows,
   parseConcentrationScan,
   parseConcentrationSource,
 } from '../../src/lib/concentration-screen.ts';
@@ -323,4 +324,29 @@ test('concentration stays an authenticated site route and preserves existing rou
     '/golden',
   ])
     assert.equal(sitePagePath(route), route);
+});
+
+
+test('all concentration columns sort raw values in both directions with stable code ties', () => {
+  const base = document().rows[0];
+  const make = (code, current, start, streak) => ({ ...base, security_id: code, values: [start, ...Array(19).fill(current), current], streak_values: [start + 10, current], streak_days: streak });
+  const a = make('000003', 1.001, 4.001, 3);
+  const b = make('000001', 1.002, 6.002, 8);
+  const tie = {...b, security_id: '000002'};
+  const zero = make('000004', 0, 0, 0);
+  const missing = make('000000', null, null, 99);
+  for (const key of ['current', 'streak', 'start', 'drop']) {
+    for (const direction of ['asc', 'desc']) {
+      const ordered = [tie, missing, b, a, zero].sort((x, y) => compareConcentrationRows(x, y, 20, {key, direction}));
+      assert.deepEqual(ordered.map(row => row.security_id), direction === 'asc' ? ['000004', '000003', '000001', '000002', '000000'] : ['000001', '000002', '000003', '000004', '000000']);
+    }
+  }
+  for (const direction of ['asc', 'desc']) {
+    assert.deepEqual([a,b,zero].sort((x,y) => compareConcentrationRows(x,y,20,{key:'code',direction})).map(row => row.security_id), direction === 'asc' ? ['000001','000003','000004'] : ['000004','000003','000001']);
+  }
+  assert.equal(a.values[20].toFixed(2), b.values[20].toFixed(2));
+  const longA = {...a, streak_values:[100,1]}, longB = {...b, streak_values:[50,1]};
+  for (const key of ['start','drop']) assert.ok(compareConcentrationRows(longA,longB,'LONG',{key,direction:'asc'}) > 0);
+  const missingTie = {...missing, security_id:'000009'};
+  for (const direction of ['asc','desc']) assert.ok(compareConcentrationRows(missing,missingTie,20,{key:'streak',direction}) < 0);
 });

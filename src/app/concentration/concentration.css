@@ -360,3 +360,30 @@
     min-height: 38px;
   }
 }
+
+.concentration-page .conc-sort-table th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--ui-background);
+}
+.concentration-page .conc-sort-table th button {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border: 0;
+  padding: 2px 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+.concentration-page .conc-sort-table th[aria-sort='ascending'],
+.concentration-page .conc-sort-table th[aria-sort='descending'] {
+  color: var(--ui-text);
+}
+.concentration-page .conc-sort-table th button:focus-visible {
+  outline: 2px solid var(--ui-accent);
+  outline-offset: 4px;
+  border-radius: 2px;
+}

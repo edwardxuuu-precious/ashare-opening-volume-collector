@@ -18,6 +18,8 @@ import { stockListMatches } from '@/lib/stock-list';
 import { authRead } from '@/lib/auth-fetch';
 import {
   concentrationGroupRegistry,
+  compareConcentrationRows,
+  type ConcentrationSort,
   concentrationSeries,
   concentrationStartValue,
   concentrationDrop,
@@ -48,7 +50,21 @@ type ReadState =
   | { kind: 'ready'; publication: Publication }
   | { kind: 'refreshing'; publication: Publication }
   | { kind: 'refresh-error'; publication: Publication; message: string };
-type Sort = 'streak' | 'lowest' | 'drop';
+const sortColumns = [
+  { key: 'code', label: '股票', title: '按六位股票代码排序' },
+  { key: 'current', label: '当前集中度' },
+  { key: 'streak', label: '实际连续不增' },
+  { key: 'start', label: '起点集中度' },
+  { key: 'drop', label: '区间降幅（百分点）' },
+] satisfies { key: ConcentrationSort['key']; label: string; title?: string }[];
+const sortOptions = sortColumns.flatMap((column) =>
+  (['asc', 'desc'] as const).map((direction) => ({
+    key: column.key,
+    direction,
+    value: `${column.key}-${direction}`,
+    label: `${column.label}${direction === 'asc' ? '从低到高' : '从高到低'}`,
+  })),
+);
 type Tab = 'series' | 'method';
 const percent = (value: number | null | undefined) =>
   value === null || value === undefined ? '待核实' : `${value.toFixed(2)}%`;
@@ -191,12 +207,13 @@ export default function ConcentrationPage() {
     [group, setGroup] = useState<ConcentrationGroup>(20);
   const [category, setCategory] = useState<ConcentrationState>('PASS'),
     [search, setSearch] = useState('');
-  const [sort, setSort] = useState<Sort>('streak'),
+  const [sort, setSort] = useState<ConcentrationSort>({ key: 'streak', direction: 'desc' }),
     [page, setPage] = useState(0),
     [code, setCode] = useState('');
   const [tab, setTab] = useState<Tab>('series');
   const [chartPeriod, setChartPeriod] = useState(120);
   const listArea = useRef<HTMLDivElement>(null);
+  const listHeader = useRef<HTMLTableSectionElement>(null);
   const publication = 'publication' in load ? load.publication : null;
   const scan = publication?.scan,
     source = publication?.source;
@@ -252,21 +269,17 @@ export default function ConcentrationPage() {
         row.groups[group] === category &&
         stockListMatches(search, row.name, row.security_id),
     );
-    return selected.sort((a, b) => {
-      const comparison =
-        sort === 'lowest'
-          ? (a.values[20] ?? Infinity) - (b.values[20] ?? Infinity)
-          : sort === 'drop'
-            ? (drop(b, group) ?? -Infinity) - (drop(a, group) ?? -Infinity)
-            : b.streak_days - a.streak_days;
-      return (
-        (Number.isNaN(comparison) ? 0 : comparison) ||
-        a.security_id.localeCompare(b.security_id)
-      );
-    });
+    return selected.sort((a, b) => compareConcentrationRows(a, b, group, sort));
   }, [rows, group, category, search, sort]);
   const selected =
     matched.find((row) => row.security_id === code) ?? matched[0];
+  const selectedCode = selected?.security_id;
+  const [pageContext, setPageContext] = useState({ matched, selectedCode });
+  if (pageContext.matched !== matched || pageContext.selectedCode !== selectedCode) {
+    const index = matched.findIndex((row) => row.security_id === selectedCode);
+    setPageContext({ matched, selectedCode });
+    setPage(index < 0 ? 0 : Math.floor(index / pageSize));
+  }
   const effectivePage = Math.min(
     page,
     Math.max(0, Math.ceil(matched.length / pageSize) - 1),
@@ -285,6 +298,7 @@ export default function ConcentrationPage() {
     selected: selected?.security_id ?? '',
     onSelect: navigate,
     listRef: listArea,
+    headerRef: listHeader,
     page: effectivePage,
     enabled: !!scan,
   });
@@ -309,10 +323,14 @@ export default function ConcentrationPage() {
     }
   }
   function chooseSort(value: string) {
-    if (value === 'streak' || value === 'lowest' || value === 'drop') {
-      setSort(value);
-      setPage(0);
-    }
+    const option = sortOptions.find((entry) => entry.value === value);
+    if (option) setSort({ key: option.key, direction: option.direction });
+  }
+  function sortBy(key: ConcentrationSort['key']) {
+    setSort((previous) => ({
+      key,
+      direction: previous.key === key && previous.direction === 'asc' ? 'desc' : 'asc',
+    }));
   }
   const selectedDrop = selected ? drop(selected, group) : null;
   const groupDefinition = concentrationGroupRegistry.find(
@@ -424,12 +442,12 @@ export default function ConcentrationPage() {
                   排序
                   <select
                     aria-label="集中度排序"
-                    value={sort}
+                    value={`${sort.key}-${sort.direction}`}
                     onChange={(event) => chooseSort(event.target.value)}
                   >
-                    <option value="streak">实际连续不增天数</option>
-                    <option value="lowest">当前集中度从低到高</option>
-                    <option value="drop">区间降幅从高到低</option>
+                    {sortOptions.map((option) => (
+                      <option key={option.value} value={option.value}>{option.label}</option>
+                    ))}
                   </select>
                 </label>
               </div>
@@ -442,19 +460,20 @@ export default function ConcentrationPage() {
             {matched.length ? (
               <>
                 <div className="conc-table-wrap" ref={listArea}>
-                  <table className="conc-table">
+                  <table className="conc-table conc-sort-table">
                     <caption>
                       {concentrationStateText[category]}名单
                       {search.trim() ? `，搜索“${search.trim()}”` : ''}
                     </caption>
-                    <thead>
+                    <thead ref={listHeader}>
                       <tr>
-                        <th>股票</th>
-                        <th>当前集中度</th>
-                        <th>实际连续不增</th>
-                        <th>起点集中度</th>
-                        <th>区间降幅（百分点）</th>
-                        <th>状态</th>
+                        {sortColumns.map((column) => (
+                          <th key={column.key} scope="col" aria-sort={sort.key === column.key ? (sort.direction === 'asc' ? 'ascending' : 'descending') : 'none'}>
+                            <button type="button" title={column.title} onClick={() => sortBy(column.key)} aria-label={`${column.label}，点击${sort.key === column.key && sort.direction === 'asc' ? '降序' : '升序'}排序`}>
+                              {column.label} <span aria-hidden="true">{sort.key === column.key ? (sort.direction === 'asc' ? '↑' : '↓') : '↕'}</span>
+                            </button>
+                          </th>
+                        ))}
                       </tr>
                     </thead>
                     <tbody>
@@ -475,12 +494,18 @@ export default function ConcentrationPage() {
                                   row.security_id === selected?.security_id
                                 }
                                 onClick={() => setCode(row.security_id)}
-                                onFocus={(event) =>
+                                onFocus={(event) => {
                                   event.currentTarget.scrollIntoView({
                                     block: 'nearest',
                                     inline: 'nearest',
-                                  })
-                                }
+                                  });
+                                  const list = listArea.current;
+                                  if (!list) return;
+                                  const top = list.getBoundingClientRect().top +
+                                    (listHeader.current?.getBoundingClientRect().height ?? 0);
+                                  const rowTop = event.currentTarget.getBoundingClientRect().top;
+                                  if (rowTop < top) list.scrollTop = Math.floor(list.scrollTop + rowTop - top);
+                                }}
                               >
                                 {row.name}
                                 <small>
@@ -499,7 +524,6 @@ export default function ConcentrationPage() {
                             <td>
                               {delta === null ? '待核实' : delta.toFixed(2)}
                             </td>
-                            <td>{concentrationStateText[row.groups[group]]}</td>
                           </tr>
                         );
                       })}

@@ -3,11 +3,12 @@ import { useEffect, useRef, type RefObject } from 'react';
 import { chipNavigationKey } from '@/lib/chip-keyboard';
 import { nextStockListItem } from '@/lib/stock-list';
 
-export function useStockListNavigation({ keys, selected, onSelect, listRef, page = 0, enabled = true }: {
+export function useStockListNavigation({ keys, selected, onSelect, listRef, headerRef, page = 0, enabled = true }: {
   keys: readonly string[];
   selected: string;
   onSelect: (key: string, index: number) => void;
   listRef: RefObject<HTMLElement | null>;
+  headerRef?: RefObject<HTMLElement | null>;
   page?: number;
   enabled?: boolean;
 }) {
@@ -34,11 +35,15 @@ export function useStockListNavigation({ keys, selected, onSelect, listRef, page
     const row = list && [...list.querySelectorAll<HTMLButtonElement>('[data-stock-key]')].find(item => item.dataset.stockKey === selected);
     if (!list || !row) return;
     const bounds = list.getBoundingClientRect(), item = row.getBoundingClientRect();
-    if (item.top < bounds.top) list.scrollTop += item.top - bounds.top;
+    const top = bounds.top + (headerRef?.current?.getBoundingClientRect().height ?? 0);
+    if (item.top < top) {
+      const scrollTop = list.scrollTop + item.top - top;
+      list.scrollTop = headerRef?.current ? Math.floor(scrollTop) : scrollTop;
+    }
     else if (item.bottom > bounds.bottom) list.scrollTop += item.bottom - bounds.bottom;
     if (focusKey.current === selected) {
       row.focus({ preventScroll: true });
       focusKey.current = null;
     }
-  }, [selected, page, keys, listRef]);
+  }, [selected, page, keys, listRef, headerRef]);
 }

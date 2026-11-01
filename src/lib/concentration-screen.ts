@@ -462,3 +462,33 @@ export function concentrationDrop(
     latest = row.values[20];
   return start === null || latest === null ? null : start - latest;
 }
+
+export type ConcentrationSort = {
+  key: 'code' | 'current' | 'streak' | 'start' | 'drop';
+  direction: 'asc' | 'desc';
+};
+
+export function compareConcentrationRows(
+  a: ConcentrationRow,
+  b: ConcentrationRow,
+  group: ConcentrationGroup,
+  sort: ConcentrationSort,
+): number {
+  const codeOrder = a.security_id.localeCompare(b.security_id);
+  if (sort.key === 'code')
+    return sort.direction === 'asc' ? codeOrder : -codeOrder;
+  function value(row: ConcentrationRow): number | null {
+    switch (sort.key) {
+      case 'current': return row.values[20];
+      case 'streak': return row.values[20] === null ? null : row.streak_days;
+      case 'start': return concentrationStartValue(row, group);
+      case 'drop': return concentrationDrop(row, group);
+      case 'code': return null;
+    }
+  }
+  const left = value(a), right = value(b);
+  if (left === null) return right === null ? codeOrder : 1;
+  if (right === null) return -1;
+  const comparison = sort.direction === 'asc' ? left - right : right - left;
+  return comparison || codeOrder;
+}
