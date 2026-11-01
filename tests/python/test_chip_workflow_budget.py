@@ -114,6 +114,9 @@ class Workflow(unittest.TestCase):
         self.assertFalse(any('continue-on-error' in step for step in self.job['steps']))
         self.assertNotIn('--as-of', derive['run'])
         self.assertIn('steps.followup.outputs.should_run', self.steps['source_budget']['if'])
+        self.assertIn("inputs.mode != 'derive'", self.steps['source_budget']['if'])
+        self.assertIn("inputs.mode != 'derive'", self.steps['followup']['if'])
+        self.assertIn('derive', self.workflow['on']['workflow_dispatch']['inputs']['mode']['options'])
 
 
 if __name__ == '__main__':

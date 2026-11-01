@@ -3,9 +3,9 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: Bounded source check or private whole-market calculation
+        description: Source calculation, saved-source derivation, or source probe
         type: choice
-        options: [collect, probe]
+        options: [collect, derive, probe]
         default: collect
       as_of:
         description: Completed exchange session YYYY-MM-DD; empty selects latest
@@ -84,11 +84,11 @@ jobs:
       - name: Check trusted automatic daily allowance
         id: followup
         timeout-minutes: 12
-        if: inputs.mode != 'probe' && (github.event_name != 'workflow_dispatch' || inputs.automatic_origin != '')
+        if: inputs.mode != 'probe' && inputs.mode != 'derive' && (github.event_name != 'workflow_dispatch' || inputs.automatic_origin != '')
         run: python tooling/chip_followup_guard.py
       - name: Allocate the source budget before the derived tail
         id: source_budget
-        if: inputs.mode != 'probe' && ((github.event_name == 'workflow_dispatch' && inputs.automatic_origin == '') || steps.followup.outputs.should_run == 'true')
+        if: inputs.mode != 'probe' && inputs.mode != 'derive' && ((github.event_name == 'workflow_dispatch' && inputs.automatic_origin == '') || steps.followup.outputs.should_run == 'true')
         timeout-minutes: 1
         env:
           FOLLOWUP_MAX_MINUTES: ${{ steps.followup.outputs.max_minutes }}
