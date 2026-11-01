@@ -56,10 +56,43 @@
 .conc-table-wrap {
   max-width: 100%;
   overflow: auto;
+  padding-inline-end: 12px;
+}
+html:has(.concentration-page),
+.concentration-page :is(.conc-workspace, .conc-table-wrap) {
+  --conc-scroll-thumb: color-mix(in srgb, var(--ui-muted) 32%, transparent);
   scrollbar-width: thin;
+  scrollbar-color: var(--conc-scroll-thumb) transparent;
+}
+html:has(.concentration-page):is(:hover, :focus-within),
+.concentration-page :is(.conc-workspace, .conc-table-wrap):is(:hover, :focus-within) {
+  --conc-scroll-thumb: color-mix(in srgb, var(--ui-muted) 55%, transparent);
 }
 .conc-workspace > .conc-table-wrap {
   max-height: min(48dvh, 500px);
+  scrollbar-gutter: stable;
+}
+@supports not (scrollbar-width: thin) {
+  html:has(.concentration-page)::-webkit-scrollbar,
+  .concentration-page :is(.conc-workspace, .conc-table-wrap)::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+  html:has(.concentration-page)::-webkit-scrollbar-track,
+  .concentration-page :is(.conc-workspace, .conc-table-wrap)::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  html:has(.concentration-page)::-webkit-scrollbar-thumb,
+  .concentration-page :is(.conc-workspace, .conc-table-wrap)::-webkit-scrollbar-thumb {
+    border: 2px solid transparent;
+    border-radius: 99px;
+    background: var(--conc-scroll-thumb);
+    background-clip: padding-box;
+  }
+  html:has(.concentration-page)::-webkit-scrollbar-corner,
+  .concentration-page :is(.conc-workspace, .conc-table-wrap)::-webkit-scrollbar-corner {
+    background: transparent;
+  }
 }
 .conc-table {
   width: 100%;
@@ -240,6 +273,11 @@
   text-decoration: underline;
   text-underline-offset: 3px;
 }
+@media (min-width: 1600px) {
+  .concentration-page.wb-site {
+    --wb-gutter: 24px;
+  }
+}
 @media (max-width: 1050px) {
   .conc-toolbar {
     align-items: start;
@@ -259,6 +297,9 @@
   }
 }
 @media (max-width: 760px) {
+  .conc-table-wrap {
+    padding-inline-end: 8px;
+  }
   .conc-toolbar h2 {
     font-size: 17px;
   }
