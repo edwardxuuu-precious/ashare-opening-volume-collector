@@ -1,4 +1,5 @@
 import type { ReactNode } from 'react';
+import { Search } from 'lucide-react';
 import { priceChangeClass, priceChangeText } from '@/lib/chart-readout';
 import './workbench.css';
 
@@ -85,6 +86,7 @@ export function WorkbenchListHeader({
         <span>{count === null ? '—' : `${count.toLocaleString()}${unit}`}</span>
       </div>
       <div className="wb-search">
+        <Search size={14} aria-hidden="true" />
         <input
           type="search"
           aria-label={search.label}

@@ -111,7 +111,17 @@ export function ConcentrationCandles({
           />
         </>
       ) : (
-        <div className="conc-candle-state" aria-live="polite">
+        <div
+          className="conc-candle-state"
+          aria-live="polite"
+          aria-busy={current.kind === 'loading'}
+        >
+          <div className="conc-candle-reservation" aria-hidden="true">
+            <div className="wb-loading-controls" />
+            <div className="wb-loading-readout" />
+            <div className="wb-chart-placeholder" />
+          </div>
+          <div className="conc-candle-message">
           {current.kind === 'loading' ? (
             <p>正在读取{name}日K线…</p>
           ) : current.kind === 'empty' ? (
@@ -122,6 +132,7 @@ export function ConcentrationCandles({
               onRetry={() => setRetry((value) => value + 1)}
             />
           )}
+          </div>
         </div>
       )}
     </section>

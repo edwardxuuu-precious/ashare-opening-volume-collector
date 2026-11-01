@@ -284,6 +284,25 @@ async function check(browser, name, options, run) {
       await Promise.all([page.waitForResponse(response => response.url().endsWith('/fedcba9876543210/999904.json')), page.getByRole('button', { name: '刷新集中度筛选', exact: true }).click()]);
       await candles.locator('[data-candle-date]').first().waitFor();
     });
+    for (const width of [1440, 900, 880, 820, 761, 760, 375]) {
+      await check(browser, 'candles-state-geometry-' + width, { width, heldStock: true }, async (page, state) => {
+        await page.goto(SITE + '/concentration'); await ready(page);
+        await page.locator('.conc-candle-state').waitFor();
+        for (let i = 0; i < 100 && !state.releaseStock; i++) await page.waitForTimeout(10);
+        assert.equal(typeof state.releaseStock, 'function');
+        const measure = () => page.locator('.conc-candles').evaluate(el => ({
+          section: el.getBoundingClientRect().height,
+          tabs: document.querySelector('.conc-tabs').getBoundingClientRect().top,
+        }));
+        const loading = await measure();
+        state.heldStock = false; state.releaseStock();
+        await page.locator('.conc-candles [data-candle-date]').first().waitFor();
+        await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+        const loaded = await measure();
+        assert.ok(Math.abs(loaded.section - loading.section) <= 1, 'Candle section height matches loading at ' + width);
+        assert.ok(Math.abs(loaded.tabs - loading.tabs) <= 1, 'Inspector tabs stay in place at ' + width);
+      });
+    }
     await check(browser, 'candles-delayed-selection-isolation', { heldStock: true }, async (page, state) => {
       await page.goto(SITE + '/concentration'); await ready(page);
       await page.waitForFunction(() => !!document.querySelector('.conc-candles'));
