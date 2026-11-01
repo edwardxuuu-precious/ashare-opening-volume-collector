@@ -11,7 +11,7 @@ import { useCandleInspection } from '@/lib/use-candle-inspection';
 
 export { volumeText, volumeUnitLabel };
 
-export function TrendChart({ stock, date, screen, lengths = [35, 60, 120], initialPeriod = 60, periodValue, onPeriodChange }: { stock: Pick<TrendStock, 'history' | 'name' | 'volume_unit'>; date: string; screen: TrendScreen | null; lengths?: number[]; initialPeriod?: number; periodValue?: number; onPeriodChange?: (period: number) => void }) {
+export function TrendChart({ stock, date, screen, lengths = [60, 120, 250, 500], initialPeriod = 60, periodValue, onPeriodChange }: { stock: Pick<TrendStock, 'history' | 'name' | 'volume_unit'>; date: string; screen: TrendScreen | null; lengths?: number[]; initialPeriod?: number; periodValue?: number; onPeriodChange?: (period: number) => void }) {
   const [localPeriod, setPeriod] = useState(initialPeriod), period = periodValue ?? localPeriod;
   const chart = useRef<SVGSVGElement>(null), [size, setSize] = useState({ width: 800, height: 300 });
   const bars = trendPrefix(stock.history, date, period);
@@ -30,7 +30,7 @@ export function TrendChart({ stock, date, screen, lengths = [35, 60, 120], initi
     if (typeof ResizeObserver === 'undefined') { window.addEventListener('resize', measure); return () => window.removeEventListener('resize', measure); }
     const observer = new ResizeObserver(measure); observer.observe(node); return () => observer.disconnect();
   }, [hasBars]);
-  if (!selected || !bars.length) return <div className="tv-chart-empty">此样本未取得可展示的行情，保留数据不足状态。</div>;
+  if (!selected || !bars.length) return <div className="tv-chart-empty">暂无可展示的行情。</div>;
   const W = size.width, H = size.height, left = W < 600 ? 10 : 22, right = W - 70, top = 24, volumeBottom = H - 32;
   const volumeTop = volumeBottom - Math.round(H * .2), volumeDivider = volumeTop - 22, bottom = volumeDivider - 18;
   const rawMin = Math.min(...bars.map(b => b.low)), rawMax = Math.max(...bars.map(b => b.high)), pad = Math.max((rawMax - rawMin) * .065, .02);
@@ -68,6 +68,6 @@ export function TrendChart({ stock, date, screen, lengths = [35, 60, 120], initi
       {screen?.baseline_mean !== null && screen?.baseline_mean !== undefined && screen.baseline_mean <= maxVolume && <g><line x1={left} x2={right} y1={vy(screen.baseline_mean)} y2={vy(screen.baseline_mean)} stroke="#345cd6" strokeDasharray="4 4" opacity=".7" /><text x={right + 10} y={vy(screen.baseline_mean) + 4} fontSize="10" fill="#345cd6">基准 B</text></g>}
       {hovered && <line x1={x(index)} x2={x(index)} y1={top} y2={volumeBottom} stroke="#65758d" strokeDasharray="3 4" opacity=".45" pointerEvents="none" />}
     </svg></div>
-    <div className="tv-chart-legend"><span><i className="tv-legend-recent" />准备期3日量</span><span><i className="tv-legend-reference" />此前10日量</span><span>涨跌幅相对前一根不复权收盘</span><span className="tv-muted">仅显示观察日及以前行情</span></div>
+    <div className="tv-chart-legend"><span><i className="tv-legend-recent" />准备期3日量</span><span><i className="tv-legend-reference" />此前10日量</span></div>
   </section>;
 }

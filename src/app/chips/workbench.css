@@ -158,9 +158,6 @@
  .chip-workbench .chip-chart-legend{font-size:10px;gap:7px 12px}
  .chip-workbench .chip-chart-legend .cw-chart-focus{margin-left:0;flex-basis:100%}
  .cw-compare-grid{grid-template-columns:1fr 1fr;gap:14px 12px}
- .cw-metric:first-child{grid-column:1/-1;display:grid;grid-template-columns:1fr auto;align-items:center;gap:4px 12px}
- .cw-metric:first-child>p{margin:0}
- .cw-metric:first-child .cw-metric-note{grid-column:1/-1;margin-top:0}
  .cw-metric-value{font-size:20px}
  .cw-metric-value small{font-size:11px}
  .cw-global-footer{height:auto;min-height:34px;font-size:10px;flex-wrap:wrap;padding:9px 14px;gap:4px}

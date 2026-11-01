@@ -50,6 +50,7 @@ const OpeningTrend = lazy(() =>
   })),
 );
 import { SiteHeader } from '@/components/site-header';
+import { WorkbenchPageBar, WorkbenchState } from '@/components/workbench';
 import { InfoHint } from '@/components/info-hint';
 import { RecordDetail } from '@/components/record-detail';
 import {
@@ -61,7 +62,6 @@ import {
 import { StockPicker, type StockOption } from '@/components/stock-picker';
 import { loadQuery, type LoadProgress } from '@/lib/query-loader';
 import { authFetch, authRead } from '@/lib/auth-fetch';
-import { Progress } from '@/components/ui/progress';
 import { DateCalendar } from '@/components/date-calendar';
 import {
   CollectionStatus,
@@ -624,13 +624,14 @@ export default function Home() {
     }
   };
   return (
-    <div className="app-shell">
+    <div className="app-shell wb-site wb-query-site">
       <SiteHeader active="opening">
         <CollectionStatus
           status={collectionState}
           latestDate={manifest?.dates[0]?.date ?? null}
         />
       </SiteHeader>
+      <WorkbenchPageBar title="开盘量查询" description="首15分钟成交量 · 全天占比 · 日行情" dateLabel="数据更新至" date={manifest?.dates[0]?.date}/>
       <aside className="query-panel" aria-label="股票查询">
         <div className="rail-brand-row">
           <h2>股票查询</h2>
@@ -745,7 +746,7 @@ export default function Home() {
           )}
           <div className="view-heading">
             <div className="view-identity">
-              <h1>{title}</h1>
+              <h2>{title}</h2>
               <div className="stock-meta">
                 {filters.stockScope === 'single' && filters.symbols[0] && (
                   <span>{filters.symbols[0]}</span>
@@ -1009,51 +1010,11 @@ export default function Home() {
             </output>
           )}
           {error ? (
-            <Empty className="result-empty">
-              <EmptyHeader>
-                <EmptyTitle>
-                  {manifest ? '所选日期无法读取' : '数据目录无法读取'}
-                </EmptyTitle>
-                <EmptyDescription>
-                  {collectionQueryMessage(error, collectionState)}
-                </EmptyDescription>
-              </EmptyHeader>
-              <Button
-                variant="outline"
-                onClick={() => {
-                  if (!manifest) {
-                    setManifestError('');
-                    setManifestRetry((x) => x + 1);
-                  } else refreshQuery();
-                }}
-              >
-                <RefreshCw size={15} aria-hidden="true" />
-                重新读取
-              </Button>
-            </Empty>
+            <WorkbenchState state={{kind:'error',title:manifest?'所选日期无法读取':'数据目录无法读取',message:collectionQueryMessage(error,collectionState),onRetry:()=>{if(!manifest){setManifestError('');setManifestRetry(x=>x+1);}else refreshQuery();}}}/>
           ) : loading ? (
             <div className="loading-state" aria-label="正在读取行情数据">
-              <div className="download-progress">
-                <p aria-live="polite">
-                  读取数据
-                  {loadProgress && loadProgress.total > 0
-                    ? ` · ${loadProgress.completed} / ${loadProgress.total} 日`
-                    : '…'}
-                </p>
-                <Progress
-                  aria-label="数据加载进度"
-                  value={
-                    loadProgress && loadProgress.total > 0
-                      ? Math.round(
-                          (loadProgress.completed / loadProgress.total) * 100,
-                        )
-                      : null
-                  }
-                />
-              </div>
-              <Skeleton className="h-20 w-full" />
-              <Skeleton className="h-56 w-full" />
-              <Skeleton className="h-64 w-full" />
+              {loadProgress&&loadProgress.total>1&&<p className="wb-update-note">已读取 {loadProgress.completed} / {loadProgress.total} 日</p>}
+              <WorkbenchState state={{kind:'loading',label:'正在读取行情…'}}/>
             </div>
           ) : rows.length === 0 ? (
             <Empty className="result-empty">
@@ -1175,7 +1136,7 @@ export default function Home() {
                     <h2>交易明细</h2>
                     <span>{rows.length.toLocaleString()} 条</span>
                     <InfoHint label="明细说明">
-                      点交易日期查看精确成交量、日行情与来源。成交量按股计算，价格为不复权日行情。仅停牌、特殊交易状态或数据待补的记录显示提示图标，可查看原因与依据。
+                      点日期查看明细 · 成交量为股 · 价格不复权。
                     </InfoHint>
                   </div>
                   <Picker

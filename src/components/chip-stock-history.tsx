@@ -10,7 +10,8 @@ import { ChartPeriodControl } from './chart-period-control';
 import { ChipPeakComparison } from './chip-peak-comparison';
 import { RetryMessage } from './read-state';
 import {workbenchQuote} from '@/lib/chip-workbench';
-import {priceChangeClass} from '@/lib/chart-readout';
+import { StockDetailHeader, WorkbenchCheck } from './workbench';
+import { InspectorTabs } from './inspector-tabs';
 import {chipNumber} from '@/lib/chips';
 import {chipScreenState,chipPricePositionLabel,chipStabilityLabel,chipStabilityDetails} from '@/lib/chip-price-position';
 import type {PreparedChipHistory} from '@/lib/chip-local-preparation';
@@ -18,11 +19,12 @@ import type {createChipStockPreload} from '@/lib/chip-stock-preload';
 
 export function ChipStockHistory({stock,previousDate,initialDate=null,onDateChange,preload,workbench=false,screeningRow,periodValue,onPeriodChange}:{stock:MarketStock;previousDate:string;initialDate?:string|null;onDateChange?:(date:string|null)=>void;preload:ReturnType<typeof createChipStockPreload<MarketStock,PreparedChipHistory>>;workbench?:boolean;screeningRow?:MarketScreenRow;periodValue?:number;onPeriodChange?:(period:number)=>void}){
   const requestedDate=useRef(initialDate);
+  const [infoTab,setInfoTab]=useState<'conditions'|'rules'>('conditions');
   const [localPeriod,setPeriod]=useState(120),period=periodValue??localPeriod;
   const [date,setDate]=useState(()=>initialDate&&(initialDate===stock.as_of||stock.history.some(r=>r.date===initialDate))?initialDate:stock.as_of),[historical,setHistorical]=useState<ChipHistory|null>(null);
   const [previewDate,setPreviewDate]=useState<string|null>(null);
   const [localFrames,setLocalFrames]=useState<Record<string,ChipHistory>>(()=>preload.peekPreview(stock.security_id)?.frames??{}),[localPreparing,setLocalPreparing]=useState(()=>!preload.peekPreview(stock.security_id));
-  const [localFallback,setLocalFallback]=useState(()=>preload.peekPreview(stock.security_id)?.fallback??'');
+  const [,setLocalFallback]=useState(()=>preload.peekPreview(stock.security_id)?.fallback??'');
   const [failed,setFailed]=useState<{date:string;message:string}|null>(null),[retry,setRetry]=useState(0);
   const dates=useMemo(()=>[...new Set([...stock.history.map(r=>r.date),stock.as_of])].sort(),[stock]);
   useEffect(()=>{
@@ -94,16 +96,24 @@ export function ChipStockHistory({stock,previousDate,initialDate=null,onDateChan
       <button className="chip-site-link" disabled={date===stock.as_of} onClick={()=>selectDate(stock.as_of)}>{workbench?'最新':'回到最新'}</button>
     </div>;
   return <div className={workbench?'chip-history-workbench':undefined}>
-    {workbench&&<header className="cw-stock-header"><div><h2>{stock.name}</h2><div className="cw-stock-symbol"><span>{stock.security_id}</span><span>不复权</span>{screeningRow&&<span className={`cw-screen-badge cw-screen-${chipScreenState(screeningRow).toLowerCase()}`}>{chipScreenState(screeningRow)==='PASS'?`${stock.as_of.slice(5)}自动入选`:chipScreenState(screeningRow)==='UNKNOWN'?'筛选数据不足':'筛选条件未满足'}</span>}</div></div><div className="cw-quote"><strong data-quote-close={quote.close??undefined} className={priceChangeClass(quote.percent)}>{quote.close===null?'—':quote.close.toFixed(2)}</strong><small title="相对上一根已发布的不复权K线，不替代交易所涨跌幅参考价">{displayDate.slice(5)}收盘{quote.change!==null?` · ${quote.change>0?'+':''}${quote.change.toFixed(2)}元 / ${quote.percent!>0?'+':''}${quote.percent!.toFixed(2)}%`:quote.hasCandle?' · 无前根K线':current?.market_session_status==='SOURCE_CONFIRMED_NO_TRADE'?` · 未交易，沿用${current.last_trade_date}`:' · 无当日K线'}</small></div></header>}
-    {workbench&&screeningRow&&<div className="cw-price-position" aria-label="本批筛选条件" title="筛选以本批日期为准，切换历史图表不会改变当日名单。"><span>{stock.as_of.slice(5)}筛选</span><span>收盘 <b>{screeningRow.close_cny===null?'待核实':chipNumber(screeningRow.close_cny).toFixed(2)}</b></span><span>主峰 <b>{screeningRow.peak_prices_cny.join(' / ')||'待核实'}</b></span><span title={screeningRow.model_mean_cost_cny??undefined}>平均成本 <b>{screeningRow.model_mean_cost_cny?chipNumber(screeningRow.model_mean_cost_cny).toFixed(4):'待核实'}</b></span><strong data-price-position={screeningRow.price_position_status??'UNKNOWN'}>{chipPricePositionLabel(screeningRow)}</strong></div>}
-    {workbench&&screeningRow&&<div className="cw-price-position" aria-label="顶格未动自动判断"><strong data-chip-stability={screeningRow.chip_unchanged_status??'UNKNOWN'}>{chipStabilityLabel(screeningRow)}</strong><span>{chipStabilityDetails(screeningRow)}</span></div>}
+    {workbench&&<StockDetailHeader name={stock.name} code={stock.security_id} date={displayDate} close={quote.close} percent={quote.percent} quoteNote={!quote.hasCandle?(current?.market_session_status==='SOURCE_CONFIRMED_NO_TRADE'?`未交易 · 最近交易 ${current.last_trade_date}`:'当日行情待补齐'):undefined} badge={screeningRow&&<span className={`cw-screen-badge cw-screen-${chipScreenState(screeningRow).toLowerCase()}`}>{chipScreenState(screeningRow)==='PASS'?'当日入选':chipScreenState(screeningRow)==='UNKNOWN'?'数据不足':'未满足'}</span>}/>}
     {workbench?<div className="cw-chart-controls"><ChartPeriodControl period={period} periods={[60,120,250,500]} availableCount={Math.min(period,stock.history.length)} onPeriodChange={value=>{setPeriod(value);onPeriodChange?.(value);setPreviewDate(null);}}/>{dateControls}</div>:dateControls}
-    <p className="chip-local-ready chip-site-note" role="status" data-local-fallback={localFallback||undefined}>{localPreparing?'正在准备历史预览…':Object.keys(localFrames).length?`已准备${Object.keys(localFrames).length}个历史日期，可直接预览；更早或缺少完整行情的日期首次读取请稍候。`:'历史日期按需读取，首次加载后可连续切换。'}</p>
+
     {requestedDate.current&&!dates.includes(requestedDate.current)&&<p className="chip-site-note">该股没有此前所选{requestedDate.current}的可用K线，已从最新日期{stock.as_of}开始展示。</p>}
     <ChipTradingChart history={stock.history} current={current} previous={previous} date={displayDate} selectedDate={date} compareDate={frame?.previous_date??''} loading={loading} loadError={!!error} onSelectDate={selectDate} onPreviewDate={preview} appearance={workbench?'workbench':'classic'} periodValue={workbench?period:undefined} hideToolbar={workbench}/>
     {previewDate&&<p className="chip-history-status chip-preview-status" role="status">鼠标预览 {displayDate} · 已固定 {date}；点击K线固定此日，移出图表恢复。</p>}
     {loading&&<p className="chip-history-status" role="status">正在计算{displayDate}及前一交易日的筹码…</p>}
     {error&&<RetryMessage message={`${displayDate}：${error}`} onRetry={()=>setRetry(n=>n+1)}/>}
     {current&&<><ChipPeakComparison current={current} previous={previous} date={displayDate} previousDate={frame?.previous_date??''} workbench={workbench}/>{frame?.comparison_status==='PREVIOUS_SESSION_UNAVAILABLE'&&<p className="chip-site-note">前一交易日{frame.previous_date??''}缺少可核实行情，暂不展示峰价及原峰占比对比。</p>}{frame?.comparison_status==='NO_PREVIOUS_LISTED_SESSION'&&<p className="chip-site-note">该日期没有可用的前一交易日筹码。</p>}</>}
+    {workbench&&screeningRow&&<section className="wb-inspector" aria-label="每日筹码条件"><InspectorTabs className="tv-inspector-tabs" label="筹码核对面板" idPrefix="chip-info" tabs={[{id:'conditions',label:'条件核对'},{id:'rules',label:'规则与数据'}]} value={infoTab} onChange={setInfoTab}/><div className="tv-inspector-body" role="tabpanel" id={`chip-info-${infoTab}`} aria-labelledby={`chip-info-${infoTab}-tab`}>
+      {infoTab==='conditions'&&<>
+        <div className="tv-inspector-intro"><b>入选条件</b><p>筛选日 {stock.as_of} · {chipPricePositionLabel(screeningRow)} · {chipStabilityLabel(screeningRow)}</p></div>
+        <WorkbenchCheck title="01 近期涨停" state={screeningRow.recent_limit_up_dates.length?'PASS':screeningRow.prefilter_status==='UNKNOWN'?'UNKNOWN':'FAIL'}><dl><div><dt>已确认涨停日</dt><dd>{screeningRow.recent_limit_up_dates.join('、')||'未找到'}</dd></div></dl><p>近10个交易日至少一次收盘涨停。</p></WorkbenchCheck>
+        <WorkbenchCheck title="02 成本位置" state={screeningRow.above_mean_cost_status??'UNKNOWN'}><dl><div><dt>筛选日收盘</dt><dd>{screeningRow.close_cny?chipNumber(screeningRow.close_cny).toFixed(2):'待核实'}</dd></div><div><dt>平均成本</dt><dd>{screeningRow.model_mean_cost_cny?chipNumber(screeningRow.model_mean_cost_cny).toFixed(4):'待核实'}</dd></div></dl><p>收盘价高于平均成本。</p></WorkbenchCheck>
+        <WorkbenchCheck title="03 顶格稳定" state={screeningRow.chip_unchanged_status??'UNKNOWN'}><dl><div><dt>基准日</dt><dd>{screeningRow.chip_stability?.baseline_date??'待核实'}</dd></div><div><dt>已核交易日</dt><dd>{screeningRow.chip_stability?`${screeningRow.chip_stability.evaluated_sessions} / ${screeningRow.chip_stability.required_sessions}`:'待核实'}</dd></div></dl><p>顶格偏移≤1%，原区占比保留≥90%。</p></WorkbenchCheck>
+      </>}
+      {infoTab==='rules'&&<><h3>每日筛选</h3><p>近10日收盘涨停、收盘高于平均成本、顶格稳定，三项同时满足。</p><p>{chipStabilityDetails(screeningRow)}</p><p>行情不复权 · 筹码系数2 · 最近210根有效日线。</p></>}
+    </div></section>}
+
   </div>;
 }

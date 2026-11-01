@@ -2,6 +2,8 @@ import type { Metadata } from 'next';
 import './globals.css';
 import { AuthGate } from '@/components/auth-gate';
 import { BRAND_NAME } from '@/components/brand';
+import { SiteRouter } from '@/components/site-router';
+import { siteHistoryBootstrap } from '@/lib/site-routes';
 
 export const metadata: Metadata = {
   title: `${BRAND_NAME} · A股数据`,
@@ -17,8 +19,9 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="zh-CN">
+      <head><script dangerouslySetInnerHTML={{ __html: siteHistoryBootstrap }} /></head>
       <body className="antialiased">
-        <AuthGate>{children}</AuthGate>
+        <AuthGate><SiteRouter>{children}</SiteRouter></AuthGate>
       </body>
     </html>
   );

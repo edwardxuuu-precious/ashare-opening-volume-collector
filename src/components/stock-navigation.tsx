@@ -1,6 +1,12 @@
-/* oxlint-disable next/no-html-link-for-pages -- Static CDN routes use document navigation. */
+import { SiteLink } from './site-router';
 import './stock-navigation.css';
 export type SiteSection = 'opening' | 'chips' | 'golden' | 'trend';
-export function StockNavigation({active}:{active:SiteSection}) {
-  return <nav className="stock-feature-nav" aria-label="主要功能"><a href="/" aria-current={active==='opening'?'page':undefined}>开盘量查询</a><a href="/chips" aria-current={active==='chips'?'page':undefined}>每日筹码筛选</a><a href="/golden" aria-current={active==='golden'?'page':undefined}>黄金画格核对</a><a href="/trend" aria-current={active==='trend'?'page':undefined}>趋势量价筛选</a></nav>;
+export function StockNavigation({active}:{active?:SiteSection}) {
+  const items: { section: SiteSection; href: string; label: string }[] = [
+    { section: 'opening', href: '/', label: '开盘量查询' },
+    { section: 'chips', href: '/chips', label: '每日筹码' },
+    { section: 'trend', href: '/trend', label: '趋势量价' },
+    { section: 'golden', href: '/golden', label: '黄金画格' },
+  ];
+  return <nav className="stock-feature-nav" aria-label="主要功能">{items.map(item=><SiteLink key={item.section} href={item.href} aria-current={active===item.section?'page':undefined}>{item.label}</SiteLink>)}</nav>;
 }

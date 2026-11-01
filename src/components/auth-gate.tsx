@@ -18,6 +18,8 @@ import {
 } from 'lucide-react';
 import { readResponse } from '../lib/read-request.ts';
 import { BrandIdentity } from './brand';
+import { SiteHeader } from './site-header';
+import { WorkbenchPageBar, WorkbenchShell, WorkbenchState, WorkbenchListSkeleton } from './workbench';
 
 const AccountContext = createContext<{
   user: string;
@@ -25,6 +27,8 @@ const AccountContext = createContext<{
   logout: () => void;
   error: string;
 } | null>(null);
+
+export function useAccount() { return useContext(AccountContext); }
 
 export function AccountControls() {
   const account = useContext(AccountContext);
@@ -149,7 +153,7 @@ export function AuthGate({ children }: { children: ReactNode }) {
       if (!response.ok || !result.username)
         throw Error(result.error || '登录失败，请重试。');
       setPassword('');
-      setUser(result.username);
+      window.location.reload();
     } catch (e) {
       setError(e instanceof Error ? e.message : '登录失败，请重试。');
     } finally {
@@ -175,18 +179,13 @@ export function AuthGate({ children }: { children: ReactNode }) {
   }
   if (checking)
     return (
-      <main className="auth-page auth-check" aria-live="polite">
-        <AuthBackground />
-        <AuthBrand />
-        <div className="auth-check-card">
-          <LoaderCircle
-            size={19}
-            className="animate-spin motion-reduce:animate-none"
-            aria-hidden="true"
-          />
-          验证登录…
-        </div>
-      </main>
+      <div className="chip-site chip-workbench wb-site app-session-loading" aria-live="polite">
+        <SiteHeader />
+        <WorkbenchPageBar title="量序" />
+        <WorkbenchShell sidebar={<aside className="wb-sidebar"><WorkbenchListSkeleton /></aside>} footer={<span>正在打开工作台…</span>}>
+          <WorkbenchState state={{kind:'loading',label:'正在验证登录…'}} />
+        </WorkbenchShell>
+      </div>
     );
   if (user)
     return (

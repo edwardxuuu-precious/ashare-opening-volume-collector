@@ -2,15 +2,17 @@
 import { useEffect,useMemo,useRef,useState,useSyncExternalStore } from 'react';
 import { RefreshCw } from 'lucide-react';
 import { SiteHeader } from '@/components/site-header';
+import { SiteLink } from '@/components/site-router';
+import { WorkbenchPageBar, WorkbenchShell, WorkbenchListHeader, WorkbenchListFooter, WorkbenchState, WorkbenchListSkeleton } from '@/components/workbench';
 import { ChipStockHistory } from '@/components/chip-stock-history';
 import { readChip } from '@/lib/chip-read';
 import {startPublicationFollow} from '@/lib/publication-follow';
 import { chipNumber } from '@/lib/chips';
 import { chipReason } from '@/lib/chip-display';
 import { useStockListNavigation } from '@/components/use-stock-list-navigation';
-import { RetryMessage, StockListNote } from '@/components/read-state';
+import { StockListNote } from '@/components/read-state';
 import { stockListMatches } from '@/lib/stock-list';
-import {createChipStockPreload,neighboringChipStocks,chipStockPreloadLabels,chipStockPreloadHints} from '@/lib/chip-stock-preload';
+import {createChipStockPreload,neighboringChipStocks} from '@/lib/chip-stock-preload';
 import {createChipStockIntent} from '@/lib/chip-stock-intent';
 import {prepareChipLocalHistory} from '@/lib/chip-local-preparation';
 import {initialWorkbenchStock} from '@/lib/chip-workbench';
@@ -76,10 +78,10 @@ export default function ChipsPage(){
     return()=>{active=false;lease.release();};
   },[code,preload,detailReload]);
   const screenCounts=useMemo(()=>chipScreenCounts(rows??[]),[rows]);
-  const matched=useMemo(()=>(rows??[]).filter(r=>(filter==='ALL'||chipScreenState(r)===filter)&&stockListMatches(search,r.name,r.security_id)),[rows,filter,search]),shown=matched.slice(page*100,(page+1)*100);
+  const matched=useMemo(()=>(rows??[]).filter(r=>(filter==='ALL'||chipScreenState(r)===filter)&&stockListMatches(search,r.name,r.security_id)),[rows,filter,search]),shown=matched.slice(page*60,(page+1)*60);
   const stockIndex=matched.findIndex(r=>r.security_id===code);
   const neighbors=useMemo(()=>neighboringChipStocks(matched.map(r=>r.security_id),code),[matched,code]);
-  useEffect(()=>{if(stockIndex>=0)setPage(Math.floor(stockIndex/100));},[code,stockIndex,matched]);
+  useEffect(()=>{if(stockIndex>=0)setPage(Math.floor(stockIndex/60));},[code,stockIndex,matched]);
   const availableStock=preload?.peekStock(code)??stock;
   const selectedStock=availableStock?.security_id===code&&availableStock.dataset_id===manifest?.dataset_id&&availableStock.as_of===manifest.as_of?availableStock:null;
   useEffect(()=>{
@@ -94,47 +96,41 @@ export default function ChipsPage(){
   },[intent]);
   const selectStock=(value:string)=>{intent?.cancelHover();selectedCode.current=value;setCode(value);};
   const navigationKeys=useMemo(()=>matched.map(row=>row.security_id),[matched]);
-  useStockListNavigation({keys:navigationKeys,selected:code,listRef:listArea,page,enabled:!!code,onSelect:(value,index)=>{selectStock(value);setPage(Math.floor(index/100));}});
+  useStockListNavigation({keys:navigationKeys,selected:code,listRef:listArea,page,enabled:!!code,onSelect:(value,index)=>{selectStock(value);setPage(Math.floor(index/60));}});
   const refreshData=()=>{publication.current?.refresh();if(detailError)setDetailReload(value=>value+1);};
   const selectedRow=rows?.find(r=>r.security_id===code),detailReasons=selectedStock?currentMarketReasons(selectedStock,selectedRow):[];
   const current=selectedStock?.snapshots[manifest?.as_of??'']??null;
   const nodeModel=manifest?.model_version==='chip-estimate.eastmoney-nodes150.ohlc4.zero-start.decay2.window210.v1';
-  return <div className="chip-site chip-workbench">
+  return <div className="chip-site chip-workbench wb-site">
     <SiteHeader active="chips"><button className="stock-header-refresh" onClick={refreshData} aria-label="刷新每日筹码" title="重新读取已发布批次"><RefreshCw size={14}/><span>刷新</span></button></SiteHeader>
-    <main className="cw-shell">
-      <aside className="cw-sidebar" aria-label="每日筛选结果">
-        <div className="cw-list-title"><h1>股票名单</h1><span>{manifest?`${matched.length.toLocaleString()}只`:'每日筛选'}</span></div>
-        <p className="cw-selection-rule" aria-label="筛选条件">近10交易日收盘涨停 · 收盘高于平均成本<br/><b>顶格未动（自动判断）</b></p>
-        <div className="cw-search"><input aria-label="查找股票" type="search" placeholder="搜索名称或代码" value={search} onChange={e=>{setSearch(e.target.value);setPage(0);}}/></div>
-        <div className="cw-filters" aria-label="筛选名单范围">{(['PASS','ALL','UNKNOWN','FAIL'] as const).map(k=><button key={k} aria-pressed={filter===k} title={k==='ALL'?'查看本批全部股票':labels[k]} onClick={()=>{setFilter(k);setPage(0);}}>{k==='PASS'?'入选':k==='ALL'?'全部':k==='UNKNOWN'?'数据不足':'未满足'} <b>{manifest?(k==='ALL'?manifest.universe_total:screenCounts[k]).toLocaleString():'—'}</b></button>)}</div>
-        <div className="cw-stock-list" ref={listArea}>
-          {shown.map(r=>{const preloadStatus=preload?.status(r.security_id);return <button key={r.security_id} className="cw-stock-row" type="button" aria-label={`${r.name} ${r.security_id}`} aria-pressed={r.security_id===code} data-stock-code={r.security_id} data-stock-key={r.security_id} onClick={()=>selectStock(r.security_id)} onPointerEnter={e=>{if(e.pointerType==='mouse'&&r.security_id!==code)intent?.hover(r.security_id);}} onPointerLeave={()=>intent?.cancelHover(r.security_id)}>
+    <WorkbenchPageBar title="每日筹码筛选" description="涨停回看 · 成本位置 · 顶格稳定" date={manifest?.as_of}><SiteLink href="/chips/calibration">历史校准</SiteLink></WorkbenchPageBar>
+    <WorkbenchShell contentClassName="cw-workspace chip-detail" footer={<><span>{manifest?`全市场 ${manifest.universe_total.toLocaleString()}只 · 入选 ${screenCounts.PASS.toLocaleString()}只`:'正在读取每日结果…'}</span><span>{run?.state==='RUNNING'?'新结果计算中':manifest?`更新至 ${manifest.as_of}`:'每日筹码'}</span></>} sidebar={
+      <aside className="cw-sidebar wb-sidebar" aria-label="每日筛选结果">
+        <WorkbenchListHeader count={manifest?matched.length:null} ready={!!manifest} search={{label:'查找股票',value:search,onChange:value=>{setSearch(value);setPage(0);}}} filters={(['PASS','FAIL','UNKNOWN','ALL'] as const).map(k=>({id:k,label:k==='PASS'?'当日入选':k==='ALL'?'全部':k==='UNKNOWN'?'数据不足':'未满足',count:manifest?(k==='ALL'?manifest.universe_total:screenCounts[k]):null,active:filter===k,onSelect:()=>{setFilter(k);setPage(0);}}))}/>
+        <div className="cw-stock-list wb-stock-list" ref={listArea}>
+          {shown.map(r=>{return <button key={r.security_id} className="cw-stock-row wb-stock-row" type="button" aria-label={`${r.name} ${r.security_id}`} aria-pressed={r.security_id===code} data-stock-code={r.security_id} data-stock-key={r.security_id} onClick={()=>selectStock(r.security_id)} onPointerEnter={e=>{if(e.pointerType==='mouse'&&r.security_id!==code)intent?.hover(r.security_id);}} onPointerLeave={()=>intent?.cancelHover(r.security_id)}>
             <span className="cw-stock-line"><strong>{r.name}</strong><span className="cw-stock-price">{r.close_cny===null?'待核实':chipNumber(r.close_cny).toFixed(2)}</span></span>
-            <span className="cw-stock-line"><span className="cw-code">{r.security_id}</span>{preloadStatus?<span className="chip-stock-cached" data-preload-status={preloadStatus} title={chipStockPreloadHints[preloadStatus]} aria-live="polite">{chipStockPreloadLabels[preloadStatus]}</span>:<span className={`cw-row-state cw-row-${chipScreenState(r).toLowerCase()}`}>{chipScreenState(r)==='PASS'?'三项条件自动入选':chipScreenState(r)==='UNKNOWN'?'数据不足':'条件未满足'}</span>}</span>
+            <span className="cw-stock-line"><span className="cw-code">{r.security_id}</span><span className="wb-row-status">{chipScreenState(r)==='PASS'?'当日入选':chipScreenState(r)==='UNKNOWN'?'数据不足':'未满足'}</span></span>
             {r.chip_status==='MISSING'&&<span className="cw-row-warning">筹码待补齐</span>}{r.last_trade_close_date&&<span className="cw-row-warning">收盘沿用 {r.last_trade_close_date}</span>}
           </button>;})}
-          {!shown.length&&<p className="cw-list-empty">{error||(!loaded?'正在读取每日名单…':'当前范围没有结果。')}</p>}
+          {!manifest&&!error?<WorkbenchListSkeleton/>:!shown.length&&<p className="cw-list-empty">{error?'名单暂不可用':'当前范围没有结果。'}</p>}
         </div>
-        <div className="cw-list-footer"><div className="cw-pagination"><span>{page+1} / {Math.max(1,Math.ceil(matched.length/100))}页</span><button aria-label="上一页" title="上一页" disabled={page===0} onClick={()=>setPage(p=>p-1)}>‹</button><button aria-label="下一页" title="下一页" disabled={(page+1)*100>=matched.length} onClick={()=>setPage(p=>p+1)}>›</button></div><p>↑ ↓ 换股 <span>← → 换交易日</span></p><small title="停留600毫秒后准备；快速划过取消，连续悬停触发至少间隔2秒。">悬停预加载 · 最多缓存5只</small></div>
-      </aside>
-      <section className="cw-workspace chip-detail" aria-label="个股K线与筹码详情">
+        <WorkbenchListFooter count={matched.length} page={page} onPageChange={setPage} dateKeys/>
+      </aside>}>
         <StockListNote outside={!!code&&!matched.some(row=>row.security_id===code)}/>
-        {!manifest&&<div className="cw-empty" role="status"><h2>每日筹码筛选</h2><p role={error?'alert':undefined}>{error||(!loaded?(loadingStage==='manifest'?'正在读取已发布筹码目录…':'正在读取本批筛选名单…'):'首批每日计算尚未完成。')}</p>{run&&<p>{run.as_of} · 已扫描 {run.scanned_count.toLocaleString()} / {run.universe_total.toLocaleString()}只 · 筹码可用 {run.model_ready_count.toLocaleString()} / {run.universe_total.toLocaleString()}只</p>}<button className="chip-site-link" disabled={!loaded} onClick={()=>publication.current?.refresh()}>重新读取</button></div>}
-        {manifest&&!code&&<div className="cw-empty"><h2>选择一只股票开始研究</h2><p>左侧名单支持搜索、悬停预加载与方向键切换。</p></div>}
-        {manifest&&code&&!selectedStock&&<div className="cw-detail-loading"><h2>{selectedRow?.name} <small>{code}</small></h2>{detailError?<RetryMessage message={detailError} onRetry={()=>setDetailReload(value=>value+1)}/>:<p role="status">正在读取日K线、成交量和筹码分布…</p>}</div>}
+        {!manifest&&<WorkbenchState state={error?{kind:'error',message:error,onRetry:()=>publication.current?.refresh()}:loaded?{kind:'empty',title:run?.state==='RUNNING'?'正在生成今日结果':'今日结果待发布',message:run?`${run.as_of} · 已处理 ${run.scanned_count.toLocaleString()} / ${run.universe_total.toLocaleString()}只`:undefined}:{kind:'loading',label:loadingStage==='manifest'?'正在读取每日结果…':'正在读取股票与行情…'}}/>}
+        {manifest&&!code&&<WorkbenchState state={{kind:'empty',title:'选择股票查看详情',message:'在左侧名单选择一只股票。'}}/>}
+        {manifest&&code&&!selectedStock&&<WorkbenchState state={detailError?{kind:'error',message:detailError,onRetry:()=>setDetailReload(value=>value+1)}:{kind:'loading',label:`正在读取${selectedRow?.name??code}的行情…`}}/>}
         {selectedStock&&preload&&<>
           <ChipStockHistory key={`${code}-${manifest!.dataset_id}`} stock={selectedStock} previousDate={manifest!.previous_date} initialDate={historyDate} onDateChange={setHistoryDate} preload={preload} workbench screeningRow={selectedRow} periodValue={chartPeriod} onPeriodChange={setChartPeriod}/>
           {!current&&<p className="cw-notice">该股筹码暂不可用：{detailReasons.map(chipReason).join('；')}</p>}
           {detailReasons.length>0&&<details className="cw-data-notes"><summary>个股数据说明（{detailReasons.length}）</summary><p>{detailReasons.map(chipReason).join('；')}</p></details>}
           <div className="cw-detail-footer"><span className="chip-stock-position">{stockIndex>=0?`当前名单第${stockIndex+1}/${matched.length}只${stockIndex===0?' · 首只':stockIndex===matched.length-1?' · 末只':''}`:'当前股票不在所选名单中'}</span><button className="chip-site-link" onClick={()=>{intent?.clear();selectedCode.current='';setCode('');setHistoryDate(null);}}>清除选择</button></div>
-          <details className="cw-neighbor-notes"><summary>相邻股票预加载</summary><p className="chip-stock-preload">{neighbors.length?neighbors.toReversed().map(value=>`${matched.find(r=>r.security_id===value)?.name??value} ${value}（${preload.status(value)?chipStockPreloadLabels[preload.status(value)!]:'等待预加载'}）`).join(' · '):'当前名单没有相邻股票。'}</p><p>后台最多2只、串行准备；悬停目标优先，快速划过不加载。</p></details>
+
         </>}
         {(error||statusError)&&manifest&&<p className="cw-coverage-warning" role="alert">{[error,statusError].filter(Boolean).join('；')}</p>}
-        {manifest&&<p className="cw-coverage-warning" role="status">三项条件均通过才自动入选；缺少可比数据的股票列在“数据不足”。</p>}
-        {manifest&&(!manifest.market_complete||manifest.universe_coverage==='SITE_CATALOG_UNVERIFIED')&&<p className="cw-coverage-warning" role="status">{!manifest.market_complete?'仍有筛选数据不足或筹码缺失，结果尚不完整。':'当前股票清单覆盖范围尚待核对。'}详情见计算与数据说明。</p>}
-      <details className="chip-site-method cw-method"><summary>计算与数据说明</summary><p>筛选仅保留三项：最近10个市场交易日至少一次收盘涨停；收盘价高于当日平均成本；顶格未动。不设10元以上或以下等绝对价格门槛。平均成本使用完整精度比较，严格大于，等于不算；高于主峰不能替代高于平均成本。顶格未动自动比较最早已确认涨停前一交易日的固定顶格区：涨停日至本批日期逐日检查，顶格区偏移不超过1%，各原区占比不低于基准的90%。顶格区由当日最高峰90%以上的价格格组成；不是屏幕条形是否顶满。缺少历史、价格口径不可比或分辨率不足时显示数据不足，不需要人工确认。这个规则描述模型分布稳定，不代表原持有人未卖出或已验证收益。</p><p>{nodeModel?'每批使用最近210根有效不复权日线（上市不足时显示实际根数），从零筹码开始。三角顶点取开、高、低、收四价均值，按150个动态节点采样；a=min(1,2×换手率/100)，旧筹码乘以1-a，再直接注入a×采样高度，每天的新筹码不先归一化为1。昨日、今日在同一窗口内分别回放；原峰占比固定在昨日未舍入峰价±昨日半个节点步长的区间，网格变化也按相同价格区间追踪。':'当前已发布批次使用原成交均价、一分钱价格档模型；算法切换完成后，本处将显示210根行情、150动态节点的口径。'}</p><p>当前在市沪深京清单逐股计算，不等于历史退市股票完整回测。新模型已与四股冻结行情下的东方财富本地系数2源码逐项对齐，不能据此认证官方客户端全部设置或真实持仓。历史行情为事后下载，除权息变换尚未认证；数据异常保留原因，缺少交易日行情不会填零。</p><p>收盘涨停的正向证据采用行情商历史收盘涨停池，并与对应日期实际收盘价逐一核对。普通涨跌幅规则仅用于排除不可能命中的日期；疑似涨停但缺少实际确认、特殊无限制交易日证据不足时保留待核实。不会把统一涨幅阈值当作全市场涨停标准。</p>{manifest&&<p>近10个交易日：{manifest.official_sessions.join('、')}。<a href={manifest.calendar_source} target="_blank" rel="noreferrer">交易所休市日历</a></p>}{manifest&&<><p>本批 {manifest.as_of}，比较 {manifest.previous_date}；沪深京清单 {manifest.universe_total.toLocaleString()}只，已处理 {manifest.scanned_count.toLocaleString()}只，筹码可用 {manifest.model_ready_count.toLocaleString()}只。{manifest.market_complete?'本批三项筛选条件均已完成自动判断。':'仍有筛选数据不足或数据缺失。'}</p><p>{manifest.universe_coverage==='OFFICIAL_CURRENT_LIST_RECONCILED'?'本批股票集合已与沪、深、北交易所当前在市名单核对。':manifest.universe_coverage==='SITE_CATALOG_UNVERIFIED'?'本批复用网站当前股票清单，覆盖范围尚待核对。':'本批使用已发布的数据清单，不能据此认证历史退市股票覆盖。'}上市首日仅展示当日筹码，前日对比不适用。</p></>}{run&&<p>每日任务 {run.as_of}：{run.state} · {run.scanned_count.toLocaleString()} / {run.universe_total.toLocaleString()}只，筹码可用 {run.model_ready_count.toLocaleString()}只。</p>}<p><a href="/chips/calibration">历史校准样本（旧模型） →</a></p></details>
-      </section>
-    </main>
-    <footer className="cw-global-footer"><span>系数 2 / 210根行情 / 顶格区偏移≤1% · 原区占比≥90%</span><span>{manifest?`结果 ${manifest.as_of} · 筹码可用 ${manifest.model_ready_count.toLocaleString()} / ${manifest.universe_total.toLocaleString()}只`:'每日筹码筛选'}{run?.state==='RUNNING'?' · 新批次计算中':''}</span></footer>
+        {manifest&&(!manifest.market_complete||manifest.universe_coverage==='SITE_CATALOG_UNVERIFIED')&&<p className="cw-coverage-warning" role="status">{!manifest.market_complete?'部分股票数据待补齐。':'当前股票清单覆盖范围尚待核对。'}</p>}
+      {manifest&&<details className="chip-site-method cw-method"><summary>计算与数据说明</summary><p>筛选仅保留三项：最近10个市场交易日至少一次收盘涨停；收盘价高于当日平均成本；顶格未动。不设10元以上或以下等绝对价格门槛。平均成本使用完整精度比较，严格大于，等于不算；高于主峰不能替代高于平均成本。顶格未动自动比较最早已确认涨停前一交易日的固定顶格区：涨停日至本批日期逐日检查，顶格区偏移不超过1%，各原区占比不低于基准的90%。顶格区由当日最高峰90%以上的价格格组成；不是屏幕条形是否顶满。缺少历史、价格口径不可比或分辨率不足时显示数据不足，不需要人工确认。这个规则描述模型分布稳定，不代表原持有人未卖出或已验证收益。</p><p>{nodeModel?'每批使用最近210根有效不复权日线（上市不足时显示实际根数），从零筹码开始。三角顶点取开、高、低、收四价均值，按150个动态节点采样；a=min(1,2×换手率/100)，旧筹码乘以1-a，再直接注入a×采样高度，每天的新筹码不先归一化为1。昨日、今日在同一窗口内分别回放；原峰占比固定在昨日未舍入峰价±昨日半个节点步长的区间，网格变化也按相同价格区间追踪。':'当前已发布批次使用原成交均价、一分钱价格档模型；算法切换完成后，本处将显示210根行情、150动态节点的口径。'}</p><p>当前在市沪深京清单逐股计算，不等于历史退市股票完整回测。新模型已与四股冻结行情下的东方财富本地系数2源码逐项对齐，不能据此认证官方客户端全部设置或真实持仓。历史行情为事后下载，除权息变换尚未认证；数据异常保留原因，缺少交易日行情不会填零。</p><p>收盘涨停的正向证据采用行情商历史收盘涨停池，并与对应日期实际收盘价逐一核对。普通涨跌幅规则仅用于排除不可能命中的日期；疑似涨停但缺少实际确认、特殊无限制交易日证据不足时保留待核实。不会把统一涨幅阈值当作全市场涨停标准。</p>{manifest&&<p>近10个交易日：{manifest.official_sessions.join('、')}。<a href={manifest.calendar_source} target="_blank" rel="noreferrer">交易所休市日历</a></p>}{manifest&&<><p>本批 {manifest.as_of}，比较 {manifest.previous_date}；沪深京清单 {manifest.universe_total.toLocaleString()}只，已处理 {manifest.scanned_count.toLocaleString()}只，筹码可用 {manifest.model_ready_count.toLocaleString()}只。{manifest.market_complete?'本批三项筛选条件均已完成自动判断。':'仍有筛选数据不足或数据缺失。'}</p><p>{manifest.universe_coverage==='OFFICIAL_CURRENT_LIST_RECONCILED'?'本批股票集合已与沪、深、北交易所当前在市名单核对。':manifest.universe_coverage==='SITE_CATALOG_UNVERIFIED'?'本批复用网站当前股票清单，覆盖范围尚待核对。':'本批使用已发布的数据清单，不能据此认证历史退市股票覆盖。'}上市首日仅展示当日筹码，前日对比不适用。</p></>}{run&&<p>每日任务 {run.as_of}：{run.state} · {run.scanned_count.toLocaleString()} / {run.universe_total.toLocaleString()}只，筹码可用 {run.model_ready_count.toLocaleString()}只。</p>}<p><SiteLink href="/chips/calibration">历史校准样本</SiteLink></p></details>}
+    </WorkbenchShell>
   </div>;
 }

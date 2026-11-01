@@ -156,12 +156,12 @@ async function tapCandle(page, date) {
       assert.match((await page.locator('.chip-candle-readout').innerText()).replace(/\s/g, ''), /量1766\.01万股/);
       await open(page, '/trend', '.tv-candle-readout');
       const tonesMatch = () => page.evaluate(() => {
-        const header = document.querySelector('.td-selected-summary b.candle-change-up, .td-selected-summary b.candle-change-down');
+        const header = document.querySelector('.wb-stock-header .cw-quote strong.candle-change-up, .wb-stock-header .cw-quote strong.candle-change-down');
         const chart = document.querySelector('.tv-candle-readout .candle-change strong');
         return Boolean(header && chart && getComputedStyle(header).color === getComputedStyle(chart).color);
       });
       assert.equal(await tonesMatch(), true, 'Positive return colors must agree in the header and chart');
-      await page.locator('.tv-filters').getByRole('button', { name: /^全部/ }).click();
+      await page.locator('.wb-filters').getByRole('button', { name: /^全部/ }).click();
       await page.getByLabel('搜索当日股票', { exact: true }).fill(meta.negative_code);
       await page.locator('.tv-candle-readout .candle-change-down').waitFor();
       assert.equal(await tonesMatch(), true, 'Negative return colors must agree in the header and chart');
@@ -194,10 +194,10 @@ async function tapCandle(page, date) {
     });
 
     await check(browser, 'opening-initial-query-retry', { fail: [`/data/${meta.latest}.json`] }, async (page, state) => {
-      await open(page, `/?scope=single&symbols=000410&date=${meta.latest}`, '.result-empty');
+      await open(page, `/?scope=single&symbols=000410&date=${meta.latest}`, '.wb-state');
       await page.getByText('所选日期无法读取', { exact: true }).waitFor();
       state.fail.clear();
-      await page.locator('.result-empty').getByRole('button', { name: '重新读取', exact: true }).click();
+      await page.locator('.wb-state').getByRole('button', { name: '重新读取', exact: true }).click();
       await page.locator('.results tbody tr').first().waitFor();
     });
 
@@ -225,8 +225,7 @@ async function tapCandle(page, date) {
 
     for (const mobile of [false, true]) await check(browser, `golden-overview-${mobile ? 'mobile' : 'desktop'}`, { mobile }, async (page) => {
       await open(page, '/golden', '.gw-readout');
-      if (mobile) await page.getByLabel('选择核对样本', { exact: true }).selectOption('overview');
-      else await page.locator('.gw-overview-link').click();
+      await page.locator('.gw-overview-link').click();
       await page.locator('.gw-preview').first().waitFor();
       assert.equal(await page.locator('.gw-preview').count(), 20);
       const bounds = await page.evaluate(() => ({ width: document.documentElement.clientWidth, body: document.body.scrollWidth }));
@@ -238,18 +237,18 @@ async function tapCandle(page, date) {
 
     await check(browser, 'research-period-persists', {}, async (page) => {
       await open(page, '/trend/research', '.tv-candle-readout');
-      await page.getByRole('button', { name: '35根', exact: true }).click();
-      await page.locator('.tv-filters').getByRole('button', { name: /^全部/ }).click();
+      await page.getByRole('button', { name: '60根', exact: true }).click();
+      await page.locator('.wb-filters').getByRole('button', { name: /^全部/ }).click();
       await page.getByLabel('搜索研究样本', { exact: true }).fill('600000');
       await page.locator('.tv-row').first().click();
       await page.locator('.tv-candle-readout').waitFor();
-      assert.equal(await page.getByRole('button', { name: '35根', exact: true }).getAttribute('aria-pressed'), 'true');
+      assert.equal(await page.getByRole('button', { name: '60根', exact: true }).getAttribute('aria-pressed'), 'true');
     });
 
     for (const route of ['/trend', '/trend/research']) await check(browser, 'unknown-return-' + route.replaceAll('/', '-'), {}, async (page) => {
       await open(page, route, '.tv-candle-readout');
-      await page.locator('.tv-filters').getByRole('button', { name: /^数据不足/ }).click();
-      const values = page.locator('.tv-row b').filter({ hasText: /^待核实$/ });
+      await page.locator('.wb-filters').getByRole('button', { name: /^数据不足/ }).click();
+      const values = page.locator(route === '/trend' ? '.cw-quote small span' : '.tv-row b').filter({ hasText: /^待核实$/ });
       await values.first().waitFor();
       for (const value of await values.all()) assert.doesNotMatch((await value.getAttribute('class')) || '', /(?:tv|candle-change)-(?:up|down)/, 'Unknown returns must not be colored as a rise or fall');
     });
@@ -278,10 +277,10 @@ async function tapCandle(page, date) {
     await check(browser, 'golden-period-persists-and-drawing', { mobile: true }, async (page) => {
       await open(page, '/golden', '.gw-readout');
       await page.getByRole('button', { name: '120根', exact: true }).click();
-      await page.getByLabel('选择核对样本', { exact: true }).selectOption('300788');
+      await page.locator('.gw-stock[data-stock-key="300788"]').click();
       await page.locator('.gw-detail-top h2').filter({ hasText: '中信出版' }).waitFor();
       assert.equal(await page.getByRole('button', { name: '120根', exact: true }).getAttribute('aria-pressed'), 'true');
-      await page.getByLabel('选择核对样本', { exact: true }).selectOption('002693');
+      await page.locator('.gw-stock[data-stock-key="002693"]').click();
       await page.locator('.gw-detail-top h2').filter({ hasText: '双成药业' }).waitFor();
       await page.getByRole('button', { name: '新增画线', exact: true }).click();
       const high = page.locator('[data-candle-date="2026-10-14"] line').first();
@@ -299,11 +298,11 @@ async function tapCandle(page, date) {
 
     await check(browser, 'daily-period-persists', {}, async (page) => {
       await open(page, '/trend', '.tv-candle-readout');
-      await page.getByRole('button', { name: '35根', exact: true }).click();
+      await page.getByRole('button', { name: '60根', exact: true }).click();
       await page.locator('.tv-row').filter({ hasText: '000676' }).click();
       await page.locator('.tv-stock-heading h2').filter({ hasText: '智度股份' }).waitFor();
       await page.locator('.tv-candle-readout').waitFor();
-      assert.equal(await page.getByRole('button', { name: '35根', exact: true }).getAttribute('aria-pressed'), 'true');
+      assert.equal(await page.getByRole('button', { name: '60根', exact: true }).getAttribute('aria-pressed'), 'true');
     });
 
     for (const route of ['/trend', '/trend/research', '/golden']) await check(browser, 'tabs-' + route.replaceAll('/', '-'), {}, async (page) => {
