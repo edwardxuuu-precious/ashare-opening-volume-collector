@@ -13,8 +13,8 @@
   justify-content: space-between;
   gap: 16px;
   flex-shrink: 0;
-  padding: 18px 24px;
-  min-height: 84px;
+  padding: 12px 24px;
+  min-height: 72px;
   border-bottom: 0;
   background: transparent;
 }
@@ -22,9 +22,9 @@
   margin: 0;
   line-height: 1.5;
   color: var(--ui-text);
-  font-size: 20px;
+  font-size: 18px;
   font-weight: 650;
-  letter-spacing: -0.5px;
+  letter-spacing: -0.4px;
 }
 .wb-page-bar p {
   margin: 3px 0 0;
@@ -51,19 +51,20 @@
   display: flex;
   flex-direction: column;
   align-items: flex-end;
-  gap: 2px;
+  gap: 1px;
   white-space: nowrap;
   font-variant-numeric: tabular-nums;
-  padding: 6px 12px;
+  padding: 0 2px;
   border-radius: 12px;
-  background: var(--ui-background);
-  border: 1px solid var(--ui-border-soft);
+  background: transparent;
+  border: 0;
 }
 .wb-date small {
   font-size: 10px;
 }
 .wb-date time {
-  font-size: 14px;
+  font-size: 13px;
+  font-weight: 500;
   color: var(--ui-text);
 }
 .wb-site .wb-shell {
@@ -91,7 +92,7 @@
   border: 1px solid var(--ui-border-soft);
   border-right: 1px solid var(--ui-border-soft);
   border-radius: var(--ui-radius-panel);
-  box-shadow: var(--ui-shadow-panel);
+  box-shadow: none;
 }
 .chip-site.chip-workbench.wb-site .wb-workspace {
   min-width: 0;
@@ -125,14 +126,26 @@
   font-size: 11px;
   color: var(--ui-muted);
   font-variant-numeric: tabular-nums;
+  padding: 2px 7px;
+  border-radius: 7px;
+  background: var(--ui-surface-soft);
 }
 .wb-search {
+  position: relative;
   padding: 0 12px 12px;
+}
+.wb-search > svg {
+  position: absolute;
+  left: 24px;
+  top: 19px;
+  transform: translateY(-50%);
+  color: var(--ui-muted);
+  pointer-events: none;
 }
 .wb-search input {
   width: 100%;
   min-width: 0;
-  padding: 8px 10px;
+  padding: 8px 10px 8px 32px;
   border: 1px solid var(--ui-border);
   color: var(--ui-text);
   font-size: 12px;
@@ -155,6 +168,7 @@
 .wb-filters button {
   display: flex;
   align-items: center;
+  justify-content: space-between;
   gap: 5px;
   border: 0;
   background: transparent;
@@ -168,6 +182,7 @@
 }
 .wb-filters b {
   font-weight: 400;
+  font-size: 10px;
   font-variant-numeric: tabular-nums;
 }
 .wb-filters button[aria-pressed='true'] {
@@ -596,11 +611,11 @@
     align-items: flex-start;
     gap: 10px;
     flex-wrap: wrap;
-    padding: 14px 16px;
-    min-height: 78px;
+    padding: 12px 16px;
+    min-height: 72px;
   }
   .wb-page-bar h1 {
-    font-size: 18px;
+    font-size: 17px;
   }
   .wb-page-bar p {
     font-size: 10px;
@@ -1259,6 +1274,20 @@
 }
 .wb-site .candle-readout {
   min-height: 35px;
+  background: var(--ui-surface-soft);
+  border-radius: 9px;
+  padding: 8px 10px 6px;
+  gap: 4px 10px;
+}
+.wb-site .candle-readout > b {
+  font-family: var(--ui-font);
+}
+.wb-site .candle-readout > [data-field='close'] {
+  color: var(--ui-text);
+  font-weight: 600;
+}
+.wb-site .candle-change strong {
+  font-weight: 600;
 }
 .wb-site .wb-stock-row strong {
   font-size: 13px;
@@ -1280,8 +1309,8 @@
   border-radius: 8px;
 }
 .wb-site .chart-period-control button[aria-pressed='true'] {
-  background: var(--ui-selected);
-  box-shadow: inset 0 0 0 1px #345cd610;
+  background: var(--ui-background);
+  box-shadow: 0 1px 4px #1d2d4c15;
 }
 .wb-site .wb-stock-row,
 .wb-site .wb-filters button,
@@ -1401,6 +1430,7 @@
   }
   .wb-site .candle-readout {
     min-height: 76px;
+    gap: 3px 8px;
   }
   .wb-site .wb-metrics {
     padding: 14px;
@@ -1469,6 +1499,7 @@
 .wb-site.gw-site .wb-search input {
   border-radius: var(--ui-radius-control);
   background: var(--ui-surface-soft);
+  padding-left: 32px;
 }
 .wb-site.wb-calibration-site select {
   border-radius: var(--ui-radius-control);

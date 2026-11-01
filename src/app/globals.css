@@ -58,7 +58,7 @@
   --ui-border: #e6eaf0;
   --ui-sidebar: #f6f7f9;
   --ui-accent: #345cd6;
-  --ui-selected: #eaf0ff;
+  --ui-selected: #edf1ff;
   --ui-rise: #cc5362;
   --ui-fall: #118671;
   --ui-rise-text: #ad3949;
@@ -90,14 +90,14 @@
   --ui-font:
     'Inter', 'Noto Sans SC', -apple-system, BlinkMacSystemFont, 'Segoe UI',
     'Microsoft YaHei', sans-serif;
-  --ui-canvas: #f4f6fa;
-  --ui-surface-soft: #f7f9fc;
-  --ui-border-soft: #edf0f5;
+  --ui-canvas: #f5f6f8;
+  --ui-surface-soft: #f8f9fb;
+  --ui-border-soft: #e8ebf0;
   --ui-radius-control: 10px;
   --ui-radius-item: 12px;
   --ui-radius-section: 14px;
   --ui-radius-panel: 20px;
-  --ui-shadow-panel: 0 3px 18px rgb(29 45 76 / 4.5%);
+  --ui-shadow-panel: 0 4px 20px rgb(29 45 76 / 3%);
   --ui-shadow-popover: 0 12px 40px rgb(29 45 76 / 10%);
   --ui-chart-height: clamp(280px, calc(100dvh - 490px), 420px);
   --ui-panel-padding: 16px;
