@@ -1,8 +1,8 @@
 """Bound the Linux production runner and all of its worker descendants.
 
-The runner retains its 285-minute computation budget. One minute of the
-existing cleanup allowance lets normal checkpoint/finalization finish before
-the complete isolated process group is terminated. No new run is dispatched.
+The caller's allocation stays below the existing 285-minute ceiling and the
+shared source deadline. One minute of cleanup lets checkpoint/finalization
+finish before the isolated process group is terminated. No run is dispatched.
 """
 from __future__ import annotations
 import argparse
@@ -17,6 +17,8 @@ import subprocess
 import sys
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tooling.chip_workflow_budget import compute_minutes
 STATUS = 'data/chips/daily/status.json'
 LEASE = 'collector/chips/lease.json'
 GRACE_SECONDS = 60
@@ -115,6 +117,10 @@ def main():
     parser.add_argument('--as-of')
     parser.add_argument('--max-minutes', type=int, default=285)
     args = parser.parse_args()
+    now = datetime.now(timezone.utc)
+    args.max_minutes = compute_minutes(now, now, args.max_minutes)
+    if args.max_minutes < 2:
+        raise ValueError('CHIP_SOURCE_BUDGET_EXHAUSTED')
     command = [sys.executable, '-m', 'backend.chips.runner', '--bucket', args.bucket,
         '--region', args.region, '--max-minutes', str(args.max_minutes)]
     if args.as_of:

@@ -188,7 +188,7 @@ function SeriesChart({
 export default function ConcentrationPage() {
   const [load, setLoad] = useState<ReadState>({ kind: 'loading' });
   const [retry, setRetry] = useState(0),
-    [group, setGroup] = useState<ConcentrationGroup>(3);
+    [group, setGroup] = useState<ConcentrationGroup>(20);
   const [category, setCategory] = useState<ConcentrationState>('PASS'),
     [search, setSearch] = useState('');
   const [sort, setSort] = useState<Sort>('streak'),
@@ -211,7 +211,7 @@ export default function ConcentrationPage() {
           parseConcentrationSource,
         );
         const raw = await read(
-          `/data/chips/daily/${source.active_slot}/concentration-v2.json`,
+          `/data/chips/daily/${source.active_slot}/concentration-two-v1.json`,
           controller.signal,
           (value) => value,
         );

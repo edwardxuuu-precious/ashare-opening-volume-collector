@@ -351,3 +351,12 @@
     margin-left: 0;
   }
 }
+
+.concentration-page .wb-filters {
+  min-height: 84px;
+}
+@media (max-width: 760px) {
+  .concentration-page .wb-filters {
+    min-height: 38px;
+  }
+}

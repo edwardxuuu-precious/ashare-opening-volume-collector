@@ -71,7 +71,7 @@ function recount(doc) {
 }
 function document() {
   return recount({
-    schema: 'stock.chips.concentration.v2',
+    schema: 'stock.chips.concentration.two.v1',
     rule_version: concentrationRule,
     dataset_id: source().dataset_id,
     active_slot: source().active_slot,
@@ -163,9 +163,9 @@ function document() {
 const parse = (doc) =>
   parseConcentrationScan(doc, parseConcentrationSource(source()));
 
-test('V2 has six nonincreasing groups with actual counts, ties, zero and unknown', () => {
+test('Two-group document has only two nonincreasing groups with actual counts, ties, zero and unknown', () => {
   const result = parse(document());
-  assert.deepEqual(concentrationGroups, [3, 5, 10, 15, 20, 'LONG']);
+  assert.deepEqual(concentrationGroups, [20, 'LONG']);
   assert.equal(result.groups.LONG.PASS, 2);
   assert.equal(result.rows[3].values[20], 0);
   assert.equal(result.rows[2].values[20], null);
@@ -175,7 +175,7 @@ test('V2 has six nonincreasing groups with actual counts, ties, zero and unknown
   assert.equal(concentrationStreakText(result.rows[3]), '≥21天');
 });
 
-test('LONG uses all N+1 points and its actual anchor while five groups retain 21 points', () => {
+test('LONG uses all N+1 points and its actual anchor while 20 days retains 21 points', () => {
   const scan = parse(document()),
     row = scan.rows[0];
   const long = concentrationSeries(scan, row, 'LONG');
@@ -183,8 +183,8 @@ test('LONG uses all N+1 points and its actual anchor while five groups retain 21
   assert.equal(long.sessions.length, 67);
   assert.equal(long.sessions[0], row.streak_start_session);
   assert.equal(long.highlightFrom, 0);
-  assert.equal(concentrationSeries(scan, row, 3).values.length, 21);
-  assert.equal(concentrationSeries(scan, row, 3).highlightFrom, 17);
+  assert.equal(concentrationSeries(scan, row, 20).values.length, 21);
+  assert.equal(concentrationSeries(scan, row, 20).highlightFrom, 0);
   assert.equal(concentrationStartValue(row, 'LONG'), 20);
   assert.equal(concentrationDrop(row, 'LONG'), 0);
   assert.equal(concentrationStartValue(scan.rows[1], 'LONG'), null);
@@ -254,6 +254,7 @@ test('page source keeps its universe independent of unrelated filters', () => {
 test('parser rejects strict V1 and stale dataset, rule, model, date and denominator', () => {
   for (const [field, value] of [
     ['schema', 'stock.chips.concentration.v1'],
+    ['schema', 'stock.chips.concentration.v2'],
     ['rule_version', 'CENTRAL_90_STRICT_DECLINE_INDEPENDENT_210_V1'],
     ['dataset_id', 'fedcba9876543210'],
     ['active_slot', 'fedcba9876543210'],
@@ -268,8 +269,10 @@ test('parser rejects strict V1 and stale dataset, rule, model, date and denomina
 test('partial universe, duplicate stocks, invalid curves and mismatched counts fail atomically', () => {
   const mutations = [
     (d) => d.rows.pop(),
+    (d) => (d.groups['3'] = {PASS:0, FAIL:4, UNKNOWN:0}),
+    (d) => (d.rows[0].groups['5'] = 'PASS'),
     (d) => (d.rows[1].security_id = d.rows[0].security_id),
-    (d) => (d.groups[3].PASS = 0),
+    (d) => (d.groups[20].PASS = 0),
     (d) => d.rows[0].streak_values.pop(),
     (d) => (d.rows[0].streak_start_session = days[0]),
     (d) => (d.rows[0].streak_boundary.previous_value = 21),

@@ -1,18 +1,4 @@
 export const concentrationGroupRegistry = [
-  { key: 3, comparisons: 3, label: '连续3天', title: '至少连续不增3个交易日' },
-  { key: 5, comparisons: 5, label: '连续5天', title: '至少连续不增5个交易日' },
-  {
-    key: 10,
-    comparisons: 10,
-    label: '连续10天',
-    title: '至少连续不增10个交易日',
-  },
-  {
-    key: 15,
-    comparisons: 15,
-    label: '连续15天',
-    title: '至少连续不增15个交易日',
-  },
   {
     key: 20,
     comparisons: 20,
@@ -32,7 +18,7 @@ export const concentrationGroups = concentrationGroupRegistry.map(
 export type ConcentrationGroup =
   (typeof concentrationGroupRegistry)[number]['key'];
 export type ConcentrationState = 'PASS' | 'FAIL' | 'UNKNOWN';
-export const concentrationRule = 'CENTRAL_90_NONINCREASING_INDEPENDENT_210_V2';
+export const concentrationRule = 'CENTRAL_90_NONINCREASING_INDEPENDENT_210_TWO_V1';
 export const concentrationModel =
   'chip-estimate.eastmoney-nodes150.ohlc4.zero-start.decay2.window210.v1';
 export type ConcentrationSource = {
@@ -139,11 +125,9 @@ function groupRecord<T>(
   parse: (value: unknown) => T,
 ): Record<ConcentrationGroup, T> {
   const row = object(value);
+  if (Object.keys(row).length !== 2 || !('20' in row) || !('LONG' in row))
+    throw Error('集中度分组必须恰好为20天和大于20天。');
   return {
-    3: parse(row['3']),
-    5: parse(row['5']),
-    10: parse(row['10']),
-    15: parse(row['15']),
     20: parse(row['20']),
     LONG: parse(row.LONG),
   };
@@ -368,7 +352,7 @@ export function parseConcentrationScan(
 ): ConcentrationScan {
   const row = object(value);
   if (
-    row.schema !== 'stock.chips.concentration.v2' ||
+    row.schema !== 'stock.chips.concentration.two.v1' ||
     row.rule_version !== concentrationRule ||
     row.coefficient !== 2 ||
     row.model_version !== concentrationModel ||

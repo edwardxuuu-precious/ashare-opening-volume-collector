@@ -7,6 +7,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from backend.chips.calendar import sessions
 from backend.chips.stability import RULE_ID, THRESHOLDS, POLICY_METADATA
+from tooling.chip_workflow_budget import compute_minutes
 
 REPOSITORY = 'edwardxuuu-precious/ashare-opening-volume-collector'
 WORKFLOW = 'Collect opening volume into private storage'
@@ -107,7 +108,7 @@ def slot_attempt(result, now, trigger):
 def runtime_budget(started, now):
     if now < started:
         raise ValueError('CLOCK_MOVED_BACKWARD')
-    minutes = min(285, math.floor(((started+timedelta(minutes=290))-now).total_seconds()/60)-5)
+    minutes = compute_minutes(started, now)
     if minutes < 2:
         raise ValueError('FOLLOWUP_BUDGET_EXHAUSTED')
     return minutes
@@ -270,9 +271,7 @@ def run_guard(fetch, clock=lambda: datetime.now(timezone.utc), sleep=time.sleep,
         collector, marker = fetch(COLLECTOR_STATUS), fetch(repair_key(gate['as_of']))
         now = clock(); result = decide(now, manifest, lease, collector, marker, chip_status=status)
     if result['as_of'] != gate['as_of']: raise ValueError('DAY_CHANGED_DURING_GUARD')
-    # Guard+wait+compute share <=290 minutes after setup, inside the unchanged
-    # 310-minute job. Five minutes are reserved for commit/cleanup.
-    minutes = min(285, math.floor(((started+timedelta(minutes=290))-now).total_seconds()/60)-5)
+    minutes = compute_minutes(started, now)
     if result['action'] == 'RUN' and minutes < 2: raise ValueError('FOLLOWUP_BUDGET_EXHAUSTED')
     if result.get('slot_key') and result['action'] == 'RUN':
         existing = fetch(result['slot_key'])
@@ -304,7 +303,7 @@ def run_guard(fetch, clock=lambda: datetime.now(timezone.utc), sleep=time.sleep,
         lease = fetch(LEASE); now = clock()
         result = decide(now, manifest, lease, collector, marker, chip_status=status)
         if now < started or result['as_of'] != gate['as_of']: raise ValueError('DAY_OR_CLOCK_CHANGED_DURING_GUARD')
-        minutes = min(285, math.floor(((started+timedelta(minutes=290))-now).total_seconds()/60)-5)
+        minutes = compute_minutes(started, now)
         if result['action'] == 'RUN':
             if minutes < 2: raise ValueError('FOLLOWUP_BUDGET_EXHAUSTED')
             if claim is None: raise ValueError('REPAIR_CLAIM_REQUIRED')
@@ -318,7 +317,7 @@ def run_guard(fetch, clock=lambda: datetime.now(timezone.utc), sleep=time.sleep,
                 now = clock()
                 if now < started or time_gate(now)['as_of'] != gate['as_of'] or time_gate(now)['action'] != 'READY':
                     raise ValueError('DAY_OR_CLOCK_CHANGED_DURING_CLAIM')
-                minutes = min(285, math.floor(((started+timedelta(minutes=290))-now).total_seconds()/60)-5)
+                minutes = compute_minutes(started, now)
                 if minutes < 2: raise ValueError('FOLLOWUP_BUDGET_EXHAUSTED_AFTER_CLAIM')
     return {**result, 'should_run': 'true' if result['action'] == 'RUN' else 'false',
             'max_minutes': str(minutes if result['action'] == 'RUN' else 0), 'wait_seconds': waited}

@@ -181,7 +181,7 @@ def resolve_session(jar):
 
 def is_chip_data_path(path):
     # Exact private-data additions only. Existing Cognito validation runs first.
-    return bool(re.fullmatch(r'/data/chips/(?:manifest\.json|[a-f0-9]{16}/(?:screening|\d{6})\.json|daily/(?:manifest\.json|status\.json|[a-f0-9]{16}/(?:screening|golden|concentration|concentration-v2|\d{6})\.json))', path))
+    return bool(re.fullmatch(r'/data/chips/(?:manifest\.json|[a-f0-9]{16}/(?:screening|\d{6})\.json|daily/(?:manifest\.json|status\.json|[a-f0-9]{16}/(?:screening|golden|concentration|concentration-v2|concentration-two-v1|\d{6})\.json))', path))
 
 
 def handler(event, context):
