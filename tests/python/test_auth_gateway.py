@@ -10,12 +10,16 @@ import time
 import types
 import unittest
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 
 class FakeClientError(Exception):
     def __init__(self, code):
         self.response = {'Error': {'Code': code}}
+
+
+class FakeBotoCoreError(Exception):
+    pass
 
 
 class AuthTests(unittest.TestCase):
@@ -27,7 +31,8 @@ class AuthTests(unittest.TestCase):
         cls.old = {key: sys.modules.get(key) for key in ('boto3', 'botocore', 'botocore.exceptions')}
         sys.modules['boto3'] = types.SimpleNamespace(client=lambda name: MagicMock())
         sys.modules['botocore'] = types.ModuleType('botocore')
-        sys.modules['botocore.exceptions'] = types.SimpleNamespace(ClientError=FakeClientError)
+        sys.modules['botocore.exceptions'] = types.SimpleNamespace(ClientError=FakeClientError,
+            BotoCoreError=FakeBotoCoreError)
         spec = importlib.util.spec_from_file_location('stock_auth_test', Path(__file__).parents[2] / 'deploy/auth/handler.py')
         cls.auth = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(cls.auth)
@@ -44,7 +49,7 @@ class AuthTests(unittest.TestCase):
 
     def token(self, **change):
         claims = {'iss': self.auth.ISSUER, 'client_id': self.auth.CLIENT,
-                  'token_use': 'access', 'exp': time.time() + 3600}
+                  'token_use': 'access', 'auth_time': time.time(), 'exp': time.time() + 3600}
         claims.update(change)
         return 'header.' + base64.urlsafe_b64encode(json.dumps(claims).encode()).decode().rstrip('=') + '.signature'
 
@@ -263,6 +268,214 @@ class AuthTests(unittest.TestCase):
         result = self.auth.handler(event, None)
         self.auth.cognito.revoke_token.assert_called_once_with(Token='refresh-test', ClientId='client-test')
         self.assertTrue(all('Max-Age=0' in c for c in result['cookies']))
+
+    def refresh_event(self, path='/auth/me', token=None, method='GET', origin=None, body=None):
+        event = self.event(path, token=token, method=method, origin=origin, body=body)
+        event['cookies'].append(self.auth.REFRESH + '=refresh-test')
+        return event
+
+    def renewed_token(self, **claims):
+        token = self.token(**claims)
+        self.auth.cognito.admin_initiate_auth.return_value = {'AuthenticationResult': {
+            'AccessToken': token, 'ExpiresIn': 3600}}
+        self.auth.cognito.get_user.return_value = {'Username': 'edward'}
+        return token
+
+    def assert_cleared_session(self, result):
+        self.assertEqual(result['statusCode'], 401)
+        self.assertEqual(len(result['cookies']), 2)
+        self.assertEqual({value.split('=', 1)[0] for value in result['cookies']},
+                         {self.auth.ACCESS, self.auth.REFRESH})
+        self.assertTrue(all('Max-Age=0' in value for value in result['cookies']))
+
+    def test_login_issues_fifteen_day_persistent_refresh_cookie(self):
+        self.auth.cognito.admin_initiate_auth.return_value = {'AuthenticationResult': {
+            'AccessToken': 'access-test', 'RefreshToken': 'refresh-test', 'ExpiresIn': 3600}}
+        result = self.auth.handler(self.event('/auth/login', method='POST', origin=self.auth.ORIGIN,
+            body={'username': 'edward', 'password': 'not-a-real-password'}), None)
+        cookies = {value.split('=', 1)[0]: value for value in result['cookies']}
+        self.assertIn('Max-Age=1296000', cookies[self.auth.REFRESH])
+        self.assertIn('Max-Age=3600', cookies[self.auth.ACCESS])
+        for value in cookies.values():
+            self.assertIn('Path=/; Secure; HttpOnly; SameSite=Strict', value)
+            self.assertNotIn('Domain=', value)
+
+    def test_valid_access_is_checked_online_without_refresh(self):
+        token = self.token()
+        self.auth.cognito.get_user.return_value = {'Username': 'edward'}
+        result = self.auth.handler(self.refresh_event(token=token), None)
+        self.assertEqual(result['statusCode'], 200)
+        self.auth.cognito.get_user.assert_called_once_with(AccessToken=token)
+        self.auth.cognito.admin_initiate_auth.assert_not_called()
+        self.assertNotIn('cookies', result)
+
+    def test_missing_and_naturally_expired_access_refresh_the_original_request(self):
+        for token in (None, self.token(auth_time=time.time() - 7200, exp=time.time() - 1)):
+            with self.subTest(access='missing' if token is None else 'expired'):
+                self.auth.cognito.reset_mock(return_value=True, side_effect=True)
+                renewed = self.renewed_token()
+                result = self.auth.handler(self.refresh_event(token=token), None)
+                self.assertEqual(result['statusCode'], 200)
+                self.assertEqual(json.loads(result['body']), {'username': 'edward'})
+                self.auth.cognito.admin_initiate_auth.assert_called_once_with(
+                    UserPoolId=self.auth.POOL, ClientId=self.auth.CLIENT,
+                    AuthFlow='REFRESH_TOKEN_AUTH', AuthParameters={'REFRESH_TOKEN': 'refresh-test'})
+                self.auth.cognito.get_user.assert_called_once_with(AccessToken=renewed)
+                self.assertEqual(len(result['cookies']), 1)
+                self.assertTrue(result['cookies'][0].startswith(self.auth.ACCESS + '='))
+                self.assertNotIn(self.auth.REFRESH, result['cookies'][0])
+                self.auth.s3.get_object.assert_not_called()
+
+    def test_bad_access_cannot_turn_into_a_refresh_attempt(self):
+        missing_auth_time = {'iss': self.auth.ISSUER, 'client_id': self.auth.CLIENT,
+                             'token_use': 'access', 'exp': time.time() + 3600}
+        payload = base64.urlsafe_b64encode(json.dumps(missing_auth_time).encode()).decode().rstrip('=')
+        tokens = ['forged', self.token(iss='other-pool'), self.token(client_id='other-client'),
+                  self.token(token_use='id'), self.token(auth_time=None), self.token(exp=float('nan')),
+                  self.token(exp=10**400), self.token(auth_time=10**400),
+                  'header.' + payload + '.signature']
+        for token in tokens:
+            with self.subTest(token=tokens.index(token)):
+                result = self.auth.handler(self.refresh_event(token=token), None)
+                self.assert_cleared_session(result)
+        self.auth.cognito.get_user.assert_not_called()
+        self.auth.cognito.admin_initiate_auth.assert_not_called()
+        self.auth.s3.get_object.assert_not_called()
+
+    def test_revoked_valid_access_does_not_fall_back_to_refresh(self):
+        self.auth.cognito.get_user.side_effect = FakeClientError('NotAuthorizedException')
+        result = self.auth.handler(self.refresh_event(token=self.token()), None)
+        self.assert_cleared_session(result)
+        self.auth.cognito.admin_initiate_auth.assert_not_called()
+        self.auth.s3.get_object.assert_not_called()
+
+    def test_expired_revoked_and_disabled_refresh_clear_both_cookies(self):
+        for code in ('NotAuthorizedException', 'UserNotFoundException', 'InvalidParameterException',
+                     'PasswordResetRequiredException', 'UserNotConfirmedException'):
+            with self.subTest(code=code):
+                self.auth.cognito.admin_initiate_auth.side_effect = FakeClientError(code)
+                self.assert_cleared_session(self.auth.handler(self.refresh_event(), None))
+        self.auth.s3.get_object.assert_not_called()
+
+    def test_refresh_service_failures_preserve_credentials(self):
+        for error in (FakeClientError('TooManyRequestsException'),
+                      FakeClientError('InternalErrorException'), FakeBotoCoreError()):
+            with self.subTest(error=type(error).__name__):
+                self.auth.cognito.admin_initiate_auth.side_effect = error
+                result = self.auth.handler(self.refresh_event(), None)
+                self.assertEqual(result['statusCode'], 503)
+                self.assertNotIn('cookies', result)
+        self.auth.s3.get_object.assert_not_called()
+
+    def test_online_validation_service_failure_does_not_clear_session(self):
+        self.auth.cognito.get_user.side_effect = FakeBotoCoreError()
+        result = self.auth.handler(self.refresh_event(token=self.token()), None)
+        self.assertEqual(result['statusCode'], 503)
+        self.assertNotIn('cookies', result)
+        self.auth.cognito.admin_initiate_auth.assert_not_called()
+
+    def test_session_window_caps_existing_and_refreshed_access(self):
+        now = 2000000000
+        with patch.object(self.auth.time, 'time', return_value=now):
+            for authenticated in (None, True, '2000000000', float('nan'), now + 31,
+                                  now - self.auth.SESSION_SECONDS):
+                with self.subTest(authenticated=str(authenticated)):
+                    token = self.token(auth_time=authenticated)
+                    self.assert_cleared_session(self.auth.handler(self.refresh_event(token=token), None))
+            self.auth.cognito.admin_initiate_auth.assert_not_called()
+            self.renewed_token(auth_time=now - self.auth.SESSION_SECONDS)
+            self.assert_cleared_session(self.auth.handler(self.refresh_event(), None))
+            self.renewed_token(auth_time=now - self.auth.SESSION_SECONDS + 120)
+            result = self.auth.handler(self.refresh_event(), None)
+            self.assertEqual(result['statusCode'], 200)
+            self.assertEqual(len(result['cookies']), 1)
+            self.assertIn('Max-Age=120', result['cookies'][0])
+            self.assertNotIn(self.auth.REFRESH, result['cookies'][0])
+        self.auth.s3.get_object.assert_not_called()
+
+    def test_refreshed_access_is_checked_again_before_private_reads(self):
+        for claims in ({'iss': 'other-pool'}, {'client_id': 'other-client'}, {'token_use': 'id'}):
+            self.renewed_token(**claims)
+            result = self.auth.handler(self.refresh_event('/data/stocks.json'), None)
+            self.assert_cleared_session(result)
+        self.auth.s3.get_object.assert_not_called()
+
+    def test_renewal_cookies_survive_gzip_and_business_errors_without_leaking(self):
+        renewed = self.renewed_token()
+        payload = {'rows': ['fictional' * 10000]}
+        self.auth.s3.get_object.return_value = {'Body': types.SimpleNamespace(
+            read=lambda: json.dumps(payload).encode())}
+        event = self.refresh_event('/data/stocks.json')
+        event['headers']['accept-encoding'] = 'gzip'
+        result = self.auth.handler(event, None)
+        self.assertEqual(json.loads(gzip.decompress(base64.b64decode(result['body']))), payload)
+        self.assertEqual(len(result['cookies']), 1)
+        self.assertIn(renewed, result['cookies'][0])
+        self.auth.s3.get_object.side_effect = FakeClientError('AccessDenied')
+        result = self.auth.handler(event, None)
+        self.assertEqual(result['statusCode'], 503)
+        self.assertEqual(len(result['cookies']), 1)
+        self.assertIn(renewed, result['cookies'][0])
+        result = self.auth.handler(self.refresh_event('/data/not-allowed.json'), None)
+        self.assertEqual(result['statusCode'], 404)
+        self.assertEqual(len(result['cookies']), 1)
+        self.assertIn(renewed, result['cookies'][0])
+        anonymous = self.auth.handler(self.event('/auth/me'), None)
+        self.assert_cleared_session(anonymous)
+        self.assertTrue(all(renewed not in value for value in anonymous['cookies']))
+
+    def test_authorized_annotation_post_renews_then_saves_once(self):
+        from backend.golden.annotations import empty
+        renewed = self.renewed_token()
+        self.auth.s3.get_object.return_value = {'Body': types.SimpleNamespace(
+            read=lambda: json.dumps(empty('600519')).encode()), 'ETag': '"etag"'}
+        body = dict(revision=0, kind='review', as_of='2020-01-02', dataset_id='a' * 16,
+                    status='UNCERTAIN', note='', axis_id='', auto_mode='HL')
+        event = self.refresh_event('/data/golden-workbench/annotations/600519.json', method='POST',
+                                   origin=self.auth.ORIGIN, body=body)
+        result = self.auth.handler(event, None)
+        self.assertEqual(result['statusCode'], 200)
+        self.auth.cognito.admin_initiate_auth.assert_called_once()
+        self.auth.s3.put_object.assert_called_once()
+        saved = json.loads(self.auth.s3.put_object.call_args.kwargs['Body'])
+        self.assertEqual(saved['reviews'][0]['owner'], 'edward')
+        self.assertIn(renewed, result['cookies'][0])
+
+    def test_invalid_origin_and_preflight_never_refresh(self):
+        for method, origin, expected in (('POST', 'https://other.example', 403),
+                                          ('POST', None, 403), ('OPTIONS', self.auth.ORIGIN, 204)):
+            result = self.auth.handler(self.refresh_event(method=method, origin=origin), None)
+            self.assertEqual(result['statusCode'], expected)
+            self.assertNotIn('cookies', result)
+        self.auth.cognito.admin_initiate_auth.assert_not_called()
+        self.auth.cognito.get_user.assert_not_called()
+        self.auth.s3.put_object.assert_not_called()
+
+    def test_logout_with_expired_access_revokes_without_renewal(self):
+        event = self.refresh_event('/auth/logout', method='POST', origin=self.auth.ORIGIN,
+            token=self.token(auth_time=time.time() - 7200, exp=time.time() - 1))
+        result = self.auth.handler(event, None)
+        self.assertEqual(result['statusCode'], 200)
+        self.auth.cognito.revoke_token.assert_called_once_with(Token='refresh-test', ClientId=self.auth.CLIENT)
+        self.auth.cognito.admin_initiate_auth.assert_not_called()
+        self.auth.cognito.get_user.assert_not_called()
+        self.assertTrue(all('Max-Age=0' in value for value in result['cookies']))
+
+    def test_template_enables_fixed_fifteen_day_refresh_without_widening_iam(self):
+        template = json.loads((Path(__file__).parents[2] / 'deploy/auth/template.json').read_text())
+        properties = template['Resources']['UserClient']['Properties']
+        self.assertEqual(properties['RefreshTokenValidity'], 15)
+        self.assertEqual(properties['TokenValidityUnits']['RefreshToken'], 'days')
+        self.assertEqual(properties['AccessTokenValidity'], 1)
+        self.assertTrue(properties['EnableTokenRevocation'])
+        self.assertEqual(set(properties['ExplicitAuthFlows']),
+                         {'ALLOW_ADMIN_USER_PASSWORD_AUTH', 'ALLOW_REFRESH_TOKEN_AUTH'})
+        permissions = template['Resources']['Role']['Properties']['Policies'][0]['PolicyDocument']['Statement']
+        self.assertEqual([value['Action'] for value in permissions if
+                          any(action.startswith('cognito-idp:') for action in value['Action'])],
+                         [['cognito-idp:AdminInitiateAuth']])
+        self.assertEqual([value['Resource'] for value in permissions if value['Action'] == ['s3:PutObject']],
+                         [{'Fn::Sub': '${DataBucket.Arn}/data/golden-workbench/annotations/*.json'}])
 
 
 if __name__ == '__main__':

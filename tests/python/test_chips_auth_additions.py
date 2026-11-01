@@ -35,6 +35,7 @@ class ChipAuthNewCases(unittest.TestCase):
         boto.client = lambda service: cls.s3 if service == 's3' else object()
         exceptions = types.ModuleType('botocore.exceptions')
         exceptions.ClientError = FakeClientError
+        exceptions.BotoCoreError = type('FakeBotoCoreError', (Exception,), {})
         path = Path(__file__).resolve().parents[2] / 'deploy/auth/handler.py'
         spec = importlib.util.spec_from_file_location('chip_auth_new_case_candidate', path)
         cls.module = importlib.util.module_from_spec(spec)
