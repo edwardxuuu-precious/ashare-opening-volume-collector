@@ -1,3 +1,4 @@
+import { stockListMatches } from './stock-list.ts';
 import { parseTrendScreen, trendReason, type TrendCandle, type TrendScreen, type TrendState } from './trend-volume.ts';
 
 export const TREND_DAILY_RULE = 'TREND_LOCAL_OR_CONTEXT_SHRINK70_FIXED_BASELINE_SURGE_V3_CANDIDATE';
@@ -54,7 +55,7 @@ export function dailyCounts(rows: DailyRow[]): DailyCounts {
   return result;
 }
 export function dailyMatches(row: DailyRow, category: DailyCategory, search = ''): boolean {
-  return (category === 'ALL' || row.signal_state === category) && `${row.code} ${row.name}`.toLowerCase().includes(search.trim().toLowerCase());
+  return (category === 'ALL' || row.signal_state === category) && stockListMatches(search, row.code, row.name);
 }
 export function dailyInitialSelection(rows: DailyRow[], requested = '', category: DailyCategory = 'SELECTED', search = ''): string {
   const visible = rows.filter(row => dailyMatches(row, category, search));
@@ -120,6 +121,33 @@ export function parseDailyStock(value: unknown, manifest: DailyManifest, expecte
   if (row.signal_state === 'WATCHING' && (screen.trend_gate.status !== 'PASS' || screen.shrink_gate.status !== 'PASS' || screen.surge_status !== 'FAIL')) throw invalid();
   return { schema: text(v.schema), dataset_id: manifest.dataset_id, source_dataset_id: manifest.source_dataset_id, as_of: manifest.as_of, code: row.code, name: row.name,
     source_status: row.source_status, provider: text(v.provider), volume_unit: 'shares', adjustment: 'unadjusted', history, row, screen };
+}
+
+/** Extend the chart only with the exact market batch used for this stock's screening. */
+export function parseDailyChartHistory(value: unknown, stock: DailyStock): TrendCandle[] {
+  const v = object(value);
+  if (stock.source_status !== 'KNOWN' || v.schema !== 'stock.chips.market.stock.v1'
+    || v.dataset_id !== stock.source_dataset_id || v.security_id !== stock.code || v.as_of !== stock.as_of
+    || !Array.isArray(v.history) || v.history.length > 1000) throw invalid();
+  const decimal = (value: unknown) => {
+    if (typeof value !== 'string' || value.length > 80 || !/^[+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$/.test(value)) throw invalid();
+    const number = Number(value); if (!Number.isFinite(number)) throw invalid(); return number;
+  };
+  const history: TrendCandle[] = v.history.map(item => {
+    const b = object(item);
+    if (b.complete !== undefined && typeof b.complete !== 'boolean') throw invalid();
+    return { date: date(b.date), open: decimal(b.open), high: decimal(b.high), low: decimal(b.low), close: decimal(b.close), volume: decimal(b.volume_shares) };
+  });
+  if (history.some((bar, index) => bar.date > stock.as_of || bar.low <= 0 || bar.high < Math.max(bar.open, bar.close, bar.low)
+    || bar.low > Math.min(bar.open, bar.close) || bar.volume < 0 || (index > 0 && bar.date <= history[index - 1].date))
+    || history.at(-1)?.date !== stock.as_of || history.length < stock.history.length || !stock.history.length) throw invalid();
+  const tail = history.slice(-stock.history.length);
+  if (tail.some((bar, index) => {
+    const saved = stock.history[index];
+    return bar.date !== saved.date || bar.open !== saved.open || bar.high !== saved.high || bar.low !== saved.low
+      || bar.close !== saved.close || bar.volume !== saved.volume;
+  })) throw invalid();
+  return history;
 }
 export const dailySignalText: Record<DailySignalState, string> = { SELECTED: '当日入选', WATCHING: '缩量观察', NOT_MATCHED: '未满足', UNKNOWN: '数据不足' };
 const reasonNames: Record<string, string> = {

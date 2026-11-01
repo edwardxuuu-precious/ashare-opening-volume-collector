@@ -1,6 +1,7 @@
 'use client';
 import { useMemo, useState } from 'react';
 import { X } from 'lucide-react';
+import { stockListMatches } from '@/lib/stock-list';
 import {
   Combobox,
   ComboboxContent,
@@ -35,11 +36,7 @@ export function StockPicker({
   const matches = useMemo(
     () =>
       stocks
-        .filter((s) =>
-          `${s.code} ${s.name}`
-            .toLowerCase()
-            .includes(search.trim().toLowerCase()),
-        )
+        .filter((s) => stockListMatches(search, s.code, s.name))
         .slice(0, 40)
         .map((s) => s.code),
     [stocks, search],

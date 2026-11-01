@@ -90,6 +90,8 @@ export function AuthGate({ children }: { children: ReactNode }) {
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
+  const [sessionRetry, setSessionRetry] = useState(0);
+  const [sessionCheckFailed, setSessionCheckFailed] = useState(false);
   useEffect(() => {
     if (!api) return;
     const controller = new AbortController();
@@ -113,10 +115,12 @@ export function AuthGate({ children }: { children: ReactNode }) {
           setUser(result.username);
       })
       .catch((e) => {
-        if (e.name !== 'AbortError')
+        if (e.name !== 'AbortError') {
+          setSessionCheckFailed(true);
           setError(
             e instanceof Error ? e.message : '无法连接登录服务，请稍后重试。',
           );
+        }
       })
       .finally(() => {
         if (!controller.signal.aborted) setChecking(false);
@@ -125,7 +129,7 @@ export function AuthGate({ children }: { children: ReactNode }) {
       controller.abort();
       window.removeEventListener('stock-session-expired', expired);
     };
-  }, []);
+  }, [sessionRetry]);
   // Local development remains usable without a cloud auth service. Production
   // packaging separately enforces a configured endpoint and strips all data.
   if (!api && process.env.NODE_ENV === 'development') return children;
@@ -133,6 +137,7 @@ export function AuthGate({ children }: { children: ReactNode }) {
     event.preventDefault();
     setBusy(true);
     setError('');
+    setSessionCheckFailed(false);
     try {
       const response = await fetch(api + '/auth/login', {
         method: 'POST',
@@ -232,6 +237,20 @@ export function AuthGate({ children }: { children: ReactNode }) {
               <p role="alert" className="auth-error">
                 {error}
               </p>
+            )}
+            {sessionCheckFailed && (
+              <button
+                type="button"
+                className="auth-session-retry"
+                onClick={() => {
+                  setError('');
+                  setSessionCheckFailed(false);
+                  setChecking(true);
+                  setSessionRetry((value) => value + 1);
+                }}
+              >
+                重新验证登录状态
+              </button>
             )}
             <button type="submit" disabled={busy} aria-busy={busy}>
               {busy ? '登录中…' : '登录'}

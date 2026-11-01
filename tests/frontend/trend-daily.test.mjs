@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { dailyCounts, dailyInitialSelection, dailyMatches, parseDailyManifest, parseDailyScreening, parseDailyStatus, parseDailyStock, TREND_DAILY_PARAMETERS_SHA256, TREND_DAILY_RULE } from '../../src/lib/trend-daily.ts';
+import { dailyCounts, dailyInitialSelection, dailyMatches, parseDailyChartHistory, parseDailyManifest, parseDailyScreening, parseDailyStatus, parseDailyStock, TREND_DAILY_PARAMETERS_SHA256, TREND_DAILY_RULE } from '../../src/lib/trend-daily.ts';
 import { olderPublication } from '../../src/lib/publication-follow.ts';
 
 const slot = '0123456789abcdef', source = 'fedcba9876543210', day = '2020-01-08';
@@ -60,6 +60,26 @@ test('current details bind to their list, reject future bars and cannot use an e
   assert.throws(() => parseDailyStock({ ...value, row: { ...selected, volume_multiple: 3 } }, manifest, selected));
   assert.throws(() => parseDailyStock({ ...value, screen: { ...value.screen, bullish: false } }, manifest, selected));
   assert.throws(() => parseDailyStock({ ...value, screen: { ...value.screen, candidates: [{ ...value.screen.candidates[0], date: day }] } }, manifest, selected));
+});
+test('extended chart history belongs to the screening source and exactly matches all saved overlap', () => {
+  const stock = parseDailyStock(stockValue(), parseDailyManifest(manifestValue()), selected);
+  const history = Array.from({ length: 158 }, (_, index) => ({
+    date: new Date(Date.UTC(2020, 0, 6 - (157 - index))).toISOString().slice(0, 10),
+    open: '10', high: '11', low: '9', close: '10', volume_shares: '100',
+  }));
+  history.push(...stock.history.map(({ volume, ...bar }) => ({ ...Object.fromEntries(Object.entries(bar).map(([key, value]) => [key, String(value)])), volume_shares: String(volume) })));
+  const frame = { schema: 'stock.chips.market.stock.v1', dataset_id: source, security_id: selected.code, as_of: day, history };
+  assert.equal(parseDailyChartHistory(frame, stock).length, 160);
+  assert.deepEqual(parseDailyChartHistory(frame, stock).slice(-2), stock.history);
+  assert.throws(() => parseDailyChartHistory({ ...frame, dataset_id: slot }, stock));
+  assert.throws(() => parseDailyChartHistory({ ...frame, security_id: '100002' }, stock));
+  assert.throws(() => parseDailyChartHistory({ ...frame, as_of: '2020-01-09' }, stock));
+  assert.throws(() => parseDailyChartHistory({ ...frame, history: [...history.slice(0, -1), { ...history.at(-1), volume_shares: '251' }] }, stock));
+  assert.throws(() => parseDailyChartHistory({ ...frame, history: [...history, { ...history.at(-1), date: '2020-01-09' }] }, stock));
+  assert.throws(() => parseDailyChartHistory({ ...frame, history: [history[0], history[0], ...history.slice(1)] }, stock));
+  assert.throws(() => parseDailyChartHistory({ ...frame, history: [{ ...history[0], low: '0' }, ...history.slice(1)] }, stock));
+  assert.throws(() => parseDailyChartHistory({ ...frame, history: [{ ...history[0], volume_shares: '-1' }, ...history.slice(1)] }, stock));
+  assert.throws(() => parseDailyChartHistory({ ...frame, history: history.slice(-1) }, stock));
 });
 test('status can announce a new target while the last completed publication stays at its actual older date', () => {
   const status = parseDailyStatus({ schema: 'stock.trend-volume.daily.status.v1', state: 'RUNNING', as_of: '2020-01-09', source_dataset_id: source, dataset_id: null, universe_total: 4, scanned_count: 2, updated_at: '2020-01-09T08:00:00Z', message: '虚构进度', last_committed_date: day });

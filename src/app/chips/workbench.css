@@ -1,4 +1,4 @@
-.chip-site.chip-workbench{height:100dvh;min-height:580px;display:flex;flex-direction:column;overflow:hidden;background:#fff;color:#192536;font:13px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",sans-serif;--cw-accent:#345cd6;--cw-muted:#697688;--cw-line:#e6eaf0;--cw-soft:#f6f7f9;--cw-tint:#eaf0ff}
+.chip-site.chip-workbench{height:100dvh;min-height:580px;display:flex;flex-direction:column;overflow:hidden;background:var(--ui-background);color:var(--ui-text);font:13px/1.5 var(--ui-font);--cw-accent:var(--ui-accent);--cw-muted:var(--ui-muted);--cw-line:var(--ui-border);--cw-soft:var(--ui-sidebar);--cw-tint:var(--ui-selected)}
 .chip-workbench *{box-sizing:border-box}
 .chip-workbench button,.chip-workbench input,.chip-workbench select{font:inherit}
 .chip-workbench .cw-header{height:56px;min-height:56px;padding:0 24px;gap:32px;flex-shrink:0}
@@ -64,13 +64,13 @@
 .cw-quote{text-align:right;font-variant-numeric:tabular-nums}
 .cw-quote strong{font-size:28px;line-height:1.2;font-weight:500;letter-spacing:-1px}
 .cw-quote small{font-size:11px;color:var(--cw-muted);display:block;margin-top:4px}
-.cw-quote .cw-price-up{color:#cc5362}
-.cw-quote .cw-price-down{color:#118671}
+.cw-quote .cw-price-up{color:var(--ui-rise-text)}
+.cw-quote .cw-price-down{color:var(--ui-fall-text)}
 .cw-chart-controls{display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;border-bottom:1px solid var(--cw-line);padding-bottom:10px;order:1}
-.cw-periods{display:flex;gap:4px;align-items:center;flex-wrap:wrap}
-.cw-periods>span{font-size:11px;color:var(--cw-muted);margin-right:6px}
-.cw-periods button{border:0;background:transparent;border-radius:4px;padding:5px 8px;font-size:12px;color:var(--cw-muted);cursor:pointer}
-.cw-periods button[aria-pressed=true]{background:var(--cw-tint);color:var(--cw-accent)}
+
+
+
+
 .chip-workbench .chip-history-controls{margin:0;font-size:11px;gap:9px;flex-wrap:nowrap}
 .chip-workbench .chip-history-controls label>span{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%)}
 .chip-workbench .chip-history-controls label{gap:0;order:1;min-width:0}
@@ -82,13 +82,12 @@
 .chip-workbench .chip-history-controls>button{order:3;font-size:11px}
 .chip-workbench .chip-history-controls button:disabled{opacity:.35;cursor:default}
 .chip-workbench .chip-trading-workbench{margin:0;order:2;min-width:0}
-.chip-workbench .chip-candle-readout{padding:11px 0 6px;gap:5px 13px;font-size:11px;font-variant-numeric:tabular-nums;color:var(--cw-muted)}
-.chip-workbench .chip-candle-readout b{font-weight:500;color:#3b4c64;font-family:ui-monospace,Consolas,monospace}
+
+
 .chip-workbench .chip-trading-scroll{height:clamp(280px,calc(100dvh - 580px),480px);background:#fff;border-radius:0;overflow:hidden;min-width:0}
 .chip-workbench .chip-trading-scroll svg{height:100%;width:100%;display:block;cursor:crosshair}
 .chip-workbench .chip-chart-legend{margin:5px 0 8px;gap:9px 16px;color:var(--cw-muted);font-size:11px}
 .chip-workbench .chip-chart-legend .cw-chart-focus{margin-left:auto;color:var(--cw-accent)}
-.chip-workbench .chip-chart-legend .cw-legend-previous{height:0;border-top:2px dashed}
 .cw-chart-notes,.cw-exact-comparison,.cw-data-notes,.cw-neighbor-notes,.chip-workbench .cw-method{font-size:11px;color:var(--cw-muted);line-height:1.8}
 .cw-chart-notes{margin:0 0 8px}
 .cw-chart-notes summary,.cw-exact-comparison summary,.cw-data-notes summary,.cw-neighbor-notes summary,.chip-workbench .cw-method summary{cursor:pointer;width:max-content;max-width:100%}
@@ -123,7 +122,7 @@
 .cw-coverage-warning,.cw-notice{font-size:12px;line-height:1.8;color:#946116;margin:10px 0}
 .chip-workbench a:focus-visible,.chip-workbench button:focus-visible{outline:2px solid var(--cw-accent);outline-offset:3px}
 @media(min-width:1600px){.cw-shell{grid-template-columns:268px minmax(0,1fr)}.chip-workbench .cw-workspace.chip-detail{padding-left:34px;padding-right:34px}}
-@media(max-width:1050px){.cw-shell{grid-template-columns:214px minmax(0,1fr)}.chip-workbench .cw-workspace.chip-detail{padding:18px 18px 14px}.cw-stock-header h2{font-size:22px}.cw-quote strong{font-size:25px}.cw-stock-row{padding-left:12px;padding-right:11px}.cw-stock-line strong{font-size:12px}.cw-metric-value{font-size:19px}.cw-compare-grid{gap:12px}.cw-quote small{max-width:230px}.chip-workbench .chip-candle-readout{gap:4px 10px}.cw-header-actions{gap:12px}}
+@media(max-width:1050px){.cw-shell{grid-template-columns:214px minmax(0,1fr)}.chip-workbench .cw-workspace.chip-detail{padding:18px 18px 14px}.cw-stock-header h2{font-size:22px}.cw-quote strong{font-size:25px}.cw-stock-row{padding-left:12px;padding-right:11px}.cw-stock-line strong{font-size:12px}.cw-metric-value{font-size:19px}.cw-compare-grid{gap:12px}.cw-quote small{max-width:230px}.cw-header-actions{gap:12px}}
 @media(max-width:760px){
  .chip-site.chip-workbench{height:auto;min-height:100dvh;overflow:visible}
  .chip-workbench .cw-header{height:auto;min-height:58px;padding:10px 16px;gap:12px;flex-wrap:wrap}
@@ -150,12 +149,12 @@
  .cw-quote small{font-size:10px;max-width:170px}
  .cw-stock-symbol{gap:4px 7px;font-size:10px}
  .cw-chart-controls{gap:8px}
- .cw-periods button{padding:5px 6px;font-size:11px}
- .cw-periods>span{font-size:10px;margin-right:1px}
+
+
  .chip-workbench .chip-history-controls{gap:5px}
  .chip-workbench .chip-history-controls select{max-width:143px;font-size:10px}
  .chip-workbench .chip-trading-scroll{height:330px}
- .chip-workbench .chip-candle-readout{font-size:10px;min-height:47px;gap:3px 9px}
+
  .chip-workbench .chip-chart-legend{font-size:10px;gap:7px 12px}
  .chip-workbench .chip-chart-legend .cw-chart-focus{margin-left:0;flex-basis:100%}
  .cw-compare-grid{grid-template-columns:1fr 1fr;gap:14px 12px}

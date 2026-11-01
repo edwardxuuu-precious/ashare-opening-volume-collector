@@ -1,0 +1,4 @@
+.candle-change{white-space:nowrap}
+.candle-change>strong{font-weight:500}
+.candle-change-up{color:var(--ui-rise-text)}
+.candle-change-down{color:var(--ui-fall-text)}

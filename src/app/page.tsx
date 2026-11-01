@@ -1,6 +1,5 @@
 'use client';
 import { useEffect, useMemo, useState, useRef, lazy, Suspense } from 'react';
-import Link from 'next/link';
 import { flushSync } from 'react-dom';
 import { registerStockTools } from '@/lib/webmcp';
 import {
@@ -50,9 +49,7 @@ const OpeningTrend = lazy(() =>
     default: m.OpeningTrend,
   })),
 );
-import { AccountControls } from '@/components/auth-gate';
-import { BrandIdentity } from '@/components/brand';
-import { StockNavigation } from '@/components/stock-navigation';
+import { SiteHeader } from '@/components/site-header';
 import { InfoHint } from '@/components/info-hint';
 import { RecordDetail } from '@/components/record-detail';
 import {
@@ -628,11 +625,15 @@ export default function Home() {
   };
   return (
     <div className="app-shell">
+      <SiteHeader active="opening">
+        <CollectionStatus
+          status={collectionState}
+          latestDate={manifest?.dates[0]?.date ?? null}
+        />
+      </SiteHeader>
       <aside className="query-panel" aria-label="股票查询">
         <div className="rail-brand-row">
-          <Link href="/" className="brand">
-            <BrandIdentity />
-          </Link>
+          <h2>股票查询</h2>
           <button
             type="button"
             className="mobile-stock-search"
@@ -685,7 +686,7 @@ export default function Home() {
                     setCatalogRetry((x) => x + 1);
                   }}
                 >
-                  重试
+                  重新读取
                 </Button>
               </div>
             )}
@@ -734,21 +735,8 @@ export default function Home() {
             </nav>
           </div>
         )}
-        <a href="/chips" className="rail-stock" aria-label="每日筹码筛选">
-          <span>每日筹码筛选</span>
-        </a>
-        <div className="rail-footer">
-          <AccountControls />
-        </div>
       </aside>
       <main className="research-main">
-        <header className="research-topbar">
-          <StockNavigation active="opening" />
-          <CollectionStatus
-            status={collectionState}
-            latestDate={manifest?.dates[0]?.date ?? null}
-          />
-        </header>
         <div className="results-workspace">
           {shareFeedback && (
             <output className="share-feedback" aria-live="polite">
@@ -982,7 +970,7 @@ export default function Home() {
                   setManifestRetry((x) => x + 1);
                 }}
               >
-                重试
+                重新读取
               </Button>
             </output>
           )}
@@ -993,7 +981,7 @@ export default function Home() {
                 <InfoHint label="刷新错误">{refreshError}</InfoHint>
               </span>
               <Button variant="ghost" onClick={refreshQuery}>
-                重试
+                重新读取
               </Button>
             </output>
           )}
@@ -1040,7 +1028,7 @@ export default function Home() {
                 }}
               >
                 <RefreshCw size={15} aria-hidden="true" />
-                重试
+                重新读取
               </Button>
             </Empty>
           ) : loading ? (

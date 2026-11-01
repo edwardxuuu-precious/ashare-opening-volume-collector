@@ -1,0 +1,5 @@
+.stock-read-state{padding:12px 0;color:var(--ui-danger);font-size:12px;line-height:1.6}
+.stock-read-state>p{margin:0 0 8px}
+.stock-read-state>button{border:1px solid var(--ui-border);border-radius:4px;background:var(--ui-background);color:var(--ui-accent);font:inherit;padding:5px 10px;cursor:pointer}
+.stock-read-state>button:focus-visible{outline:2px solid var(--ui-accent);outline-offset:2px}
+.stock-list-note{display:block;padding:8px 12px;color:var(--ui-muted);font-size:11px;line-height:1.6;margin:0}

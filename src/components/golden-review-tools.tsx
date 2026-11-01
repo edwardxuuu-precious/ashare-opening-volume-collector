@@ -1,6 +1,7 @@
 'use client';
 import {useEffect,useLayoutEffect,useState,useRef,useCallback,useId} from 'react';
 import {authFetch} from '@/lib/auth-fetch';
+import {InspectorTabs} from '@/components/inspector-tabs';
 import {readChip} from '@/lib/chip-read';
 import {pointLabel,type ManualDraft} from '@/lib/golden-drawing';
 import {reviewLabels,type Annotations,type Drawing,type Example,type ReviewRound} from '@/lib/golden-workbench';
@@ -38,7 +39,7 @@ export function GoldenReviewTools({example,user,draft,setDraft,resetDraft,setDra
  const valid=draft.points.length===2&&draft.points.every(p=>Number(p.price)>0&&p.date<=example.as_of)&&Number(draft.points[0]?.price)>Number(draft.points[1]?.price)&&!!draft.title.trim();
  const rounds=(doc?.reviews??[]).flatMap(r=>[...(r.history??[]),r].map((v,i)=>({...v,number:i+1}))).sort((a,b)=>b.updated_at.localeCompare(a.updated_at)||(Number(b.round_id?.split(':').at(-1))||0)-(Number(a.round_id?.split(':').at(-1))||0));
  return <div className="gw-tools">
-  <div className="gw-inspector-tabs" role="tablist" aria-label="人工校准记录">{([['edit','批注'],['rounds',`轮次 ${rounds.length}`],['drawings',`画线 ${doc?.drawings.length??'—'}`]] as const).map(([id,label],i)=><button key={id} role="tab" id={`${panelId}-${id}-tab`} aria-controls={`${panelId}-${id}`} aria-selected={tab===id} tabIndex={tab===id?0:-1} onClick={()=>setTab(id)} onKeyDown={e=>{if(!['ArrowLeft','ArrowRight','Home','End'].includes(e.key))return;e.preventDefault();const tabs=['edit','rounds','drawings'] as const;const next=e.key==='Home'?0:e.key==='End'?2:(i+(e.key==='ArrowRight'?1:2))%3;setTab(tabs[next]);document.getElementById(`${panelId}-${tabs[next]}-tab`)?.focus();}}>{label}</button>)}</div>
+  <InspectorTabs className="gw-inspector-tabs" label="人工校准记录" idPrefix={panelId} tabs={[{id:'edit',label:'批注'},{id:'rounds',label:`轮次 ${rounds.length}`},{id:'drawings',label:`画线 ${doc?.drawings.length??'—'}`}]} value={tab} onChange={setTab}/>
   {(error||message)&&<div className={error?'gw-warning':'gw-success'} role={error?'alert':'status'}>{error||message}{error&&<button className="gw-link" onClick={()=>load(false)}>刷新云端记录，保留草稿</button>}</div>}
   <section className="gw-calibration-editor" role="tabpanel" id={`${panelId}-edit`} aria-labelledby={`${panelId}-edit-tab`} hidden={tab!=='edit'}><div className="gw-panel-title"><h3>本轮校准</h3><span>{example.as_of}</span></div>
    <div className="gw-draft-points">{[0,1].map(i=>{const p=draft.points[i];return <div key={i}><span>{i===0?'高点 H':draft.mode==='HL'?'低点 L':'中轴 M'}</span><b>{p?.price??'待选点'}</b><small>{p?`${p.date.slice(5)} · ${pointLabel(p.field)}`:'在图上拖拽选取'}</small></div>;})}</div>

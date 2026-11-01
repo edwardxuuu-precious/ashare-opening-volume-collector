@@ -71,7 +71,7 @@
   .chip-screen-table td:nth-child(5) { overflow-wrap:anywhere; }
   .chip-screen-table-wrap { overflow:visible; }
   .chip-chart-toolbar { gap:8px 14px; }
-  .chip-candle-readout { gap:8px 14px; }
+
   .chip-chart-legend { gap:8px 14px; }
 }
 @media(max-width:680px) {
@@ -92,3 +92,11 @@
   .chip-peak-table th { max-width:80px; }
   .chip-peak-table caption { line-height:1.7; }
 }
+
+.chip-calibration .chip-trading-workbench { margin:22px 0; min-width:0; }
+.chip-chart-legend .cw-legend-previous { height:0; border-top:2px dashed; }
+.chip-calibration .chip-trading-scroll { height:clamp(280px,calc(100dvh - 580px),480px); background:#fff; border-radius:0; }
+.chip-calibration .chip-trading-scroll svg { height:100%; width:100%; }
+.chip-calibration .chip-chart-toolbar button[aria-pressed=true] { background:var(--ui-selected); color:var(--ui-accent); }
+.chip-calibration .chip-site-tabs button[aria-pressed=true] { color:var(--ui-accent); border-color:var(--ui-accent); }
+@media(max-width:760px) { .chip-calibration .chip-trading-scroll { height:330px; } }

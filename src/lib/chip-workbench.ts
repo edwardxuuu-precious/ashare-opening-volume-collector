@@ -1,6 +1,7 @@
 import {chipNumber,type ChipSnapshot} from './chips.ts';
 import type {DailyCandle,MarketScreenRow} from './chip-market.ts';
 import {chipScreenState} from './chip-price-position.ts';
+import {candleReturn} from './candle-quote.ts';
 
 /** Initial focus changes only the viewed security, never screening eligibility. */
 export function initialWorkbenchStock(rows:MarketScreenRow[],current:string){
@@ -11,6 +12,6 @@ export function initialWorkbenchStock(rows:MarketScreenRow[],current:string){
 export function workbenchQuote(history:DailyCandle[],date:string,snapshot:ChipSnapshot|null){
   const index=history.findIndex(candle=>candle.date===date),bar=history[index];
   if(!bar)return{close:snapshot?chipNumber(snapshot.close_cny):null,change:null,percent:null,hasCandle:false};
-  const close=chipNumber(bar.close),previous=index>0?chipNumber(history[index-1].close):null;
-  return{close,change:previous===null?null:close-previous,percent:previous===null?null:(close/previous-1)*100,hasCandle:true};
+  const close=chipNumber(bar.close),previous=history[index-1],percent=candleReturn(history,date);
+  return{close,change:percent===null||!previous?null:close-chipNumber(previous.close),percent,hasCandle:true};
 }

@@ -349,14 +349,14 @@ async function assertOnScreen(locator, viewport) {
       ),
     );
     assert.ok(
-      (await page.locator('.rail-brand-row .brand').innerText()).includes(
+      (await page.getByRole('link', { name: '量序首页', exact: true }).innerText()).includes(
         BRAND,
       ),
     );
     assert.match(await page.title(), /^量序(?:[\s·—|]|$)/);
     if (OUT) await page.screenshot({ path: path.join(OUT, 'brand-app.png') });
     checks.push(
-      'authenticated sidebar retains Liangxu and renders Chinese stock names',
+      'authenticated navigation retains Liangxu and renders Chinese stock names',
     );
     assert.equal(await page.locator('.auth-page').count(), 0);
     assert.equal(counts.login, 3);
