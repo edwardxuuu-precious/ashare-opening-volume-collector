@@ -573,6 +573,18 @@ export default function ConcentrationPage() {
                     <strong>{selected.streak_start_session ?? '待核实'}</strong>
                   </span>
                 </div>
+                {selected.streak_boundary.kind !== 'INCREASE' && (
+                  <p className="conc-note" aria-label="连续天数追溯边界">
+                    追溯边界 {selected.streak_boundary.session}，
+                    {selected.streak_boundary.kind === 'UNAVAILABLE' &&
+                    selected.streak_boundary.reason === 'NO_TRADE'
+                      ? '较早交易日确认无成交，没有可比较读数'
+                      : concentrationReason(selected.streak_boundary.reason)}。
+                    {selected.values[20] === null
+                      ? '最新集中度尚无有效读数。'
+                      : '连续天数按已确认下界显示，更早情况无法确认。'}
+                  </p>
+                )}
                 {selected.short_history_days > 0 && (
                   <p className="conc-note">
                     其中{selected.short_history_days}

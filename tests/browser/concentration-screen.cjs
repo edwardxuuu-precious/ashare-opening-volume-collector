@@ -195,11 +195,14 @@ async function check(browser, name, options, run) {
       assert.equal(await mainRows(page).count(), 1);
       assert.match(await mainRows(page).innerText(), /虚构丁短历史/);
       assert.match(await mainRows(page).innerText(), /无法判断/);
+      assert.match(await page.getByLabel('连续天数追溯边界').innerText(), /缺少该交易日行情/);
       await chooseGroup(page, 3);
       await page.getByLabel('集中度名单状态').selectOption('PASS');
       await page.getByLabel('集中度排序').selectOption('lowest');
       assert.match(await mainRows(page).first().innerText(), /虚构戊有效零/);
       assert.match(await mainRows(page).first().innerText(), /0\.00%/);
+      await mainRows(page).first().locator('button').click();
+      assert.match(await page.getByLabel('连续天数追溯边界').innerText(), /连续天数按已确认下界显示/);
       await page.getByLabel('集中度名单状态').selectOption('FAIL');
       await page.getByLabel('搜索集中度股票').fill('999906');
       await page.getByText('展开21个交易日的精确读数与缺失说明', { exact: true }).click();
@@ -216,6 +219,17 @@ async function check(browser, name, options, run) {
       assert.match(await page.locator('.conc-series-table tbody tr').first().innerText(), new RegExp(streakSessions.at(-67)));
       await chooseGroup(page, 3);
       assert.equal(await page.locator('.conc-chart-point').count(), 21);
+    });
+    await check(browser, 'long-no-trade-before-boundary-retains-lower-bound', {}, async (page, state) => {
+      const zero = state.data.scan.rows.find(row => row.security_id === '999905');
+      zero.streak_boundary.reason = 'NO_TRADE';
+      await page.goto(SITE + '/concentration'); await ready(page);
+      await chooseGroup(page, 'LONG'); await ready(page, 'LONG');
+      await page.getByLabel('搜索集中度股票').fill('999905');
+      assert.match(await page.locator('.conc-metrics').innerText(), /≥21天/);
+      const note = await page.getByLabel('连续天数追溯边界').innerText();
+      assert.match(note, /较早交易日确认无成交，没有可比较读数/);
+      assert.doesNotMatch(note, /中断/);
     });
     await check(browser, 'strict-v1-is-rejected-without-fallback', {}, async (page, state) => {
       state.data.scan.schema = 'stock.chips.concentration.v1';
