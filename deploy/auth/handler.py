@@ -2,13 +2,15 @@
 import base64
 import gzip
 import json
+import math
 import os
 import re
 import time
 from http.cookies import SimpleCookie
+from typing import NamedTuple, Optional
 
 import boto3
-from botocore.exceptions import ClientError
+from botocore.exceptions import BotoCoreError, ClientError
 
 POOL = os.environ['USER_POOL_ID']
 CLIENT = os.environ['USER_POOL_CLIENT_ID']
@@ -17,6 +19,7 @@ ORIGIN = os.environ['ALLOWED_ORIGIN']
 ISSUER = f'https://cognito-idp.{os.environ["AWS_REGION"]}.amazonaws.com/{POOL}'
 ACCESS = '__Host-stock-access'
 REFRESH = '__Host-stock-refresh'
+SESSION_SECONDS = 15 * 86400
 cognito = boto3.client('cognito-idp')
 s3 = boto3.client('s3')
 _history_store = None
@@ -80,25 +83,100 @@ def cookies_from(event):
     return {key: item.value for key, item in jar.items()}
 
 
-def current_user(token):
-    # GetUser validates the signature, expiry and revocation at Cognito. Check
-    # the pool AND client first so a token issued to another app cannot enter.
+class AccessClaims(NamedTuple):
+    expires_at: float
+    authenticated_at: float
+
+
+class Session(NamedTuple):
+    user: Optional[str]
+    cookies: tuple[str, ...] = ()
+
+
+class SessionUnavailable(Exception):
+    pass
+
+
+def finite_number(value):
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return False
+    try:
+        return math.isfinite(value)
+    except OverflowError:
+        return False
+
+
+def access_claims(token):
     try:
         segment = token.split('.')[1]
         claims = json.loads(base64.urlsafe_b64decode(segment + '=' * (-len(segment) % 4)))
         if not isinstance(claims, dict):
             return None
+        expires = claims.get('exp')
+        authenticated = claims.get('auth_time')
+        now = time.time()
+        if not all(finite_number(value) for value in (expires, authenticated)):
+            return None
         if (claims.get('iss') != ISSUER or claims.get('client_id') != CLIENT
                 or claims.get('token_use') != 'access'
-                or claims.get('exp', 0) <= time.time()):
+                or authenticated <= 0 or authenticated > now + 30
+                or expires <= authenticated or authenticated + SESSION_SECONDS <= now):
             return None
-        return cognito.get_user(AccessToken=token)['Username']
+        return AccessClaims(expires, authenticated)
     except (ValueError, TypeError, KeyError, IndexError):
         return None
+
+
+def current_user(token):
+    claims = access_claims(token)
+    if not claims or claims.expires_at <= time.time():
+        return None
+    try:
+        return cognito.get_user(AccessToken=token)['Username']
     except ClientError as exc:
         if exc.response['Error']['Code'] in ('NotAuthorizedException', 'UserNotFoundException'):
             return None
         raise
+
+
+def resolve_session(jar):
+    token = jar.get(ACCESS, '')
+    user = current_user(token)
+    if user:
+        return Session(user)
+    signed_out = Session(None, (cookie(ACCESS), cookie(REFRESH)))
+    refresh = jar.get(REFRESH)
+    if not refresh:
+        return signed_out
+    claims = access_claims(token) if token else None
+    if token and (not claims or claims.expires_at > time.time()):
+        return signed_out
+    try:
+        result = cognito.admin_initiate_auth(UserPoolId=POOL, ClientId=CLIENT,
+            AuthFlow='REFRESH_TOKEN_AUTH', AuthParameters={'REFRESH_TOKEN': refresh})
+    except ClientError as exc:
+        if exc.response['Error']['Code'] in ('NotAuthorizedException', 'UserNotFoundException',
+                'InvalidParameterException', 'PasswordResetRequiredException', 'UserNotConfirmedException'):
+            return signed_out
+        raise
+    tokens = result.get('AuthenticationResult')
+    if not isinstance(tokens, dict):
+        raise SessionUnavailable()
+    renewed = tokens.get('AccessToken')
+    expires_in = tokens.get('ExpiresIn')
+    if (not isinstance(renewed, str) or not renewed
+            or not finite_number(expires_in) or expires_in <= 0):
+        raise SessionUnavailable()
+    user = current_user(renewed)
+    if not user:
+        return signed_out
+    claims = access_claims(renewed)
+    now = time.time()
+    age = int(min(expires_in, claims.expires_at - now,
+                  claims.authenticated_at + SESSION_SECONDS - now))
+    if age <= 0:
+        return signed_out
+    return Session(user, (cookie(ACCESS, renewed, age),))
 
 
 def is_chip_data_path(path):
@@ -107,6 +185,14 @@ def is_chip_data_path(path):
 
 
 def handler(event, context):
+    issued_cookies = []
+    result = handle_request(event, context, issued_cookies)
+    if issued_cookies:
+        result['cookies'] = result.get('cookies', []) + issued_cookies
+    return result
+
+
+def handle_request(event, context, issued_cookies):
     headers = {k.lower(): v for k, v in event.get('headers', {}).items()}
     method = event.get('requestContext', {}).get('http', {}).get('method', '')
     path = event.get('rawPath', '')
@@ -152,7 +238,7 @@ def handler(event, context):
                 return response(401, {'error': '请联系管理员完成账号设置'})
             return response(200, {'username': username}, [
                 cookie(ACCESS, tokens['AccessToken'], tokens['ExpiresIn']),
-                cookie(REFRESH, tokens['RefreshToken'], 86400),
+                cookie(REFRESH, tokens['RefreshToken'], SESSION_SECONDS),
             ])
         if method == 'POST' and path == '/auth/logout':
             if jar.get(REFRESH):
@@ -162,9 +248,11 @@ def handler(event, context):
                     if exc.response['Error']['Code'] not in ('NotAuthorizedException', 'InvalidParameterException'):
                         raise
             return response(200, {'ok': True}, [cookie(ACCESS), cookie(REFRESH)])
-        user = current_user(jar.get(ACCESS, ''))
+        session = resolve_session(jar)
+        issued_cookies.extend(session.cookies)
+        user = session.user
         if not user:
-            return response(401, {'error': '请先登录'}, [cookie(ACCESS)])
+            return response(401, {'error': '请先登录'})
         if method == 'GET' and path == '/auth/me':
             return response(200, {'username': user})
         if method == 'GET' and re.fullmatch(r'/data/trend-volume/(?:manifest\.json|[a-f0-9]{16}/(?:summary|\d{6})\.json|daily/(?:(?:manifest|status)\.json|[a-f0-9]{16}/(?:screening|\d{6})\.json))', path):
@@ -294,5 +382,5 @@ def handler(event, context):
         return response(404, {'error': '接口不存在'})
     except (ValueError, TypeError, UnicodeError):
         return response(400, {'error': '请求格式无效'})
-    except ClientError:
+    except (BotoCoreError, ClientError, SessionUnavailable):
         return response(503, {'error': '服务暂时不可用，请稍后重试'})

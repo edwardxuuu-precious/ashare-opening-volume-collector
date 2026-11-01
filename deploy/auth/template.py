@@ -19,9 +19,9 @@ resources = {
     }},
     'UserClient': {'Type': 'AWS::Cognito::UserPoolClient', 'Properties': {
         'ClientName': 'stock-server-sessions', 'UserPoolId': ref('UserPool'), 'GenerateSecret': False,
-        'ExplicitAuthFlows': ['ALLOW_ADMIN_USER_PASSWORD_AUTH'],
+        'ExplicitAuthFlows': ['ALLOW_ADMIN_USER_PASSWORD_AUTH', 'ALLOW_REFRESH_TOKEN_AUTH'],
         'PreventUserExistenceErrors': 'ENABLED', 'EnableTokenRevocation': True,
-        'AccessTokenValidity': 1, 'IdTokenValidity': 1, 'RefreshTokenValidity': 1,
+        'AccessTokenValidity': 1, 'IdTokenValidity': 1, 'RefreshTokenValidity': 15,
         'TokenValidityUnits': {'AccessToken': 'hours', 'IdToken': 'hours', 'RefreshToken': 'days'},
     }},
     'DataBucket': {'Type': 'AWS::S3::Bucket', 'DeletionPolicy': 'Retain', 'Properties': {
@@ -58,6 +58,7 @@ resources = {
                 {'Effect': 'Allow', 'Action': ['s3:GetObject'], 'Resource': sub('${DataBucket.Arn}/collector/chips/raw/*')},
                 {'Effect': 'Allow', 'Action': ['logs:CreateLogStream', 'logs:PutLogEvents'],
                  'Resource': sub('arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/stock-auth-api:*')},
+                {'Effect': 'Allow', 'Action': ['s3:PutObject'], 'Resource': sub('${DataBucket.Arn}/data/golden-workbench/annotations/*.json')},
             ]}}],
     }},
     'Logs': {'Type': 'AWS::Logs::LogGroup', 'Properties': {

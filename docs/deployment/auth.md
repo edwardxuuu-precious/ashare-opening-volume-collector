@@ -22,7 +22,9 @@ python3 deploy/auth/accounts.py vault
 
 密码最低 8 位，须包含大小写字母、数字和符号。`--password-length 8` 会生成避免易混淆字符的 8 位密码，符号固定为一个 `!`；不指定长度时仍生成较长随机密码。重置也可使用这个参数。
 
-停用账号会撤销已有令牌；重新启用后需要重新登录。重置先撤销已有会话，再设置新密码。退出登录撤销当前会话，后台会向 Cognito 检查撤销状态。会话有效期为一小时，到期重新输入密码。
+停用账号会撤销已有令牌；重新启用后需要重新登录。重置先撤销已有会话，再设置新密码。退出登录撤销当前会话，后台会向 Cognito 检查撤销状态。登录状态自本次密码登录起最多保持15天，关闭浏览器后也可继续使用。访问令牌仍为一小时，后台在原请求内使用续期凭证换取新访问令牌，页面读取和已有批注保存均沿用此机制。
+
+续期Cookie仅在密码登录时设置为15天；自动续期不延长这个期限。后台依据Cognito已验证的 `auth_time` 限制访问期限，临近第15天签发的访问Cookie也不能越过期限。到期、主动退出、账号停用或会话撤销后需要重新登录；提供者暂时不可用返回503并保留Cookie，不能当作退出。升级前已签发的一天续期凭证不会自动变为15天，用户重新登录一次后使用新期限。
 
 ## AWS 资源
 
@@ -31,7 +33,7 @@ python3 deploy/auth/accounts.py vault
 - 私有数据桶：`stock-private-access-databucket-bmzud610gtex`，公开访问全部阻止，开启版本控制与静态加密。
 - API：`https://api.stock.iteready.com`，Lambda `stock-auth-api`。API Gateway 默认执行域名已关闭。
 - `POST /auth/login`、`POST /auth/logout`：必须来自 Stock 的准确 Origin。
-- `GET /auth/me`、`GET /data/manifest.json`、`GET /data/stocks.json`、`GET /data/collection-status.json`、`GET /data/YYYY-MM-DD.json`：必须有此用户池及客户端签发、未过期、未撤销的访问令牌。
+- `GET /auth/me`、`GET /data/manifest.json`、`GET /data/stocks.json`、`GET /data/collection-status.json`、`GET /data/YYYY-MM-DD.json`：必须通过此用户池及客户端的会话验证；访问令牌未过期且未撤销，或由有效续期凭证换取并验证新令牌后才继续读取。
 - 会话只放在 `Secure; HttpOnly; SameSite=Strict` 的主机 Cookie 中。身份和行情响应均不缓存。
 - 普通登录账号没有 AWS 管理权限，不能创建用户或写入行情。后台角色只可在指定用户池登录和读取指定桶的 `data/` 路径。
 - 原 Sites 网页已收为仅所有者可访问，不能作为匿名绕过入口。
