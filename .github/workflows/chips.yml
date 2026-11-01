@@ -90,15 +90,15 @@ jobs:
           if [ -n "$FOLLOWUP_AS_OF" ]; then
             python tooling/chip_followup_guard.py --verify-as-of "$STOCK_AS_OF"
           fi
-      - name: Derive bounded concentration decline groups from saved inputs
+      - name: Derive bounded concentration nonincreasing groups from saved inputs
         if: inputs.mode != 'probe'
         timeout-minutes: 21
         shell: bash
         run: |
           set -euo pipefail
-          draft="$RUNNER_TEMP/concentration-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.json"
+          draft="$RUNNER_TEMP/concentration-v2-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.json"
           set +e
-          timeout --signal=TERM --kill-after=10s 1190s python -m backend.chips.concentration_runner --bucket "$STOCK_BUCKET" --max-minutes 20 --workers 2 --out "$draft" --publish
+          timeout --signal=TERM --kill-after=10s 1190s python -m backend.chips.concentration_v2_runner --bucket "$STOCK_BUCKET" --max-minutes 20 --workers 2 --out "$draft" --publish
           result=$?
           set -e
           if [ "$result" = 124 ] || [ "$result" = 137 ] || [ "$result" = 130 ] || [ "$result" = 143 ]; then
@@ -116,7 +116,7 @@ jobs:
                   dataset=value.get('dataset_id','') if isinstance(value,dict) else ''
                   fingerprint=value.get('input_fingerprint','') if isinstance(value,dict) else ''
                   if re.fullmatch('[a-f0-9]{16}',dataset) and re.fullmatch('[a-f0-9]{64}',fingerprint):
-                      report.update(final_key=f'data/chips/daily/{dataset}/concentration.json',input_fingerprint=fingerprint)
+                      report.update(final_key=f'data/chips/daily/{dataset}/concentration-v2.json',input_fingerprint=fingerprint)
           except (OSError,ValueError,TypeError):
               pass
           print(json.dumps(report))
