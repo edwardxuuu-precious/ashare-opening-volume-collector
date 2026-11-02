@@ -25,6 +25,7 @@ export type ConcentrationSource = {
   dataset_id: string;
   active_slot: string;
   as_of: string;
+  generated_at: string;
   universe_total: number;
   universe_coverage: string;
 };
@@ -204,10 +205,14 @@ export function parseConcentrationSource(value: unknown): ConcentrationSource {
   const total = integer(row.universe_total);
   if (!total || row.scanned_count !== total)
     throw Error('本批股票名单尚不完整。');
+  const generated = string(row.generated_at);
+  if (!/(?:Z|[+-]\d{2}:\d{2})$/.test(generated) || !Number.isFinite(Date.parse(generated)))
+    throw Error('筹码批次发布时间无效。');
   return {
     dataset_id: dataset,
     active_slot: dataset,
     as_of: day(row.as_of),
+    generated_at: generated,
     universe_total: total,
     universe_coverage: string(row.universe_coverage),
   };

@@ -5,6 +5,10 @@ on:
       as_of:
         description: Completed trading session YYYY-MM-DD, empty selects latest
         type: string
+  workflow_run:
+    workflows: [Daily whole-market chip estimates]
+    types: [completed]
+    branches: [main]
   schedule:
     # Shanghai 15:45 first update; 16:15, 17:15 and 20:15 bounded catch-ups.
     # Independent of the long whole-market chip workflow.
@@ -17,7 +21,13 @@ concurrency:
   cancel-in-progress: false
 jobs:
   golden:
-    if: github.ref == 'refs/heads/main' && (github.event_name == 'workflow_dispatch' || vars.DISABLE_GOLDEN_UPDATE != 'true')
+    if: >-
+      github.ref == 'refs/heads/main' &&
+      (github.event_name == 'workflow_dispatch' ||
+      (vars.DISABLE_GOLDEN_UPDATE != 'true' &&
+      (github.event_name == 'schedule' ||
+      (github.event.workflow_run.head_branch == 'main' &&
+      github.event.workflow_run.head_repository.full_name == 'edwardxuuu-precious/ashare-opening-volume-collector'))))
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     permissions:

@@ -49,6 +49,7 @@ function source() {
     dataset_id: '0123456789abcdef',
     active_slot: '0123456789abcdef',
     as_of: days.at(-1),
+    generated_at: '2026-10-30T10:00:00Z',
     coefficient: 2,
     model_version: concentrationModel,
     universe_total: 4,
@@ -70,6 +71,13 @@ function recount(doc) {
   );
   return doc;
 }
+
+test('publication ordering requires a real timezone-aware generation time', () => {
+  assert.equal(parseConcentrationSource(source()).generated_at, '2026-10-30T10:00:00Z');
+  for (const generated_at of [undefined, '', 'invalid', '2026-10-30T10:00:00']) {
+    assert.throws(() => parseConcentrationSource({ ...source(), generated_at }));
+  }
+});
 function document() {
   return recount({
     schema: 'stock.chips.concentration.two.v1',

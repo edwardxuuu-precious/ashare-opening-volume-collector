@@ -16,6 +16,7 @@ import { InspectorTabs } from '@/components/inspector-tabs';
 import { useStockListNavigation } from '@/components/use-stock-list-navigation';
 import { stockListMatches } from '@/lib/stock-list';
 import { authRead } from '@/lib/auth-fetch';
+import { startPublicationFollow } from '@/lib/publication-follow';
 import {
   concentrationGroupRegistry,
   compareConcentrationRows,
@@ -195,8 +196,7 @@ function SeriesChart({
 
 export default function ConcentrationPage() {
   const [load, setLoad] = useState<ReadState>({ kind: 'loading' });
-  const [retry, setRetry] = useState(0),
-    [group, setGroup] = useState<ConcentrationGroup>(20);
+  const [group, setGroup] = useState<ConcentrationGroup>(20);
   const [category, setCategory] = useState<ConcentrationState>('PASS'),
     [search, setSearch] = useState('');
   const [sort, setSort] = useState<ConcentrationSort>({ key: 'streak', direction: 'desc' }),
@@ -206,54 +206,56 @@ export default function ConcentrationPage() {
   const [chartPeriod, setChartPeriod] = useState(120);
   const listArea = useRef<HTMLDivElement>(null);
   const listHeader = useRef<HTMLTableSectionElement>(null);
+  const publicationFollow = useRef<ReturnType<typeof startPublicationFollow> | null>(null);
   const publication = 'publication' in load ? load.publication : null;
   const scan = publication?.scan,
     source = publication?.source;
   const busy = load.kind === 'loading' || load.kind === 'refreshing';
   useEffect(() => {
-    const controller = new AbortController();
-    async function publicationPair() {
-      for (let attempt = 0; attempt < 2; attempt++) {
-        const source = await read(
-          '/data/chips/daily/manifest.json',
-          controller.signal,
-          parseConcentrationSource,
-        );
+    function reportError(error: Error | null) {
+      if (!error) return;
+      setLoad((previous) =>
+        'publication' in previous
+          ? { kind: 'refresh-error', publication: previous.publication,
+              message: `${error.message} 仍显示上次完整结果。` }
+          : { kind: 'error', message: error.message },
+      );
+    }
+    const sourceRead = (signal: AbortSignal) => read(
+      '/data/chips/daily/manifest.json', signal, parseConcentrationSource,
+    );
+    const follow = startPublicationFollow({
+      readStatus: sourceRead,
+      readManifest: sourceRead,
+      readPayload: async (source, signal) => {
         const raw = await read(
           `/data/chips/daily/${source.active_slot}/concentration-two-v1.json`,
-          controller.signal,
+          signal,
           (value) => value,
         );
         const current = await read(
           '/data/chips/daily/manifest.json',
-          controller.signal,
+          signal,
           parseConcentrationSource,
         );
-        if (JSON.stringify(current) !== JSON.stringify(source)) continue;
-        return { source, scan: parseConcentrationScan(raw, source) };
-      }
-      throw Error('筹码批次正在切换，请重新读取完整结果。');
-    }
-    void publicationPair()
-      .then((publication) => {
-        if (!controller.signal.aborted) setLoad({ kind: 'ready', publication });
-      })
-      .catch((error) => {
-        if (controller.signal.aborted) return;
-        const message =
-          error instanceof Error ? error.message : '集中度结果无法读取。';
-        setLoad((previous) =>
-          'publication' in previous
-            ? {
-                kind: 'refresh-error',
-                publication: previous.publication,
-                message: `${message} 仍显示上次完整结果。`,
-              }
-            : { kind: 'error', message },
-        );
-      });
-    return () => controller.abort();
-  }, [retry]);
+        if (JSON.stringify(current) !== JSON.stringify(source))
+          throw Error('筹码批次正在切换，等待完整结果。');
+        return parseConcentrationScan(raw, source);
+      },
+      onStatus: () => undefined,
+      onPublication: (source, scan) => setLoad({ kind: 'ready', publication: { source, scan } }),
+      onStatusError: reportError,
+      onPublicationError: (error) => {
+        if (error) reportError(error);
+        else setLoad((previous) => 'publication' in previous
+          ? { kind: 'ready', publication: previous.publication } : previous);
+      },
+      isRunning: () => false,
+      publishedDataset: (source) => source.dataset_id,
+    });
+    publicationFollow.current = follow;
+    return () => { follow.stop(); publicationFollow.current = null; };
+  }, []);
   const rows = scan?.rows ?? emptyRows;
   const matched = useMemo(() => {
     const selected = rows.filter(
@@ -300,7 +302,7 @@ export default function ConcentrationPage() {
         ? { kind: 'refreshing', publication: previous.publication }
         : { kind: 'loading' },
     );
-    setRetry((value) => value + 1);
+    publicationFollow.current?.refresh();
   }
   function chooseGroup(value: ConcentrationGroup) {
     setGroup(value);

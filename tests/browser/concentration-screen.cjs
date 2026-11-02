@@ -56,7 +56,7 @@ const rows = [
 ];
 function publication(dataset = '0123456789abcdef', empty = false) {
   const values = empty ? rows.map(r => row(r.security_id, r.name, [...Array(20).fill(10), 11])) : structuredClone(rows);
-  const source = { schema: 'stock.chips.market.manifest.v1', dataset_id: dataset, active_slot: dataset, as_of: sessions.at(-1), universe_total: values.length, scanned_count: values.length, coefficient: 2, model_version: model, universe_coverage: 'SITE_CATALOG_UNVERIFIED' };
+  const source = { schema: 'stock.chips.market.manifest.v1', dataset_id: dataset, active_slot: dataset, as_of: sessions.at(-1), generated_at: '2026-10-30T10:00:00Z', universe_total: values.length, scanned_count: values.length, coefficient: 2, model_version: model, universe_coverage: 'SITE_CATALOG_UNVERIFIED' };
   return {
     source,
     scan: {
@@ -187,6 +187,24 @@ async function check(browser, name, options, run) {
   fs.mkdirSync(OUT, { recursive: true });
   const browser = await chromium.launch({ channel: 'chrome', headless: true });
   try {
+    await check(browser, 'automatic-publication-waits-for-complete-summary', {}, async (page, state) => {
+      await page.clock.install();
+      await page.goto(SITE + '/concentration'); await ready(page);
+      await mainRows(page).first().waitFor();
+      const previousRows = await mainRows(page).count();
+      assert.ok(previousRows > 0);
+      state.data = publication('fedcba9876543210', true);
+      state.data.source.generated_at = '2026-10-30T11:00:00Z';
+      state.failSummary = true;
+      await page.clock.runFor(60001);
+      await page.getByRole('alert').filter({ hasText: '仍显示上次完整结果' }).waitFor();
+      assert.equal(await mainRows(page).count(), previousRows);
+      state.failSummary = false;
+      await page.clock.runFor(60001);
+      await page.waitForFunction(() => document.querySelectorAll('.conc-table-wrap tbody tr').length === 0);
+      assert.equal(await page.getByRole('alert').count(), 0);
+      assert.ok(state.reads.filter(path => path.includes('/fedcba9876543210/concentration-two-v1.json')).length >= 2);
+    });
     await check(browser, 'raw-precision-and-null-last-both-directions', {}, async (page, state) => {
       const target = state.data.scan.rows;
       target[target.findIndex(r => r.security_id === '999902')] = row('999902','虚构乙增加',[...Array(20).fill(1),1.001]);
@@ -314,7 +332,7 @@ async function check(browser, name, options, run) {
     await check(browser, 'groups-search-sort-pagination-and-detail', {}, async (page, state) => {
       await page.goto(SITE + '/concentration');
       await ready(page);
-      assert.deepEqual(state.reads.filter(path => !/\/\d{6}\.json$/.test(path)), ['/data/chips/daily/manifest.json', '/data/chips/daily/0123456789abcdef/concentration-two-v1.json', '/data/chips/daily/manifest.json']);
+      assert.deepEqual(state.reads.filter(path => !/\/\d{6}\.json$/.test(path)), ['/data/chips/daily/manifest.json', '/data/chips/daily/manifest.json', '/data/chips/daily/0123456789abcdef/concentration-two-v1.json', '/data/chips/daily/manifest.json']);
       assert.equal(await mainRows(page).count(), 60);
       assert.match(await mainRows(page).first().innerText(), /虚构甲20日/);
       assert.match(await mainRows(page).first().innerText(), /66天/);
@@ -325,7 +343,7 @@ async function check(browser, name, options, run) {
         assert.equal(await mainRows(page).count(), 60);
         for (const removed of [3, 5, 10, 15]) assert.equal(await page.getByRole('button', {name: new RegExp('^连续'+removed+'天')}).count(), 0);
       }
-      assert.equal(state.reads.filter(path => !/\/\d{6}\.json$/.test(path)).length, 3, 'Group changes do not refetch the market');
+      assert.equal(state.reads.filter(path => !/\/\d{6}\.json$/.test(path)).length, 4, 'Group changes do not refetch the market');
       await chooseGroup(page, 20);
       await chooseSort(page, 'current', 'asc');
       assert.match(await mainRows(page).first().innerText(), /虚构戊有效零/);
@@ -429,10 +447,13 @@ async function check(browser, name, options, run) {
       assert.equal(state.reads.some(path => path.endsWith('/concentration.json')), false);
     });
     await check(browser, 'manifest-pair-rollover-reloads-before-display', {held: true}, async (page, state) => {
+      await page.clock.install();
       await page.goto(SITE + '/concentration');
       for (let i = 0; i < 100 && !state.release; i++) await page.waitForTimeout(10);
       assert.equal(typeof state.release, 'function');
       state.data = publication('fedcba9876543210'); state.held = false; state.release();
+      await page.getByRole('alert').filter({ hasText: '筹码批次正在切换' }).waitFor();
+      await page.clock.runFor(60001);
       await ready(page);
       assert.ok(state.reads.includes('/data/chips/daily/fedcba9876543210/concentration-two-v1.json'));
       assert.equal(state.reads.some(path => path === '/data/chips/daily/0123456789abcdef/999901.json'), false);
@@ -453,6 +474,7 @@ async function check(browser, name, options, run) {
       await page.getByLabel('集中度名单状态').selectOption('UNKNOWN');
       await page.getByLabel('搜索集中度股票').fill('999904');
       await chooseSort(page, 'current', 'asc');
+      state.data = publication('fedcba9876543210');
       state.failSummary = true;
       await page.getByRole('button', { name: '刷新集中度筛选', exact: true }).click();
       await page.getByRole('alert').waitFor();
@@ -484,7 +506,7 @@ async function check(browser, name, options, run) {
     });
     await check(browser, 'shared-auth-navigation-back-forward', {}, async (page, state) => {
       await page.goto(SITE + '/concentration'); await ready(page);
-      for (const href of ['/chips', '/trend', '/golden', '/', '/concentration']) {
+      for (const href of ['/chips', '/trend', '/golden/daily', '/', '/concentration']) {
         await page.locator('nav[aria-label="主要功能"] a[href="' + href + '"]').click();
         await page.waitForURL(SITE + href);
       }
