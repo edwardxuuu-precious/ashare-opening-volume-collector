@@ -139,7 +139,7 @@ S3 标准存储 us-east-1 $0.023/GB-month；PUT/LIST $0.005/千次、GET $0.0004
 
 ## 每日筹码筛选的独立日更
 
-`backend/chips/runner.py` 与 `.github/workflows/chips.yml` 使用独立写锁、断点及私有 `collector/chips/`、`data/chips/daily/` 命名空间，不改变开盘量采集规则。定时为北京时间16:20、21:20、次日02:20；GitHub托管执行器和OIDC访问私有S3，不依赖Mac或Windows常开。Windows可用本机 `stock-dev` 登录独立发布网页，认证会话到期按AWS正常流程续登。
+`backend/chips/runner.py` 与 `.github/workflows/chips.yml` 使用独立写锁、断点及私有 `collector/chips/`、`data/chips/daily/` 命名空间，不改变开盘量采集规则。定时为北京时间15:40、21:20、次日02:20；GitHub托管执行器和OIDC访问私有S3，不依赖Mac或Windows常开。Windows可用本机 `stock-dev` 登录独立发布网页，认证会话到期按AWS正常流程续登。
 
 正式模型使用共享210根窗口的昨日/今日前缀、零初始化、OHLC4顶点、150动态节点、直接高度注入和系数2。已有真实历史原件可与带日期的有效最终报价拼接后重新回放；未交易必须有明确证据，接口零量占位或盘中缓存不能当作收盘行情。VWAP超出OHLC只审计，不沿用旧VWAP模型的顶点限制，其他基础数值校验继续保留。
 
