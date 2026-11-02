@@ -6,6 +6,7 @@ export const sitePaths = [
   '/trend',
   '/trend/research',
   '/golden',
+  '/golden/daily',
 ] as const;
 export type SitePath = (typeof sitePaths)[number];
 

@@ -35,6 +35,7 @@ next-env.d.ts
 /dist/
 /.wrangler/
 /outputs/
+/output/playwright/
 /var/
 # Local market bodies and collector locks are private runtime inputs.
 /public/data/

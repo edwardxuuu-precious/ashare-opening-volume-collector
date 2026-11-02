@@ -1,5 +1,7 @@
 # 黄金画格每日核对（20个固定样本）
 
+每日自动候选及2%收盘位置分类已独立接入 `/golden/daily`，见[每日画线说明](golden-projection.md)。本页继续说明 `/golden` 人工核对工作台及保留的旧研究功能；旧自动候选不等于新V21工程实现。
+
 ## 工作台视觉与操作布局
 
 2026-10-22将黄金页统一为筹码工作台的白底、浅灰侧栏和蓝色操作，复用站内导航、文字和边框色。参考[TradingView的工具分区](https://www.tradingview.com/charting-library-docs/latest/ui_elements/Toolbars/)及[图层管理](https://www.tradingview.com/charting-library-docs/latest/ui_elements/object-tree/)，将自动候选、人工画线工具和图表集中在主区；参考[Linear的批注记录组织](https://linear.app/docs/comment-on-issues)，把右侧整理成“批注、轮次、画线”三个页签。默认直接打开双成药业，20图总览仍可切换。图表保持K线和成交量同屏，自动线为金色、人工线为蓝色；默认简化图上证据，完整来源、确认日期、M资格和known_at待核信息可从“选点依据”查看。

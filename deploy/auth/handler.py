@@ -268,6 +268,19 @@ def handle_request(event, context, issued_cookies):
                 raise
             except (ValueError, UnicodeError, OSError, EOFError):
                 return response(503, {'error': '服务暂时不可用，请稍后重试'})
+        if method == 'GET' and re.fullmatch(r'/data/golden-projection/daily/(?:(?:manifest|status)\.json|[a-f0-9]{16}/(?:screening|\d{6})\.json)', path):
+            try:
+                obj = s3.get_object(Bucket=BUCKET, Key=path.lstrip('/'))
+                raw = obj['Body'].read()
+                if raw[:2] == b'\x1f\x8b':
+                    raw = gzip.decompress(raw)
+                return data_response(json.loads(raw), headers.get('accept-encoding', ''))
+            except ClientError as exc:
+                if exc.response['Error']['Code'] == 'NoSuchKey':
+                    return response(404, {'error': '每日画线结果尚未发布'})
+                raise
+            except (ValueError, UnicodeError, OSError, EOFError):
+                return response(503, {'error': '服务暂时不可用，请稍后重试'})
         # Daily visual-review data and shared annotations stay behind the same
         # Cognito validation. Only the exact twenty symbols may be written.
         annotation = re.fullmatch(r'/data/golden-workbench/annotations/(sh000001|\d{6})\.json', path)

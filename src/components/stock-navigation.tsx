@@ -7,7 +7,7 @@ export function StockNavigation({active}:{active?:SiteSection}) {
     { section: 'chips', href: '/chips', label: '每日筹码' },
     { section: 'concentration', href: '/concentration', label: '连续集中度' },
     { section: 'trend', href: '/trend', label: '趋势量价' },
-    { section: 'golden', href: '/golden', label: '黄金画格' },
+    { section: 'golden', href: '/golden/daily', label: '每日画线' },
   ];
   return <nav className="stock-feature-nav" aria-label="主要功能">{items.map(item=><SiteLink key={item.section} href={item.href} aria-current={active===item.section?'page':undefined}>{item.label}</SiteLink>)}</nav>;
 }

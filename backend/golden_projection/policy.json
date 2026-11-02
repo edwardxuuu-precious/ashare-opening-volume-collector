@@ -1,0 +1,29 @@
+{
+  "rule_id": "GOLDEN_V21_HYBRID_DAILY_V1",
+  "version": "golden-v21.daily.v1",
+  "source_standard": "V21: determine the wave, then meaningful support/resistance OR a complete secondary turn; reopen structural review before abstaining.",
+  "authorization_scope": "Daily automatic drawing and descriptive classification, approved by the owner on 2026-11-02; no trading or performance evaluation.",
+  "analysis_bars": 60,
+  "display_bars": 120,
+  "candidate_turn_left_bars": 2,
+  "candidate_turn_right_bars": 2,
+  "candidate_turns_are_not_alone_sufficient": true,
+  "turn_confirmation": "An independent incoming opposite turn, the actual secondary extreme, and a later close beyond the reverse boundary of the extreme candle and its preceding candle. Two right candles confirm a candidate; a further completed opposite pivot or a new low/high is not required.",
+  "role_confirmation": "Either an established structural level with a current-wave close-through and separate failed exact retest, OR consecutive repeated reactions with a common upper/lower-wick price intersection, closes on the failed side and a later close departing the complete group body range. The axis is an actual extreme, not a zone average.",
+  "role_price_tolerance": "0",
+  "parent_review": "Review only preconstructed structural ancestors if a nearer origin's target was already reached by the evidence date. Never enlarge the origin to avoid a later genuine target reach.",
+  "parent_scope": "Enclosing same-direction origins with independent intervening reactions form the parent chain before formula checks. A newer exterior extreme stops that chain; an internal higher low/lower high alone does not end its enclosing wave. An outside candle can provide an origin's H or L because its whole range is checked conservatively; it cannot supply an assumed intrabar order for a secondary turn.",
+  "selection": "Determine direction from the latest independently completed secondary reaction and its preconstructed wave first, then check its origins/axes. If that current reaction fails, do not retrieve an earlier arbitrary-direction projection. Equally current materially different valid combinations remain ambiguous.",
+  "equal_price_plateau": "Group identical neighboring extreme prices as one level and use the latest actual source candle with its later confirmation. Do not treat a unique price plateau as conflicting prices or let an unrelated old ambiguous candle invalidate every newer wave.",
+  "near_percent": "2",
+  "near_basis": "abs(close-level)/level; inclusive boundary",
+  "classification_priority": ["ABOVE", "BELOW", "nearest proportional distance", "AMBIGUOUS if exact tie"],
+  "intraday_events": ["UPPER_REJECTED", "LOWER_RECOVERED", "TOUCH_H", "TOUCH_M", "TOUCH_L"],
+  "clock_policy": "Use the pre-open effective prior structure for daily events. New references are descriptive until the next effective session. Never backfill historical known_at.",
+  "engineering_limits": [
+    "This is a conservative engineering interpretation of V21 qualitative judgments, not proof of identical manual visual salience.",
+    "Two-sided local turns generate candidates only. Independent incoming structure and a reverse range departure provide the topology gate; no numerical prominence or ATR threshold is invented.",
+    "Role zones use directly overlapping candle ranges, not a numerical clustering tolerance; visually meaningful but non-overlapping zones may still be omitted.",
+    "Competing structural levels, assumed same-bar high/low order, incomplete right evidence and missing source data do not silently pass."
+  ]
+}
