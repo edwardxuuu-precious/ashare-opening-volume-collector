@@ -12,6 +12,7 @@ from pathlib import Path
 
 from backend.chips.calendar import sessions
 from backend.trend_volume.model import series_from_frame
+from .index_sources import INDEX_SYMBOLS, series_from_index_frame
 
 
 def encoded(value):
@@ -436,8 +437,22 @@ def classify_position(bar, structure, previous_bar=None, *, same_structure=False
             'distance_percent': {key: price(value) for key, value in distances.items()}}
 
 
+def _source_audit(code, source_dataset_id, source_sha256, last_bar_date, provider,
+                  source_key=None, source_metadata=None):
+    audit = {key: source_metadata[key] for key in
+             ('ingested_at', 'raw_key', 'raw_sha256', 'normalized_history_sha256', 'source_code', 'raw_representation',
+              'adjustment', 'turnover_available') if source_metadata and key in source_metadata}
+    if code in INDEX_SYMBOLS:
+        audit.update(price_unit='INDEX_POINTS', volume_unit='SHARES')
+    audit.update(key=source_key if source_key is not None else
+                 None if code in INDEX_SYMBOLS else f'data/chips/daily/{source_dataset_id}/{code}.json',
+                 sha256=source_sha256, last_bar_date=last_bar_date, provider=provider)
+    return audit
+
+
 def unknown_detail(*, code, name, as_of, dataset_id, source_dataset_id, reason,
-                   source_sha256=None, previous=None, recorded_at=None, effective_from=None):
+                   source_sha256=None, previous=None, recorded_at=None, effective_from=None,
+                   source_key=None, source_metadata=None):
     messages = {
         'SOURCE_FRAME_IDENTITY_MISMATCH': '行情批次、股票代码或交易日身份不一致，暂不分类。',
         'SOURCE_HISTORY_INVALID': '历史日线格式或数量无法核实，暂不分类。',
@@ -462,8 +477,8 @@ def unknown_detail(*, code, name, as_of, dataset_id, source_dataset_id, reason,
             'source_dataset_id': source_dataset_id, 'as_of': as_of, 'code': code, 'name': name,
             'rule_id': RULE_ID, 'policy_sha256': POLICY_SHA256, 'row': row, 'history': [],
             'structure': None, 'candidate_next_session': None, 'rejected_candidates': [],
-            'source': {'key': f'data/chips/daily/{source_dataset_id}/{code}.json',
-                       'sha256': source_sha256, 'last_bar_date': None, 'provider': 'UNKNOWN'},
+            'source': _source_audit(code, source_dataset_id, source_sha256, None, 'UNKNOWN',
+                                    source_key, source_metadata),
             'reason_code': reason, 'historical_known_at': None, 'can_generate_order': False}
 
 
@@ -533,12 +548,15 @@ def _adjacent_previous(previous, rows, as_of):
 
 
 def classify_frame(value, *, code, name, as_of, dataset_id, source_dataset_id, source_sha256,
-                   previous=None, recorded_at=None, effective_from=None):
+                   previous=None, recorded_at=None, effective_from=None,
+                   source_key=None, source_metadata=None):
     context = {'code': code, 'name': name, 'as_of': as_of, 'dataset_id': dataset_id,
-               'source_dataset_id': source_dataset_id, 'source_sha256': source_sha256}
+               'source_dataset_id': source_dataset_id, 'source_sha256': source_sha256,
+               'source_key': source_key, 'source_metadata': source_metadata}
     try:
-        series = series_from_frame(value, code=code, as_of=as_of,
-                                   source_dataset_id=source_dataset_id, source_sha256=source_sha256)
+        parse = series_from_index_frame if code in INDEX_SYMBOLS else series_from_frame
+        series = parse(value, code=code, as_of=as_of,
+                       source_dataset_id=source_dataset_id, source_sha256=source_sha256)
         if any(not bar.complete for bar in series.bars[-_POLICY['analysis_bars']:]):
             raise ValueError('INCOMPLETE_SOURCE_PREFIX')
         rows = [{'date': bar.day.isoformat(), 'open': price(bar.open), 'high': price(bar.high),
@@ -607,6 +625,6 @@ def classify_frame(value, *, code, name, as_of, dataset_id, source_dataset_id, s
             'history': rows[-_POLICY['display_bars']:], 'structure': structure,
             'candidate_next_session': candidate if candidate is not None and candidate['life_state'] == 'OPEN' else None,
             'rejected_candidates': selection['rejected_candidates'],
-            'source': {'key': f'data/chips/daily/{source_dataset_id}/{code}.json',
-                       'sha256': source_sha256, 'last_bar_date': rows[-1]['date'], 'provider': series.provider},
+            'source': _source_audit(code, source_dataset_id, source_sha256, rows[-1]['date'],
+                                    series.provider, source_key, source_metadata),
             'historical_known_at': None, 'can_generate_order': False}

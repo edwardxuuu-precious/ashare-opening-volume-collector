@@ -268,7 +268,7 @@ def handle_request(event, context, issued_cookies):
                 raise
             except (ValueError, UnicodeError, OSError, EOFError):
                 return response(503, {'error': '服务暂时不可用，请稍后重试'})
-        if method == 'GET' and re.fullmatch(r'/data/golden-projection/daily/(?:(?:manifest|status)\.json|[a-f0-9]{16}/(?:screening|\d{6})\.json)', path):
+        if method == 'GET' and re.fullmatch(r'/data/golden-projection/daily/(?:(?:manifest|status)\.json|[a-f0-9]{16}/(?:screening|\d{6}|sh000001|sz399006)\.json)', path):
             try:
                 obj = s3.get_object(Bucket=BUCKET, Key=path.lstrip('/'))
                 raw = obj['Body'].read()

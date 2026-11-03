@@ -88,3 +88,80 @@ test('status exposes a new target without relabelling the previous committed pub
   assert.equal(parseProjectionManifest(manifestValue()).as_of, asOf);
   assert.throws(() => parseProjectionStatus({ ...status, scanned_count: 6 }));
 });
+
+const indexSource = '1122334455667788';
+const shanghai = { ...nearAxis, code: 'sh000001', name: '上证指数' };
+const growth = { ...unknown, code: 'sz399006', name: '创业板指数' };
+function indexedManifestValue() {
+  return { ...manifestValue(), index_source_dataset_id: indexSource, index_symbols: ['sh000001', 'sz399006'],
+    stock_total: 5, index_total: 2, universe_total: 7,
+    counts: { ...counts, NEAR_M: 2, UNKNOWN: 2 },
+    state_counts: { ...manifestValue().state_counts, NEW_REFERENCE: 3, UNKNOWN: 2 } };
+}
+function indexedScreeningValue() {
+  return { ...screeningValue(), index_source_dataset_id: indexSource, universe_total: 7, rows: [...rows, shanghai, growth] };
+}
+function indexStockValue() {
+  const value = stockValue();
+  return { ...value, source_dataset_id: indexSource, code: shanghai.code, name: shanghai.name, row: shanghai,
+    history: [...value.history.slice(0, -1), bar(asOf, '9.01', '9.20', '8.90', '9.02')],
+    source: { provider: 'SYNTHETIC_INDEX', price_unit: 'INDEX_POINTS', volume_unit: 'SHARES',
+      key: `data/golden-projection/daily/index-snapshots/${indexSource}/sh000001.json` } };
+}
+
+test('legacy publications remain stock-only and index metadata binds exact identities and consistent totals', () => {
+  const legacy = parseProjectionManifest(manifestValue());
+  assert.equal(legacy.index_source_dataset_id, null);
+  assert.deepEqual(legacy.index_symbols, []);
+  assert.equal(legacy.stock_total, 5);
+  assert.equal(legacy.index_total, 0);
+  const manifest = parseProjectionManifest(indexedManifestValue());
+  assert.equal(manifest.index_source_dataset_id, indexSource);
+  assert.equal(manifest.stock_total, 5);
+  assert.equal(manifest.index_total, 2);
+  assert.throws(() => parseProjectionManifest({ ...indexedManifestValue(), index_symbols: ['000001', 'sz399006'] }));
+  assert.throws(() => parseProjectionManifest({ ...indexedManifestValue(), index_symbols: ['sh000001', 'sh000001'] }));
+  assert.throws(() => parseProjectionManifest({ ...indexedManifestValue(), index_source_dataset_id: null }));
+  assert.throws(() => parseProjectionManifest({ ...indexedManifestValue(), stock_total: 7 }));
+  assert.throws(() => parseProjectionManifest({ ...indexedManifestValue(), index_total: 1 }));
+});
+
+test('screening includes both declared indices without confusing the Shanghai index and bank', () => {
+  const manifest = parseProjectionManifest(indexedManifestValue());
+  const screen = parseProjectionScreening(indexedScreeningValue(), manifest);
+  assert.equal(screen.rows[5].code, 'sh000001');
+  assert.equal(screen.rows[6].code, 'sz399006');
+  assert.equal(screen.rows[6].category, 'UNKNOWN');
+  assert.throws(() => parseProjectionScreening({ ...indexedScreeningValue(), index_source_dataset_id: source }, manifest));
+  assert.throws(() => parseProjectionScreening({ ...indexedScreeningValue(), rows: [...rows, { ...shanghai, code: '000001' }, growth] }, manifest));
+  assert.throws(() => parseProjectionScreening({ ...indexedScreeningValue(), rows: [...rows, { ...shanghai, code: 'sh000002' }, growth] }, manifest));
+  assert.throws(() => parseProjectionScreening({ ...indexedScreeningValue(), rows: [...rows, { ...shanghai, name: '平安银行' }, growth] }, manifest));
+  const legacy = parseProjectionManifest(manifestValue());
+  assert.throws(() => parseProjectionScreening({ ...screeningValue(), rows: [shanghai, ...rows.slice(1)] }, legacy));
+});
+
+test('known index details bind their own source batch, point units and actual index source path', () => {
+  const manifest = parseProjectionManifest(indexedManifestValue());
+  const screening = parseProjectionScreening(indexedScreeningValue(), manifest), expected = screening.rows[5];
+  const value = indexStockValue();
+  assert.equal(parseProjectionStock(value, manifest, expected).source_dataset_id, indexSource);
+  assert.equal(parseProjectionStock(stockValue(), manifest, screening.rows[0]).source_dataset_id, source);
+  assert.throws(() => parseProjectionStock({ ...stockValue(), source_dataset_id: indexSource }, manifest, screening.rows[0]));
+  assert.throws(() => parseProjectionStock({ ...value, source_dataset_id: source }, manifest, expected));
+  assert.throws(() => parseProjectionStock({ ...value, source: { ...value.source, price_unit: 'CNY' } }, manifest, expected));
+  assert.throws(() => parseProjectionStock({ ...value, source: { ...value.source, volume_unit: 'HAND' } }, manifest, expected));
+  assert.throws(() => parseProjectionStock({ ...value, source: { provider: 'SYNTHETIC_INDEX' } }, manifest, expected));
+  assert.throws(() => parseProjectionStock({ ...value, source: { ...value.source, key: `data/chips/daily/${source}/000001.json` } }, manifest, expected));
+  assert.throws(() => parseProjectionStock({ ...value, source: { ...value.source, key: `data/golden-projection/daily/index-snapshots/${source}/sh000001.json` } }, manifest, expected));
+});
+
+test('unavailable index data remains UNKNOWN without manufacturing a source or candles', () => {
+  const manifest = parseProjectionManifest(indexedManifestValue());
+  const expected = parseProjectionScreening(indexedScreeningValue(), manifest).rows[6];
+  const value = { ...indexStockValue(), code: growth.code, name: growth.name, row: growth,
+    history: [], structure: null, candidate_next_session: null, source: { key: null, provider: 'UNKNOWN' } };
+  const parsed = parseProjectionStock(value, manifest, expected);
+  assert.equal(parsed.row.category, 'UNKNOWN');
+  assert.deepEqual(parsed.history, []);
+  assert.equal(parsed.structure, null);
+});

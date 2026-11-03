@@ -13,6 +13,7 @@ import uuid
 from backend.chips.calendar import sessions
 from backend.trend_volume.daily import Storage, validate_source, latest_completed_session
 from .model import RULE_ID, POLICY_SHA256, classify_frame, unknown_detail, digest, encoded, parameter_values
+from .index_sources import INDEX_SPECS, INDEX_SYMBOLS, BaoIndexSource, ReadyIndex, prepare_indices
 
 PREFIX = 'data/golden-projection/daily/'
 SOURCE_PREFIX = 'data/chips/daily/'
@@ -43,7 +44,7 @@ def next_effective_session(as_of, recorded_at):
 def implementation_identity():
     root = Path(__file__).parent
     files = {name: digest((root / name).read_bytes().replace(b'\r\n', b'\n'))
-             for name in ('__init__.py', 'policy.json', 'model.py', 'daily.py')}
+             for name in ('__init__.py', 'policy.json', 'model.py', 'daily.py', 'index_sources.py')}
     return {'sha256': digest(encoded(files)), 'files': files, 'rule_id': RULE_ID, 'policy_sha256': POLICY_SHA256}
 
 
@@ -63,7 +64,8 @@ def previous_publication(store, current, requested):
     return previous
 
 
-def run(store, *, as_of=None, max_seconds=900, workers=8, progress=print):
+def run(store, *, as_of=None, max_seconds=900, workers=8, progress=print,
+        index_source_factory=BaoIndexSource):
     if type(max_seconds) is not int or not 120 <= max_seconds <= 900 or type(workers) is not int or not 1 <= workers <= 16:
         raise ValueError('BOUNDED_RUNTIME_AND_WORKERS_REQUIRED')
     requested = as_of or latest_completed_session()
@@ -71,6 +73,7 @@ def run(store, *, as_of=None, max_seconds=900, workers=8, progress=print):
         raise ValueError('COMPLETED_OFFICIAL_SESSION_REQUIRED')
     started = time.monotonic()
     deadline = started + max_seconds
+    source_reads_before = getattr(store, 'source_reads', 0)
     owner = uuid.uuid4().hex
     lease_key = PREFIX + 'lease.json'
     lease, lease_etag, _ = store.get(lease_key)
@@ -109,28 +112,40 @@ def run(store, *, as_of=None, max_seconds=900, workers=8, progress=print):
         screening, _, source_screen_sha = store.get(SOURCE_PREFIX + str(source_dataset) + '/screening.json',
                                                      max_bytes=6 * 1024 * 1024, max_decoded_bytes=64 * 1024 * 1024)
         stocks = validate_source(source, screening)
-        total = len(stocks)
+        stock_total = len(stocks)
+        total = stock_total + len(INDEX_SPECS)
+        status('RUNNING', '正在核对股票来源并准备两个指数的同日行情。')
+        indices = prepare_indices(store, requested, deadline=deadline - 75,
+                                  source_factory=index_source_factory)
+        index_inputs = {item.spec.code: item for item in indices.inputs}
         identity = implementation_identity()
         if (current and current.get('source_dataset_id') == source_dataset
                 and current.get('execution_identity', {}).get('sha256') == identity['sha256']
                 and current.get('source_manifest_sha256') == source_manifest_sha
                 and current.get('source_screening_sha256') == source_screen_sha
+                and current.get('index_source_fingerprint') == indices.fingerprint
+                and current.get('index_source_dataset_id') == indices.dataset_id
                 and current.get('as_of') == requested):
             dataset = current['dataset_id']
             scanned = total
             status('COMMITTED', '行情和画线规则未变化，保留同一完整批次。')
             return {'outcome': 'ALREADY_COMMITTED', 'as_of': requested, 'dataset_id': current['dataset_id'],
-                    'source_dataset_id': source_dataset, 'universe_total': total, 'source_reads': 0}
+                    'source_dataset_id': source_dataset, 'index_source_dataset_id': indices.dataset_id,
+                    'universe_total': total,
+                    'source_reads': getattr(store, 'source_reads', 0) - source_reads_before,
+                    'new_market_source_requests': indices.provider_queries, 'index_source_attempts': indices.attempts}
         previous = previous_publication(store, current, requested)
         previous_id = previous['dataset_id'] if previous else None
         generation_day = local_day(now())
         dataset = digest(encoded({'source_manifest_sha256': source_manifest_sha, 'source_screening_sha256': source_screen_sha,
                                   'previous_dataset_id': previous_id, 'generation_day': generation_day,
+                                  'index_source_fingerprint': indices.fingerprint,
                                   'execution_identity': identity['sha256']}))[:16]
         meta_key = PREFIX + dataset + '/batch.json'
         metadata, _, _ = store.get(meta_key)
         binding = {'dataset_id': dataset, 'source_dataset_id': source_dataset, 'as_of': requested,
-                   'previous_dataset_id': previous_id, 'generation_day': generation_day, 'execution_identity': identity}
+                   'previous_dataset_id': previous_id, 'generation_day': generation_day, 'execution_identity': identity,
+                   'index_source_dataset_id': indices.dataset_id, 'index_source_fingerprint': indices.fingerprint}
         if metadata is None:
             recorded_at = now()
             metadata = {**binding, 'recorded_at': recorded_at,
@@ -143,21 +158,29 @@ def run(store, *, as_of=None, max_seconds=900, workers=8, progress=print):
 
         def calculate(stock):
             code, name = stock['code'], stock['name']
-            source_key = SOURCE_PREFIX + source_dataset + '/' + code + '.json'
+            index_input = index_inputs.get(code)
+            source_key = (index_input.key if isinstance(index_input, ReadyIndex) else None) if index_input else SOURCE_PREFIX + source_dataset + '/' + code + '.json'
             source_sha, previous_sha = None, None
             kwargs = dict(code=code, name=name, as_of=requested, dataset_id=dataset,
-                          source_dataset_id=source_dataset, source_sha256=None,
+                          source_dataset_id=indices.dataset_id if index_input else source_dataset, source_sha256=None,
                           recorded_at=metadata['recorded_at'], effective_from=metadata['effective_from'])
+            if index_input:
+                kwargs.update(source_key=source_key, source_metadata=index_input.frame['source'] if isinstance(index_input, ReadyIndex) else None)
             try:
-                frame, _, source_sha = store.get(source_key, source=True)
+                if isinstance(index_input, ReadyIndex):
+                    frame, source_sha = index_input.frame, index_input.sha256
+                elif index_input:
+                    frame = None
+                else:
+                    frame, _, source_sha = store.get(source_key, source=True)
                 old = None
                 missing_previous = False
-                if previous_id:
+                if previous_id and (not index_input or code in previous.get('index_symbols', [])):
                     old, _, previous_sha = store.get(PREFIX + previous_id + '/' + code + '.json', source=True)
                     missing_previous = old is None
                 kwargs['source_sha256'] = source_sha
                 if frame is None:
-                    detail = unknown_detail(**kwargs, reason='SOURCE_FRAME_MISSING')
+                    detail = unknown_detail(**kwargs, reason=index_input.reason if index_input else 'SOURCE_FRAME_MISSING')
                 elif missing_previous:
                     detail = unknown_detail(**kwargs, reason='PREVIOUS_PROJECTION_FRAME_MISSING')
                 else:
@@ -176,7 +199,7 @@ def run(store, *, as_of=None, max_seconds=900, workers=8, progress=print):
             return detail['row'], {'code': code, 'source_key': source_key, 'source_sha256': source_sha,
                                    'previous_result_sha256': previous_sha, 'result_sha256': digest(encoded(detail))}
 
-        iterator = iter(stocks)
+        iterator = iter(stocks + [{'code': spec.code, 'name': spec.name} for spec in INDEX_SPECS])
         with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
             active = {}
 
@@ -207,7 +230,7 @@ def run(store, *, as_of=None, max_seconds=900, workers=8, progress=print):
                     saved_at = time.monotonic()
                 fill()
         if scanned != total:
-            status('FAILED', '本轮未在时限内完成全部股票，未替换上次完整结果。')
+            status('FAILED', '本轮未在时限内完成全部标的，未替换上次完整结果。')
             return {'outcome': 'INCOMPLETE', 'as_of': requested, 'dataset_id': dataset, 'scanned': scanned, 'total': total}
         if local_day(now()) != generation_day:
             raise RuntimeError('CALCULATION_CROSSED_LOCAL_DAY_RESTART_WITH_NEW_GENERATION')
@@ -218,6 +241,8 @@ def run(store, *, as_of=None, max_seconds=900, workers=8, progress=print):
             raise ValueError('OUTPUT_CATEGORY_INVALID')
         summary = {'schema': 'stock.golden-projection.daily.screen.v1', 'dataset_id': dataset,
                    'source_dataset_id': source_dataset, 'as_of': requested, 'rule_id': RULE_ID,
+                   'index_source_dataset_id': indices.dataset_id, 'index_symbols': list(INDEX_SYMBOLS),
+                   'stock_total': stock_total, 'index_total': len(INDEX_SPECS),
                    'policy_sha256': POLICY_SHA256, 'source_id': RULE_SOURCE_ID,
                    'rule_version': parameter_values()['version'], 'known_at': None, 'universe_total': total, 'rows': rows}
         if len(gzip.compress(encoded(summary), mtime=0)) * 4 // 3 + 8192 > 5900000:
@@ -237,28 +262,32 @@ def run(store, *, as_of=None, max_seconds=900, workers=8, progress=print):
         limitations = ['自动选点按V21的波段、角色或完整转折思路作保守工程判断；有歧义不强画。',
                        '首批新组合仅显示当前收盘位置参考；实际记录时间与次日生效日期单独保存，不补造历史锁线。',
                        '2%只定义展示距离，盘中越线与收盘位置分别标记，不生成买卖指令或收益结论。',
-                       '使用已发布收盘日线，不新增行情采集；缺失与陈旧行情保留待更新。']
+                       '股票沿用已发布收盘日线；两个指数使用独立保存的指数日线，缺失与陈旧行情保留待更新。']
         if coverage in ('SITE_CATALOG_UNVERIFIED', 'UNKNOWN'):
             limitations.append('覆盖当前网站股票清单，尚未独立核定全部在市证券。')
         publication = {
             'schema': 'stock.golden-projection.daily.manifest.v1', 'dataset_id': dataset,
             'source_dataset_id': source_dataset, 'as_of': requested, 'requested_as_of': requested,
+            'index_source_dataset_id': indices.dataset_id, 'index_source_fingerprint': indices.fingerprint,
+            'index_symbols': list(INDEX_SYMBOLS), 'stock_total': stock_total, 'index_total': len(INDEX_SPECS),
             'generated_at': metadata['recorded_at'], 'published_at': now(), 'universe_total': total,
             'counts': {key: category_counts[key] for key in CATEGORIES}, 'state_counts': {key: state_counts[key] for key in STATES},
             'rule_id': RULE_ID, 'policy_sha256': POLICY_SHA256, 'rule_parameters': parameter_values(),
             'source_id': RULE_SOURCE_ID, 'rule_version': parameter_values()['version'], 'known_at': None,
-            'scope': '当前网站股票清单（未独立核定全部在市）' if coverage in ('SITE_CATALOG_UNVERIFIED', 'UNKNOWN') else '当前已发布股票清单',
+            'scope': '当前网站股票清单及两个指数（未独立核定全部在市证券）' if coverage in ('SITE_CATALOG_UNVERIFIED', 'UNKNOWN') else '当前已发布股票清单及两个指数',
             'source_generation_stale': not latest_source or latest_source.get('dataset_id') != source_dataset,
             'source_universe_coverage': coverage, 'limitations': limitations, 'execution_identity': identity,
             'source_manifest_sha256': source_manifest_sha, 'source_screening_sha256': source_screen_sha,
             'screening_sha256': digest(encoded(summary)), 'previous_dataset_id': previous_id,
             'input_and_result_identities_sha256': digest(encoded(sorted(input_hashes, key=lambda item: item['code']))),
             'archives': sorted(archives, key=lambda item: (item['as_of'], item['generated_at']), reverse=True)[:60],
-            'new_market_source_requests': 0, 'can_generate_order': False}
+            'new_market_source_requests': indices.provider_queries, 'index_source_attempts': indices.attempts,
+            'can_generate_order': False}
         saved_publication, _, _ = store.get(PREFIX + dataset + '/manifest.json')
         if saved_publication is not None:
             for key in ('dataset_id', 'source_dataset_id', 'as_of', 'rule_id', 'policy_sha256',
-                        'screening_sha256', 'previous_dataset_id', 'execution_identity'):
+                        'screening_sha256', 'previous_dataset_id', 'execution_identity',
+                        'index_source_dataset_id', 'index_source_fingerprint'):
                 if saved_publication.get(key) != publication[key]:
                     raise ValueError('PARTIAL_PUBLICATION_IDENTITY_CONFLICT')
             publication = saved_publication
@@ -272,9 +301,11 @@ def run(store, *, as_of=None, max_seconds=900, workers=8, progress=print):
         current = publication
         status('COMMITTED', '已完成所标注交易日的每日画线与分类。')
         return {'outcome': 'COMMITTED', 'as_of': requested, 'dataset_id': dataset, 'source_dataset_id': source_dataset,
+                'index_source_dataset_id': indices.dataset_id,
                 'universe_total': total, 'counts': publication['counts'], 'state_counts': publication['state_counts'],
                 'source_reads': getattr(store, 'source_reads', None), 'source_encoded_bytes': getattr(store, 'source_bytes', None),
-                'new_market_source_requests': 0, 'execution_identity': identity,
+                'new_market_source_requests': indices.provider_queries, 'index_source_attempts': indices.attempts,
+                'execution_identity': identity,
                 'input_and_result_identities': sorted(input_hashes, key=lambda item: item['code']),
                 'elapsed_seconds': round(time.monotonic() - started, 3)}
     except Exception:

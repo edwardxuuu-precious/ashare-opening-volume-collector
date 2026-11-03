@@ -2,6 +2,10 @@ import type { DailyCandle } from './chip-market';
 import { stockListMatches } from './stock-list.ts';
 
 export const PROJECTION_RULE = 'GOLDEN_V21_HYBRID_DAILY_V1';
+export const projectionIndexCodes = ['sh000001', 'sz399006'] as const;
+export type ProjectionIndexCode = typeof projectionIndexCodes[number];
+const indexNames: Record<ProjectionIndexCode, string> = { sh000001: '上证指数', sz399006: '创业板指数' };
+export function isProjectionIndex(code: string): code is ProjectionIndexCode { return code === 'sh000001' || code === 'sz399006'; }
 export const projectionCategories = ['ABOVE', 'BELOW', 'NEAR_M', 'NEAR_L', 'NEAR_H', 'FAR', 'AMBIGUOUS', 'HISTORY', 'NO_DRAW', 'UNKNOWN'] as const;
 export type ProjectionCategory = typeof projectionCategories[number];
 export type ProjectionFilter = ProjectionCategory | 'FEATURED' | 'ALL';
@@ -23,7 +27,10 @@ export type ProjectionRow = {
   intraday_tags: string[]; new_crossing: 'UP' | 'DOWN' | 'NONE' | 'UNKNOWN';
   distance_percent: { H: string | null; M: string | null; L: string | null }; reasons: string[]; structure_id: string | null;
 };
-export type ProjectionManifest = {
+type ProjectionIndexBinding =
+  | { index_source_dataset_id: null; index_symbols: readonly []; stock_total: number; index_total: 0 }
+  | { index_source_dataset_id: string; index_symbols: typeof projectionIndexCodes; stock_total: number; index_total: 2 };
+export type ProjectionManifest = ProjectionIndexBinding & {
   schema: string; dataset_id: string; source_dataset_id: string; as_of: string; generated_at: string; universe_total: number;
   counts: ProjectionCounts; state_counts: ProjectionStateCounts; rule_id: string; policy_sha256: string;
   scope: string; limitations: string[]; source_generation_stale: boolean; source_universe_coverage: string;
@@ -76,6 +83,17 @@ function categoryCounts(value: unknown): ProjectionCounts {
 function stateCounts(value: unknown): ProjectionStateCounts {
   const v = object(value); return { CURRENT: count(v.CURRENT), NEW_REFERENCE: count(v.NEW_REFERENCE), HISTORY: count(v.HISTORY), NO_DRAW: count(v.NO_DRAW), UNKNOWN: count(v.UNKNOWN) };
 }
+function indexBinding(value: Record<string, unknown>, total: number): ProjectionIndexBinding {
+  if (value.index_source_dataset_id === undefined && value.index_symbols === undefined || value.index_source_dataset_id === null) {
+    if (value.index_symbols !== undefined && (!Array.isArray(value.index_symbols) || value.index_symbols.length)) throw invalid();
+    if (value.stock_total !== undefined && count(value.stock_total) !== total || value.index_total !== undefined && count(value.index_total) !== 0) throw invalid();
+    return { index_source_dataset_id: null, index_symbols: [], stock_total: total, index_total: 0 };
+  }
+  const source = dataset(value.index_source_dataset_id), symbols = array(value.index_symbols, item => choice(item, projectionIndexCodes));
+  if (symbols.length !== 2 || new Set(symbols).size !== 2 || total < 2) throw invalid();
+  if (value.stock_total !== undefined && count(value.stock_total) !== total - 2 || value.index_total !== undefined && count(value.index_total) !== 2) throw invalid();
+  return { index_source_dataset_id: source, index_symbols: projectionIndexCodes, stock_total: total - 2, index_total: 2 };
+}
 export function projectionCounts(rows: ProjectionRow[]): ProjectionCounts {
   const result: ProjectionCounts = { ABOVE: 0, BELOW: 0, NEAR_M: 0, NEAR_L: 0, NEAR_H: 0, FAR: 0, AMBIGUOUS: 0, HISTORY: 0, NO_DRAW: 0, UNKNOWN: 0 };
   for (const row of rows) result[row.category]++;
@@ -104,11 +122,13 @@ export function parseProjectionManifest(value: unknown): ProjectionManifest {
   if (v.schema !== 'stock.golden-projection.daily.manifest.v1') throw invalid();
   const total = count(v.universe_total), counts = categoryCounts(v.counts), states = stateCounts(v.state_counts);
   if (!total || Object.values(counts).reduce((sum, n) => sum + n, 0) !== total || Object.values(states).reduce((sum, n) => sum + n, 0) !== total) throw invalid();
-  return { schema: text(v.schema), dataset_id: dataset(v.dataset_id), source_dataset_id: dataset(v.source_dataset_id), as_of: day(v.as_of), generated_at: timestamp(v.generated_at), universe_total: total, counts, state_counts: states,
+  return { ...indexBinding(v, total), schema: text(v.schema), dataset_id: dataset(v.dataset_id), source_dataset_id: dataset(v.source_dataset_id), as_of: day(v.as_of), generated_at: timestamp(v.generated_at), universe_total: total, counts, state_counts: states,
     rule_id: PROJECTION_RULE, policy_sha256: text(v.policy_sha256), scope: nonempty(v.scope), limitations: array(v.limitations, text), source_generation_stale: boolean(v.source_generation_stale), source_universe_coverage: nonempty(v.source_universe_coverage) };
 }
 function parseRow(value: unknown, asOf: string): ProjectionRow {
   const v = object(value), distance = object(v.distance_percent);
+  const code = match(v.code, /^(?:\d{6}|sh000001|sz399006)$/), name = nonempty(v.name);
+  if (isProjectionIndex(code) && name !== indexNames[code]) throw invalid();
   const category = choice(v.category, projectionCategories), state = choice(v.drawing_state, drawingStates), source = choice(v.source_status, ['KNOWN', 'UNKNOWN']);
   const H = optionalPrice(v.H), M = optionalPrice(v.M), L = optionalPrice(v.L), close = optionalPrice(v.close), basis = choice(v.basis, ['PREVIOUS_LOCK', 'CURRENT_REFERENCE', 'NONE']);
   const direction = v.direction === null ? null : choice(v.direction, ['UP', 'DOWN']);
@@ -119,7 +139,7 @@ function parseRow(value: unknown, asOf: string): ProjectionRow {
   if ((state === 'CURRENT' || state === 'NEW_REFERENCE') && (source !== 'KNOWN' || close === null || H === null || M === null || L === null || !(Number(H) > Number(M) && Number(M) > Number(L)) || !direction || !structureId || basis === 'NONE')) throw invalid();
   if (state === 'NEW_REFERENCE' && (basis !== 'CURRENT_REFERENCE' || crossing === 'UP' || crossing === 'DOWN')) throw invalid();
   if ((crossing === 'UP' || crossing === 'DOWN') && basis !== 'PREVIOUS_LOCK') throw invalid();
-  return { code: match(v.code, /^\d{6}$/), name: nonempty(v.name), as_of: asOf, source_status: source, drawing_state: state, category, close, H, M, L, direction, basis,
+  return { code, name, as_of: asOf, source_status: source, drawing_state: state, category, close, H, M, L, direction, basis,
     near_tags: array(v.near_tags, item => choice(item, ['NEAR_H', 'NEAR_M', 'NEAR_L'])), intraday_tags: array(v.intraday_tags, item => choice(item, ['UPPER_REJECTED', 'LOWER_RECOVERED', 'TOUCH_H', 'TOUCH_M', 'TOUCH_L'])),
     new_crossing: crossing, distance_percent: { H: optionalNumberText(distance.H), M: optionalNumberText(distance.M), L: optionalNumberText(distance.L) }, reasons: array(v.reasons, text), structure_id: structureId };
 }
@@ -128,6 +148,9 @@ export function parseProjectionScreening(value: unknown, manifest: ProjectionMan
   if (v.schema !== 'stock.golden-projection.daily.screen.v1' || v.dataset_id !== manifest.dataset_id || v.source_dataset_id !== manifest.source_dataset_id || v.as_of !== manifest.as_of || v.universe_total !== manifest.universe_total) throw invalid();
   const rows = array(v.rows, row => parseRow(row, manifest.as_of));
   if (rows.length !== manifest.universe_total || new Set(rows.map(row => row.code)).size !== rows.length) throw invalid();
+  const indices = rows.filter(row => isProjectionIndex(row.code));
+  if (indices.length !== manifest.index_total || indices.some(row => !manifest.index_symbols.some(code => code === row.code))) throw invalid();
+  if (v.index_source_dataset_id !== undefined && v.index_source_dataset_id !== manifest.index_source_dataset_id) throw invalid();
   const counts = projectionCounts(rows);
   if (projectionCategories.some(key => counts[key] !== manifest.counts[key]) || drawingStates.some(state => rows.filter(row => row.drawing_state === state).length !== manifest.state_counts[state])) throw invalid();
   return { schema: text(v.schema), dataset_id: manifest.dataset_id, source_dataset_id: manifest.source_dataset_id, as_of: manifest.as_of, rule_id: manifest.rule_id, policy_sha256: manifest.policy_sha256, universe_total: manifest.universe_total, rows };
@@ -166,8 +189,14 @@ function parseCandle(value: unknown): DailyCandle {
 }
 export function parseProjectionStock(value: unknown, manifest: ProjectionManifest, expected: ProjectionRow): ProjectionStock {
   const v = object(value); rule(v, manifest);
-  if (v.schema !== 'stock.golden-projection.daily.stock.v1' || v.dataset_id !== manifest.dataset_id || v.source_dataset_id !== manifest.source_dataset_id || v.as_of !== manifest.as_of || v.code !== expected.code || v.name !== expected.name) throw invalid();
+  const index = isProjectionIndex(expected.code), sourceDataset = index ? manifest.index_source_dataset_id : manifest.source_dataset_id;
+  if (!sourceDataset || index && !manifest.index_symbols.some(code => code === expected.code)) throw invalid();
+  if (v.schema !== 'stock.golden-projection.daily.stock.v1' || v.dataset_id !== manifest.dataset_id || v.source_dataset_id !== sourceDataset || v.as_of !== manifest.as_of || v.code !== expected.code || v.name !== expected.name) throw invalid();
   const row = parseRow(v.row, manifest.as_of); if (JSON.stringify(row) !== JSON.stringify(expected)) throw invalid();
+  if (index && row.source_status === 'KNOWN') {
+    const source = object(v.source), key = text(source.key);
+    if (source.price_unit !== 'INDEX_POINTS' || source.volume_unit !== 'SHARES' || key !== `data/golden-projection/daily/index-snapshots/${sourceDataset}/${row.code}.json`) throw invalid();
+  }
   const history = array(v.history, parseCandle); let last = '';
   if (history.length > 500) throw invalid();
   for (const bar of history) { if (bar.date <= last || bar.date > manifest.as_of) throw invalid(); last = bar.date; }
@@ -180,5 +209,5 @@ export function parseProjectionStock(value: unknown, manifest: ProjectionManifes
     for (const point of selected.evidence) { const bar = history.find(item => item.date === point.date); if (bar && Number(bar[point.field]) !== Number(point.value)) throw invalid(); }
   }
   const rejections = array(v.rejected_candidates, item => { const r = object(item), originDate = day(r.origin_date), axisDate = day(r.axis_date); if (originDate > manifest.as_of || axisDate > manifest.as_of) throw invalid(); return { direction: choice(r.direction, ['UP', 'DOWN']), origin_date: originDate, origin_price: price(r.origin_price), axis_date: axisDate, axis_price: price(r.axis_price), route: choice(r.route, ['ROLE', 'TURN', 'BOTH']), reason_code: nonempty(r.reason_code), reason: nonempty(r.reason) }; });
-  return { schema: text(v.schema), dataset_id: manifest.dataset_id, source_dataset_id: manifest.source_dataset_id, as_of: manifest.as_of, code: row.code, name: row.name, rule_id: manifest.rule_id, policy_sha256: manifest.policy_sha256, row, history, structure, candidate_next_session: next, rejected_candidates: rejections };
+  return { schema: text(v.schema), dataset_id: manifest.dataset_id, source_dataset_id: sourceDataset, as_of: manifest.as_of, code: row.code, name: row.name, rule_id: manifest.rule_id, policy_sha256: manifest.policy_sha256, row, history, structure, candidate_next_session: next, rejected_candidates: rejections };
 }

@@ -7,26 +7,34 @@ from backend.golden_projection import daily
 from test_trend_volume_daily import FakeStore, AS_OF
 
 
+class UnavailableIndexSource:
+    query_count = 0
+
+    def fetch(self, *_):
+        raise ConnectionError('FICTIONAL_INDEX_UNAVAILABLE')
+
+
 class ProjectionDailyTests(unittest.TestCase):
     def run_daily(self, store, **kwargs):
-        return daily.run(store, as_of=AS_OF, max_seconds=120, workers=2, progress=None, **kwargs)
+        return daily.run(store, as_of=AS_OF, max_seconds=120, workers=2, progress=None,
+                         index_source_factory=UnavailableIndexSource, **kwargs)
 
     def test_complete_universe_published_and_same_input_is_idempotent(self):
         store = FakeStore()
         result = self.run_daily(store)
         self.assertEqual(result['outcome'], 'COMMITTED')
-        self.assertEqual(result['universe_total'], 4)
+        self.assertEqual(result['universe_total'], 6)
         manifest = store.values[daily.PREFIX + 'manifest.json']
         screen = store.values[daily.PREFIX + result['dataset_id'] + '/screening.json']
-        self.assertEqual(len(screen['rows']), 4)
-        self.assertEqual(sum(manifest['counts'].values()), 4)
-        self.assertEqual(sum(manifest['state_counts'].values()), 4)
+        self.assertEqual(len(screen['rows']), 6)
+        self.assertEqual(sum(manifest['counts'].values()), 6)
+        self.assertEqual(sum(manifest['state_counts'].values()), 6)
         self.assertEqual(screen['rows'][-1]['category'], 'UNKNOWN')
         writes, reads = len(store.writes), store.source_reads
         repeat = self.run_daily(store)
         self.assertEqual(repeat['outcome'], 'ALREADY_COMMITTED')
-        self.assertEqual(repeat['source_reads'], 0)
-        self.assertEqual(store.source_reads, reads)
+        self.assertEqual(repeat['source_reads'], store.source_reads - reads)
+        self.assertEqual(repeat['new_market_source_requests'], 0)
         self.assertEqual(store.values[daily.PREFIX + 'status.json']['dataset_id'], result['dataset_id'])
         latest_index = store.writes.index(daily.PREFIX + 'manifest.json')
         self.assertTrue(all(store.writes.index(daily.PREFIX + result['dataset_id'] + '/' + row['code'] + '.json') < latest_index for row in screen['rows']))
