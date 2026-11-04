@@ -72,19 +72,13 @@ npm ci
 npm run dev
 ```
 
-生产数据来自认证 API；本地 `public/data` 是可选的旧开发快照，不提交 Git，也不是生产真源。测试使用独立合成 fixture，不依赖该快照。正式采集与验证：
-
-```sh
-python3 -m venv .venv
-.venv/bin/pip install -r requirements.txt
-.venv/bin/python -m unittest discover -s tests/python -v
-node --experimental-strip-types --test tests/frontend/*.test.mjs
-.venv/bin/python backend/scripts/collect.py --full --months 6 --out var/work/market-data --resume
-python3 deploy/export_data.py --source var/work/market-data --require-full
-NEXT_PUBLIC_AUTH_API=https://api.stock.iteready.com NEXT_PUBLIC_DATA_BASE=https://api.stock.iteready.com npm run build
-```
+生产数据来自认证 API；本地 `public/data` 是可选的旧开发快照，不提交 Git，也不是生产真源。测试使用独立合成 fixture，不依赖该快照。Python 环境与离线测试见 [README](../README.md#本地开发)，本地采集见[采集器说明](development/collector.md)，静态网站构建和发布见[网站构建与发布](deployment/site-release.md)。
 
 全量采集需数小时；请求限速、有限重试、连续失败熔断。逐股票 checkpoint；同日成功缓存可以续跑，失败项重新请求。首次回填6个月，后续优先更新当天并补持久队列中的历史缺口，已保存的每日行情永久累积，只有近期补采用的工作断点保持六个月窗口。API上游变更或延迟可能使数据更新失败，旧网页继续可查。
+
+## 其他功能说明
+
+当前网站还提供[连续集中度](features/concentration-streaks.md)、[趋势量价](features/trend-volume.md)、[每日黄金画线](features/golden-projection.md)和[趋势三角与关键点位](features/triangles.md)。各模块的参数、历史范围和缺失处理以对应功能文档为准；完整页面入口见 [README](../README.md)。
 
 ## 分享与自动更新
 

@@ -40,11 +40,7 @@ python3 deploy/auth/accounts.py vault
 
 ## 构建与发布
 
-```sh
-NEXT_PUBLIC_AUTH_API=https://api.stock.iteready.com \
-NEXT_PUBLIC_DATA_BASE=https://api.stock.iteready.com \
-npm run build
-```
+静态网站的构建变量、跨平台命令、离线制包和发布回读统一见[网站构建与发布](site-release.md)。本节说明认证和数据访问边界；认证 Lambda 的更新步骤仍单独执行。
 
 `npm run build` 先检查私有接口配置，构建后移除 `dist/client/data/`。源目录 `public/data` 只保留可选的本地开发快照，已从当前 Git 索引移除并忽略；不能直接上传到公开存储；不要手动运行底层构建命令绕过打包检查。Amplify 的同名构建变量已配置，`NEXT_PUBLIC_COLLECTOR_API` 暂为空。
 
