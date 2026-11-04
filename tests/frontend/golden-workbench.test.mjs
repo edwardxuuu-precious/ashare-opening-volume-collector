@@ -10,8 +10,8 @@ test('manual golden drawings preserve exact two chosen anchors and remain distin
  assert.deepEqual(manualLines('HL',p.toReversed()),[]);
 });
 test('unknown H or L never gets filled by a manual anchor',()=>{
- assert.deepEqual(autoLines({H:null,L:{price:'10'}},'HL',null),[]);
- assert.deepEqual(autoLines({H:{price:'20'},L:null},'HL',null),[{price:20,label:'H 高点'}]);
+ assert.deepEqual(autoLines({H:null,L:{price:'10'}},'HL',null,'log-price.v1'),[]);
+ assert.deepEqual(autoLines({H:{price:'20'},L:null},'HL',null,'log-price.v1'),[{price:20,label:'H 高点'}]);
 });
 test('daily catalog requires all twenty unique samples',()=>{
  const m={schema:'stock.golden.watchlist.v1',version:'golden-workbench.auto20.v1',dataset_id:'a'.repeat(16),calculation_window:60,archives:[],rows:Array.from({length:20},(_,i)=>({symbol:String(i),history:[]}))};
@@ -33,4 +33,23 @@ test('example geometry must match its publication', async()=>{
  assert.equal(parseExample(example,manifest,'600519').price_geometry,'log-price.v1');
  assert.throws(()=>parseExample({...example,price_geometry:undefined},manifest,'600519'));
  assert.throws(()=>parseExample({...example,price_geometry:'future.v2'},manifest,'600519'));
+});
+
+test('archive lines use stored arithmetic reference and do not invent subdivisions',()=>{
+ const result={H:{price:'40'},L:{price:'10'}};
+ const axis={price:'25',B_conditional:'10'};
+ assert.deepEqual(autoLines(result,'HM',axis,undefined).map(v=>v.price),[40,25,10]);
+ assert.match(autoLines(result,'HM',axis,undefined)[2].label,/历史算术参考/);
+ assert.deepEqual(autoLines(result,'HL',null,undefined).map(v=>v.price),[40,10]);
+ assert.equal(autoLines(result,'HM',axis,'log-price.v1')[2].price,15.625);
+});
+
+test('fresh session restores only versioned log reviews from persisted annotations',async()=>{
+ const {parseAnnotations,savedLogReview}=await import('../../src/lib/golden-workbench.ts');
+ const persisted=JSON.stringify({schema:'stock.golden.annotations.v1',symbol:'600519',revision:2,drawings:[],reviews:[{owner:'alice',dataset_id:'a'.repeat(16),status:'CORRECT',note:'saved',price_geometry:'log-price.v1'}]});
+ const fresh=parseAnnotations(JSON.parse(persisted));
+ assert.deepEqual([savedLogReview(fresh,'alice','a'.repeat(16)).status,savedLogReview(fresh,'alice','a'.repeat(16)).note],['CORRECT','saved']);
+ delete fresh.reviews[0].price_geometry;
+ assert.equal(savedLogReview(fresh,'alice','a'.repeat(16)),null);
+ fresh.reviews[0].price_geometry='unknown';assert.throws(()=>parseAnnotations(fresh));
 });

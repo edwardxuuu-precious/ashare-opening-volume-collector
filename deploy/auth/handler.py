@@ -351,7 +351,7 @@ def handle_request(event, context, issued_cookies):
                     for value in drawing['points']:
                         p=point(value);bar=candles.get(p['date'])
                         if not bar or (p['field']!='custom' and Decimal(p['price'])!=Decimal(str(bar[p['field']]))): raise ValueError('POINT_NOT_IN_SAVED_CANDLE')
-                    automatic=calibration_context(example,review.get('auto_mode'),review.get('axis_id'))
+                    automatic=calibration_context(example,review.get('auto_mode'),review.get('axis_id'),drawing.get('price_geometry'))
                 updated=apply(document,payload,user,symbol,automatic=automatic)
                 s3.put_object(Bucket=BUCKET,Key=key,Body=json.dumps(updated,ensure_ascii=False).encode(),
                     ContentType='application/json; charset=utf-8',**({'IfMatch':obj['ETag']} if obj.get('ETag') else {'IfNoneMatch':'*'}))

@@ -1,6 +1,6 @@
-import { priceScale } from '@/lib/price-geometry';
-/* oxlint-disable next/no-html-link-for-pages -- Static CDN routes use document navigation. */
 'use client';
+/* oxlint-disable next/no-html-link-for-pages -- Static CDN routes use document navigation. */
+import { priceScale } from '@/lib/price-geometry';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { RefreshCw } from 'lucide-react';
 import { SiteHeader } from '@/components/site-header';
