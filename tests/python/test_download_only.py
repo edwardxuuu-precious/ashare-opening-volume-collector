@@ -29,7 +29,7 @@ class DownloadOnlyTests(unittest.TestCase):
         row=evaluate_downloaded('000001','test',DAY,minute.iloc[1:],daily,collect.market)
         self.assertEqual(row['status'],'missing');self.assertIsNone(row['first15Volume'])
         for invalid in (-1, 0.5, float('nan')):
-            minute,daily=pair();minute.loc[0,'volume']=invalid
+            minute,daily=pair(first=invalid)
             row=evaluate_downloaded('000001','test',DAY,minute,daily,collect.market)
             self.assertIsNone(row['first15Volume']);self.assertIsNone(row['ratio'])
             record=dict(code='000001',fetchStatus='ok',fetchedOn=DAY,days={DAY:row})
