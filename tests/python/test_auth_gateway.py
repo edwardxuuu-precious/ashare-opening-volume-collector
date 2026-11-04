@@ -449,8 +449,12 @@ class AuthTests(unittest.TestCase):
     def test_authorized_annotation_post_renews_then_saves_once(self):
         from backend.golden.annotations import empty
         renewed = self.renewed_token()
-        self.auth.s3.get_object.return_value = {'Body': types.SimpleNamespace(
-            read=lambda: json.dumps(empty('600519')).encode()), 'ETag': '"etag"'}
+        def get(Bucket, Key):
+            import io
+            value = empty('600519') if '/annotations/' in Key else dict(
+                schema='stock.golden.example.v1', symbol='600519', dataset_id='a' * 16, as_of='2020-01-02')
+            return {'Body': io.BytesIO(json.dumps(value).encode()), 'ETag': '"etag"'}
+        self.auth.s3.get_object.side_effect = get
         body = dict(revision=0, kind='review', as_of='2020-01-02', dataset_id='a' * 16,
                     status='UNCERTAIN', note='', axis_id='', auto_mode='HL')
         event = self.refresh_event('/data/golden-workbench/annotations/600519.json', method='POST',
