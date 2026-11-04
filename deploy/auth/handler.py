@@ -318,7 +318,9 @@ def handle_request(event, context, issued_cookies):
         # Cognito validation. Only the exact twenty symbols may be written.
         annotation = re.fullmatch(r'/data/golden-workbench/annotations/(sh000001|\d{6})\.json', path)
         if annotation and method in ('GET','POST'):
-            from backend.golden.annotations import apply, empty, calibration_context, Conflict, Forbidden
+            from backend.golden.annotations import apply, empty, calibration_context, day, Conflict, Forbidden
+            from backend.chips.history import read_json
+            from backend.chips.price_geometry import GEOMETRY_VERSION
             from backend.golden.watchlist import SYMBOLS
             symbol=annotation.group(1)
             if symbol not in SYMBOLS: return response(404, {'error':'不在固定核对名单中'})
@@ -335,15 +337,26 @@ def handle_request(event, context, issued_cookies):
             if len(body.encode())>16000: return response(400,{'error':'保存内容过长'})
             try:
                 payload=json.loads(body);automatic=None
-                if isinstance(payload,dict) and payload.get('kind')=='calibration':
-                    drawing=payload.get('drawing');review=payload.get('review')
-                    if not isinstance(drawing,dict) or not isinstance(review,dict): raise ValueError('CALIBRATION_FIELDS')
-                    dataset=drawing.get('dataset_id')
-                    if not isinstance(dataset,str) or not re.fullmatch(r'[a-f0-9]{16}',dataset): raise ValueError('DATASET')
-                    source=s3.get_object(Bucket=BUCKET,Key=f'data/golden-workbench/{dataset}/{symbol}.json')['Body'].read()
-                    if source[:2]==b'\x1f\x8b': source=gzip.decompress(source)
-                    example=json.loads(source)
-                    if example.get('symbol')!=symbol or example.get('dataset_id')!=dataset or example.get('as_of')!=drawing.get('as_of'): raise ValueError('EXAMPLE_IDENTITY')
+                if (not isinstance(payload,dict) or type(payload.get('revision')) is not int
+                        or payload.get('kind') not in ('drawing','review','calibration')):
+                    raise ValueError('KIND')
+                reference=payload if payload['kind']=='review' else payload.get('drawing')
+                if not isinstance(reference,dict): raise ValueError('REFERENCE')
+                dataset=reference.get('dataset_id')
+                if not isinstance(dataset,str) or not re.fullmatch(r'[a-f0-9]{16}',dataset): raise ValueError('DATASET')
+                as_of=day(reference.get('as_of'))
+                example=read_json(s3,BUCKET,f'data/golden-workbench/{dataset}/{symbol}.json')
+                if (not isinstance(example,dict) or example.get('schema')!='stock.golden.example.v1'
+                        or example.get('symbol')!=symbol or example.get('dataset_id')!=dataset
+                        or example.get('as_of')!=as_of): raise ValueError('EXAMPLE_IDENTITY')
+                if 'price_geometry' in example and example['price_geometry']!=GEOMETRY_VERSION:
+                    return response(409,{'error':'该批次价格坐标版本不兼容，请刷新页面或选择新批次；当前草稿仍保留'})
+                if (('price_geometry' in reference)!=('price_geometry' in example)
+                        or ('price_geometry' in reference and reference['price_geometry']!=example['price_geometry'])):
+                    return response(409,{'error':'画线价格坐标与数据批次不一致，请刷新页面或选择新批次；当前草稿仍保留'})
+                if payload['kind']=='calibration':
+                    drawing=reference;review=payload.get('review')
+                    if not isinstance(review,dict): raise ValueError('CALIBRATION_FIELDS')
                     candles={r['date']:r for r in example.get('history',[])}
                     from decimal import Decimal
                     from backend.golden.annotations import point
@@ -351,14 +364,14 @@ def handle_request(event, context, issued_cookies):
                     for value in drawing['points']:
                         p=point(value);bar=candles.get(p['date'])
                         if not bar or (p['field']!='custom' and Decimal(p['price'])!=Decimal(str(bar[p['field']]))): raise ValueError('POINT_NOT_IN_SAVED_CANDLE')
-                    automatic=calibration_context(example,review.get('auto_mode'),review.get('axis_id'))
+                    automatic=calibration_context(example,review.get('auto_mode'),review.get('axis_id'),example.get('price_geometry'))
                 updated=apply(document,payload,user,symbol,automatic=automatic)
                 s3.put_object(Bucket=BUCKET,Key=key,Body=json.dumps(updated,ensure_ascii=False).encode(),
                     ContentType='application/json; charset=utf-8',**({'IfMatch':obj['ETag']} if obj.get('ETag') else {'IfNoneMatch':'*'}))
                 return data_response(updated,headers.get('accept-encoding',''))
             except Conflict as exc: return response(409,{'error':str(exc)})
             except Forbidden as exc: return response(403,{'error':str(exc)})
-            except (ValueError,KeyError,TypeError): return response(400,{'error':'画线或批注信息无效，请检查选点与内容'})
+            except (ValueError,KeyError,TypeError,OSError,EOFError): return response(400,{'error':'画线或批注信息无效，请检查选点与内容'})
             except ClientError as exc:
                 if exc.response['Error']['Code'] in ('PreconditionFailed','ConditionalRequestConflict'):
                     return response(409,{'error':'云端刚有新保存，请刷新后重试；当前草稿仍保留'})

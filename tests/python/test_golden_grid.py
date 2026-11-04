@@ -17,20 +17,27 @@ def fixture(low='14'):
 
 
 class GoldenGridCases(unittest.TestCase):
+    def test_main_space_midpoint_reports_fifty_percent(self):
+        frame, _ = fixture()
+        midpoint = grid_row(frame)['geometry']['main_midpoint']
+        frame['history'][65].update(open=midpoint, high=midpoint, low=midpoint, close=midpoint)
+        self.assertEqual(grid_row(frame)['geometry']['main_space_position_percent'], '50.00000000')
+
     def test_known_grid_and_same_axis_crossing(self):
         frame, _ = fixture()
         result = grid_row(frame)
         self.assertEqual(result['status'], 'PASS')
         g = result['geometry']
-        self.assertEqual([g[k] for k in ('H', 'L', 'midpoint', 'upper', 'main_midpoint', 'quarter', 'eighth')],
-                         ['20', '14', '15.5', '17', '17', '15.5', '14.75'])
+        self.assertEqual((g['H'], g['L']), ('20', '14'))
+        self.assertAlmostEqual(float(g['midpoint']), 14 * (20 / 14) ** .25)
+        self.assertAlmostEqual(float(g['main_midpoint']), (20 * 14) ** .5)
         self.assertEqual(g['crossing'], 'UP')
         self.assertTrue(g['intraday_touch'])
         self.assertIsNone(result['known_at'])
 
     def test_equality_touch_and_changed_axis_are_distinct(self):
         frame, _ = fixture()
-        frame['history'][65]['close'] = '15.5'
+        frame['history'][65]['close'] = grid_row(frame)['geometry']['midpoint']
         equal = grid_row(frame)['geometry']
         self.assertEqual((equal['close_side'], equal['crossing']), ('AT', 'NONE'))
         frame['history'][60].update(open='14.2', high='14.4', low='14', close='14.2')

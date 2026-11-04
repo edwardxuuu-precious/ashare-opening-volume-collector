@@ -63,6 +63,7 @@ class PriceBackfillMemoryTests(unittest.TestCase):
                 stock_zh_a_daily=Mock(side_effect=SystemExit(1)))
 
             with patch.object(backfill_quotes,'scan_needs',side_effect=scans), \
+                 patch.object(backfill_quotes,'local_now',return_value=backfill_quotes.datetime(2026,9,18,12,tzinfo=backfill_quotes.ZONE)), \
                  patch.object(backfill_quotes.SharedHTTPBudget,'install'), \
                  patch.dict('sys.modules',{'akshare':provider}), \
                  patch.object(backfill_quotes,'patch_files',return_value=dict(

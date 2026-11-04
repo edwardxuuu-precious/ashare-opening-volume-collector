@@ -14,7 +14,7 @@ def rows():
 
 class DrawingSecurity(unittest.TestCase):
     def payload(self):
-        return dict(kind='drawing',revision=0,drawing=dict(id='00000000-0000-0000-0000-000000000001',
+        return dict(kind='drawing',revision=0,drawing=dict(price_geometry='log-price.v1',id='00000000-0000-0000-0000-000000000001',
             title='fictional',mode='HL',points=[dict(date='2020-01-01',field='high',price='20'),dict(date='2020-01-04',field='low',price='10')],
             note='why',as_of='2020-01-05',dataset_id='a'*16))
     def test_owner_inferred_and_other_owner_cannot_overwrite(self):
@@ -58,6 +58,32 @@ class DrawingSecurity(unittest.TestCase):
         before=copy.deepcopy(second);payload['revision']=2;payload['review']['note']='x'*2001
         with self.assertRaises(ValueError):apply(second,payload,'alice','600519',automatic=context)
         self.assertEqual(second,before)
+    def test_rolling_geometry_contract_preserves_legacy_and_new_reviews(self):
+        drawing=self.payload()['drawing']
+        legacy=copy.deepcopy(drawing);legacy.pop('price_geometry')
+        saved=apply(empty('600519'),dict(kind='drawing',revision=0,drawing=legacy),'alice','600519')
+        self.assertNotIn('price_geometry',saved['drawings'][0])
+        bad=copy.deepcopy(drawing);bad['price_geometry']='future.v2'
+        with self.assertRaises(ValueError):apply(empty('600519'),dict(kind='drawing',revision=0,drawing=bad),'alice','600519')
+        review=dict(revision=1,kind='review',as_of='2020-01-05',dataset_id='a'*16,status='CORRECT',note='saved',axis_id='',auto_mode='HL',price_geometry='log-price.v1')
+        saved=apply(saved,review,'alice','600519')
+        reloaded=json.loads(json.dumps(saved))['reviews'][0]
+        self.assertEqual((reloaded['price_geometry'],reloaded['status'],reloaded['note']),('log-price.v1','CORRECT','saved'))
+        review['revision']=2;review['price_geometry']='unknown'
+        with self.assertRaises(ValueError):apply(saved,review,'alice','600519')
+
+    def test_legacy_calibration_context_keeps_archived_reference(self):
+        source=dict(symbol='600519',dataset_id='a'*16,as_of='2020-01-05',policy_sha256='f'*64,result=dict(H={'price':'40'},L=None,price_groups=[{'records':[dict(id='m',price='20',B_conditional='0')]}]))
+        legacy=calibration_context(source,'HM','m',None)
+        self.assertNotIn('price_geometry',legacy)
+        self.assertEqual(legacy['M']['B_conditional'],'0')
+        current=calibration_context(source,'HM','m','log-price.v1')
+        self.assertEqual(current['M']['B_conditional'],'10')
+        drawing=self.payload()['drawing'];drawing.pop('price_geometry')
+        payload=dict(kind='calibration',revision=0,drawing=drawing,review=dict(status='CORRECT',note='old',axis_id='m',auto_mode='HM'))
+        saved=apply(empty('600519'),payload,'alice','600519',automatic=legacy)
+        self.assertEqual(saved['reviews'][0]['auto_context'],legacy)
+
     def test_calibration_cannot_accept_unverified_auto_context_or_unknown_axis(self):
         payload=dict(kind='calibration',revision=0,drawing=self.payload()['drawing'],review=dict(status='UNCERTAIN',note='',axis_id='',auto_mode='HL'))
         with self.assertRaises(ValueError):apply(empty('600519'),payload,'alice','600519')

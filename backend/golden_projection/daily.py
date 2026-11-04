@@ -45,6 +45,7 @@ def implementation_identity():
     root = Path(__file__).parent
     files = {name: digest((root / name).read_bytes().replace(b'\r\n', b'\n'))
              for name in ('__init__.py', 'policy.json', 'model.py', 'daily.py', 'index_sources.py')}
+    files['price_geometry.py'] = digest((root.parent / 'chips' / 'price_geometry.py').read_bytes().replace(b'\r\n', b'\n'))
     return {'sha256': digest(encoded(files)), 'files': files, 'rule_id': RULE_ID, 'policy_sha256': POLICY_SHA256}
 
 
@@ -243,7 +244,7 @@ def run(store, *, as_of=None, max_seconds=900, workers=8, progress=print,
                    'source_dataset_id': source_dataset, 'as_of': requested, 'rule_id': RULE_ID,
                    'index_source_dataset_id': indices.dataset_id, 'index_symbols': list(INDEX_SYMBOLS),
                    'stock_total': stock_total, 'index_total': len(INDEX_SPECS),
-                   'policy_sha256': POLICY_SHA256, 'source_id': RULE_SOURCE_ID,
+                   'policy_sha256': POLICY_SHA256, 'price_geometry': 'log-price.v1', 'source_id': RULE_SOURCE_ID,
                    'rule_version': parameter_values()['version'], 'known_at': None, 'universe_total': total, 'rows': rows}
         if len(gzip.compress(encoded(summary), mtime=0)) * 4 // 3 + 8192 > 5900000:
             raise ValueError('SCREENING_EXCEEDS_AUTHENTICATED_RESPONSE_BOUND')
@@ -272,7 +273,7 @@ def run(store, *, as_of=None, max_seconds=900, workers=8, progress=print,
             'index_symbols': list(INDEX_SYMBOLS), 'stock_total': stock_total, 'index_total': len(INDEX_SPECS),
             'generated_at': metadata['recorded_at'], 'published_at': now(), 'universe_total': total,
             'counts': {key: category_counts[key] for key in CATEGORIES}, 'state_counts': {key: state_counts[key] for key in STATES},
-            'rule_id': RULE_ID, 'policy_sha256': POLICY_SHA256, 'rule_parameters': parameter_values(),
+            'rule_id': RULE_ID, 'policy_sha256': POLICY_SHA256, 'price_geometry': 'log-price.v1', 'rule_parameters': parameter_values(),
             'source_id': RULE_SOURCE_ID, 'rule_version': parameter_values()['version'], 'known_at': None,
             'scope': '当前网站股票清单及两个指数（未独立核定全部在市证券）' if coverage in ('SITE_CATALOG_UNVERIFIED', 'UNKNOWN') else '当前已发布股票清单及两个指数',
             'source_generation_stale': not latest_source or latest_source.get('dataset_id') != source_dataset,

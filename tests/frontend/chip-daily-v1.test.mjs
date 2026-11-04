@@ -31,6 +31,13 @@ test('resizing keeps the full price-volume-chip layout inside the viewport witho
     assert.ok(g.top<g.bottom&&g.bottom<g.volumeDivider&&g.volumeDivider<g.volTop&&g.volTop<g.volBottom&&g.volBottom<g.H);
     assert.deepEqual(g.candles.map(c=>c.date),baseline.candles.map(c=>c.date));
     assert.deepEqual(g.chips.map(c=>[c.mass,c.previousMass]),baseline.chips.map(c=>[c.mass,c.previousMass]));
+    assert.equal(g.chips.reduce((sum,c)=>sum+c.mass,0),100);
+    for(const [i,chip] of g.chips.entries()) {
+      const low=g.min+i*g.bandWidth, high=low+g.bandWidth;
+      assert.ok(Math.abs(chip.y-g.y(high))<1e-9);
+      assert.ok(Math.abs(chip.height-(g.y(low)-g.y(high)))<1e-9);
+    }
+    assert.notEqual(g.chips[0].height,g.chips.at(-1).height);
     assert.equal(g.candles.at(-1).volumeY,g.volTop);
     assert.ok(g.chips.every(c=>g.chipStart+c.currentWidth<=g.chipEnd&&g.chipStart+c.previousWidth<=g.chipEnd));
     const ticks=[...g.dateTicks].sort((a,b)=>a-b);

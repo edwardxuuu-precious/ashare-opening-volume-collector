@@ -20,7 +20,7 @@ VERSION='golden-workbench.auto20.v1'
 def encoded(v): return json.dumps(v,ensure_ascii=False,separators=(',',':')).encode()
 def sha(v): return hashlib.sha256(v).hexdigest()
 def implementation():
-    return sha(b''.join((Path(__file__).parent/n).read_text(encoding='utf-8').replace('\r\n','\n').encode() for n in ('daily.py','watchlist.py','anchors.py','automatic.py','sources.py','update.py')))
+    return sha(b''.join((Path(__file__).parent/n).read_text(encoding='utf-8').replace('\r\n','\n').encode() for n in ('daily.py','watchlist.py','anchors.py','automatic.py','sources.py','update.py')) + (Path(__file__).parent.parent/'chips'/'price_geometry.py').read_bytes().replace(b'\r\n', b'\n'))
 
 
 def read(s3,bucket,key):
@@ -137,7 +137,7 @@ def publish_cases(s3,bucket,source,cases):
         return dict(outcome='ALREADY_CURRENT',as_of=as_of,dataset_id=dataset)
     summaries=[]
     for case in cases:
-        case.update(schema='stock.golden.example.v1',dataset_id=dataset,version=VERSION,policy_sha256=policy_sha())
+        case.update(schema='stock.golden.example.v1',dataset_id=dataset,version=VERSION,policy_sha256=policy_sha(),price_geometry='log-price.v1')
         key=PREFIX+dataset+'/'+case['symbol']+'.json'
         existing,_=read(s3,bucket,key)
         if existing is None: put(s3,bucket,key,case,IfNoneMatch='*')
@@ -149,7 +149,7 @@ def publish_cases(s3,bucket,source,cases):
     archive=[a for a in (latest or {}).get('archives',[]) if a['dataset_id']!=dataset]
     stamp=datetime.now(timezone.utc).isoformat()
     archive.append(dict(as_of=as_of,dataset_id=dataset,generated_at=stamp))
-    manifest=dict(schema='stock.golden.watchlist.v1',version=VERSION,dataset_id=dataset,source_dataset_id=source['dataset_id'],
+    manifest=dict(schema='stock.golden.watchlist.v1',version=VERSION,price_geometry='log-price.v1',dataset_id=dataset,source_dataset_id=source['dataset_id'],
         as_of=as_of,generated_at=stamp,implementation_sha256=identity,
         policy=POLICY,policy_sha256=policy_sha(),calculation_window=60,rows=summaries,archives=archive,
         owner_fidelity='NOT_VERIFIED',automatic_axis_winner=None,trading_rules=None)

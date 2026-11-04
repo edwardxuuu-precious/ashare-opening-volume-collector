@@ -46,6 +46,7 @@ backend/chips/listing.py
 backend/chips/display.py
 backend/chips/limit_reference.py
 backend/chips/golden.py
+backend/chips/price_geometry.py
 backend/chips/history.py
 backend/chips/stability.py
 backend/chips/suspension_evidence.py

@@ -6,6 +6,7 @@ owner-reference prices. Dates are observed candle labels, not verified clocks.
 from __future__ import annotations
 
 from decimal import Decimal
+from backend.chips.price_geometry import reflected_price, geometric_level
 
 VERSION = 'candle-anchor.source-case-proposal.precision-v2'
 PARAMETERS = {
@@ -40,7 +41,7 @@ def dec(value):
 def price(value):
     # Equities in the reference samples use cent prices. Index vendors may
     # supply four decimal places: never round those before comparisons, IDs,
-    # grouping or 2M-H. Formatting for display belongs to the UI.
+    # grouping or reflection. Formatting for display belongs to the UI.
     p=dec(value)
     return format(p,'.2f') if p==p.quantize(Decimal('.01')) else format(p,'f')
 
@@ -170,8 +171,8 @@ def resistance_candidates(rows, turn_list):
                 retests_before_first_reclaim=failed, later_touch_below_events=events,
                 available_after_close_on=available, reclaim_observed_on=reclaim,
                 status=status, role_confirmed=False,
-                B_conditional=price(2*p-dec(high['price'])),
-                geometry_condition='Only if this H/M equal-height interpretation is accepted; B is not observed L',
+                B_conditional=price(reflected_price(dec(high['price']),p)),
+                geometry_condition='Only if this H/M log-equal-distance interpretation is accepted; B is not observed L',
                 **metadata('PROPOSAL-SUPPORT-BREAK-RETEST')))
     return output
 
@@ -193,7 +194,7 @@ def analyze(rows):
             low = None
     geometry = []
     if high and low:
-        geometry = [dict(ratio=ratio, value=format(dec(low['price'])+dec(ratio)*(dec(high['price'])-dec(low['price'])), 'f'),
+        geometry = [dict(ratio=ratio, value=format(geometric_level(dec(low['price']),dec(high['price']),dec(ratio)), 'f'),
                          role='GEOMETRIC_REFERENCE_NOT_SELECTED_RESISTANCE') for ratio in ['0.5','0.25','0.125']]
     pending = []
     # End-of-window bars cannot silently be called confirmed turns.
