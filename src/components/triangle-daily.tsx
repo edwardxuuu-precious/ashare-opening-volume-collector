@@ -267,7 +267,7 @@ export function TriangleDaily({ onResearch }: { onResearch: () => void }) {
                 · 默认回看 {publication.manifest.sessions.length} 个交易日
               </span>
               <span>
-                结果发布{' '}
+                行情更新于{' '}
                 {new Date(publication.manifest.generated_at).toLocaleString(
                   'zh-CN',
                   { timeZone: 'Asia/Shanghai', hour12: false },
