@@ -9,7 +9,7 @@ from decimal import Decimal, InvalidOperation
 from fractions import Fraction
 
 from .calendar import sessions
-from .price_geometry import geometric_level
+from .price_geometry import geometric_level, geometric_position
 
 VERSION = 'golden-grid.research60-5.tiers20-50.log-price.v2'
 DESIGN_SHA = sha256(b'golden-grid.research60-5.tiers20-50.log-price.v2:geometric-level:decimal28-half-even').hexdigest()
@@ -111,7 +111,7 @@ def grid_row(frame):
             'quarter': format(geometric_level(l,h,Fraction(1,4)), 'f'), 'eighth': format(geometric_level(l,h,Fraction(1,8)), 'f'),
             'close_side': 'ABOVE' if close > r else 'BELOW' if close < r else 'AT',
             'distance_percent': percent(close / r - 1),
-            'main_space_position_percent': percent((close - l) / (h - l)),
+            'main_space_position_percent': format(geometric_position(l, h, close) * 100, '.8f'),
             'intraday_touch': low <= r <= high, 'crossing': crossing, 'comparison': comparison}
     except (ValueError, TypeError, KeyError, ArithmeticError) as exc:
         result.update(status='UNKNOWN', reason=str(exc)[:100], geometry=None)

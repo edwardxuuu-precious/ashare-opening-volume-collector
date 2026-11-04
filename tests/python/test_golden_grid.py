@@ -17,6 +17,12 @@ def fixture(low='14'):
 
 
 class GoldenGridCases(unittest.TestCase):
+    def test_main_space_midpoint_reports_fifty_percent(self):
+        frame, _ = fixture()
+        midpoint = grid_row(frame)['geometry']['main_midpoint']
+        frame['history'][65].update(open=midpoint, high=midpoint, low=midpoint, close=midpoint)
+        self.assertEqual(grid_row(frame)['geometry']['main_space_position_percent'], '50.00000000')
+
     def test_known_grid_and_same_axis_crossing(self):
         frame, _ = fixture()
         result = grid_row(frame)

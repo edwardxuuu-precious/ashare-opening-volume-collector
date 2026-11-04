@@ -38,3 +38,13 @@ def reflected_price(origin, middle):
         if not origin.is_finite() or not middle.is_finite() or origin <= 0 or middle <= 0:
             raise ValueError('INVALID_PRICE_GEOMETRY')
         return middle * middle / origin
+
+
+def geometric_position(low, high, value):
+    with localcontext() as ctx:
+        ctx.prec = 28
+        ctx.rounding = ROUND_HALF_EVEN
+        low, high, value = map(_decimal, (low, high, value))
+        if not all(p.is_finite() and p > 0 for p in (low, high, value)) or high <= low:
+            raise ValueError('INVALID_PRICE_GEOMETRY')
+        return (value / low).ln() / (high / low).ln()
