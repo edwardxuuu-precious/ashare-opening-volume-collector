@@ -6,7 +6,7 @@ root=Path(__file__).resolve().parents[1]
 repo=root.parent/'ashare-opening-volume-collector'
 files={f'backend/chips/{name}':root/'backend'/'chips'/name for name in
        ('__init__.py','calendar.py','model.py','eastmoney_model.py','ohlc4_input.py','current_quote.py','screen.py','source.py','baostock_history.py','ths_history.py','listing.py','display.py','limit_reference.py','runner.py','probe.py')}
-files['.github/workflows/chips.yml']=root/'deploy/actions/workflows/chips.yml'
+files['.github/workflows/chips.yml']=root/'.github/workflows/chips.yml'
 p=argparse.ArgumentParser();p.add_argument('--refresh-export',action='store_true');a=p.parse_args()
 if (root/'.git').exists():
     top=subprocess.run(['git','rev-parse','--show-toplevel'],cwd=root,capture_output=True,text=True,check=True).stdout.strip()

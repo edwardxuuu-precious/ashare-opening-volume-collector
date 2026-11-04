@@ -94,9 +94,7 @@ class CompletionContractTests(unittest.TestCase):
 
     def test_legacy_schedule_switch_does_not_block_dispatcher_or_recovery(self):
         root = Path(__file__).resolve().parents[2]
-        workflow_path = root / 'deploy/actions/workflows/collector.yml'
-        if not workflow_path.exists():
-            workflow_path = root / '.github/workflows/collector.yml'
+        workflow_path = root / '.github/workflows/collector.yml'
         workflow = workflow_path.read_text()
         self.assertIn("github.event_name == 'workflow_dispatch'", workflow)
         self.assertNotIn('Production writer is explicitly disabled.', workflow)

@@ -62,14 +62,12 @@ class DailyWorkflowTriggers(unittest.TestCase):
                 self.assertTrue(permits(text, event='workflow_dispatch', disabled='true'))
                 self.assertFalse(permits(text, event='workflow_dispatch', ref='refs/heads/feature'))
 
-    def test_fallbacks_and_existing_deployment_copies_match(self):
+    def test_canonical_workflows_preserve_fallback_schedules(self):
         for filename in WORKFLOWS:
             text = (ROOT / '.github/workflows' / filename).read_text(encoding='utf-8')
             with self.subTest(workflow=filename):
                 self.assertIn('  schedule:', text)
                 if filename != 'golden.yml': self.assertIn("cron: '40 13,18 * * 1-5'", text)
-                copy = ROOT / 'deploy/actions/workflows' / filename
-                if copy.exists(): self.assertEqual(text, copy.read_text(encoding='utf-8'))
 
 
 if __name__ == '__main__':

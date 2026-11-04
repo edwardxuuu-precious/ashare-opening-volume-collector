@@ -177,8 +177,6 @@ class AutomaticSlots(unittest.TestCase):
 
     def test_workflow_runs_automatic_guard_for_both_providers_and_preserves_disable(self):
         source=Path('.github/workflows/chips.yml').read_text(encoding='utf-8')
-        mirror=Path('deploy/actions/workflows/chips.yml').read_text(encoding='utf-8')
-        self.assertEqual(source,mirror)
         self.assertIn("inputs.automatic_origin == '') || vars.DISABLE_CHIPS_UPDATE != 'true'",source)
         self.assertIn("github.event_name != 'workflow_dispatch' || inputs.automatic_origin != ''",source)
         self.assertIn("steps.followup.outputs.should_run == 'true'",source)

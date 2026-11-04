@@ -2,8 +2,8 @@
 from pathlib import Path
 import hashlib
 import json
+import os
 import re
-import shutil
 
 ROOT = Path(__file__).resolve().parents[2]
 SOURCES = [
@@ -14,31 +14,64 @@ SOURCES = [
         'exchange_status')
 ] + ['backend/server/' + name + '.py' for name in (
     'cloud_worker', 'publisher_state', 'actions_runner', 'import_checkpoint_batch', 'refresh_worker', 'failure_status')] + [
-    'backend/chips/' + name + '.py' for name in ('__init__','calendar','model','eastmoney_model','ohlc4_input','current_quote','probe','runner','screen','source','baostock_history','ths_history','listing','display','limit_reference','golden')]
+    'backend/chips/' + name + '.py' for name in (
+        '__init__', 'calendar', 'model', 'eastmoney_model', 'ohlc4_input', 'current_quote',
+        'probe', 'runner', 'screen', 'source', 'baostock_history', 'ths_history', 'listing',
+        'display', 'limit_reference', 'golden', 'history', 'stability', 'suspension_evidence',
+        'concentration', 'concentration_runner', 'concentration_v2', 'concentration_v2_runner',
+        'concentration_two', 'concentration_two_runner')]
 SOURCES += ['backend/golden/' + name + '.py' for name in ('__init__','anchors','automatic','watchlist','daily','annotations','sources','update')]
+SOURCES += ['backend/trend_volume/' + name + '.py' for name in ('__init__', 'types', 'frozen_v3', 'model', 'daily')]
+SOURCES += ['backend/golden_projection/' + name for name in ('__init__.py', 'policy.json', 'model.py', 'daily.py', 'index_sources.py')]
 SOURCES += ['backend/triangles/__init__.py', 'backend/triangles/daily.py',
             'tooling/build-triangle-daily.mjs', 'src/lib/triangles.ts', 'src/lib/triangle-data.ts',
-            'src/lib/auth-fetch.ts', 'src/lib/read-request.ts']
+            'src/lib/auth-fetch.ts', 'src/lib/read-request.ts', 'package.json',
+            'tooling/run_chip_bounded.py', 'tooling/chip_workflow_budget.py', 'tooling/chip_followup_guard.py']
+WORKFLOWS = ('chips.yml', 'collector.yml', 'golden-projection.yml', 'golden.yml',
+             'source-probe.yml', 'trend-volume.yml', 'triangles.yml')
 SECRET_PATTERNS = [r'AKIA[0-9A-Z]{16}', r'ASIA[0-9A-Z]{16}',
                    r'gh[pousr]_[A-Za-z0-9]{30,}', r'-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----']
 
-def build(destination, probe_only=False):
-    destination = Path(destination)
-    if destination.exists() and any(destination.iterdir()):
-        raise ValueError('Use an empty destination; existing files are never overwritten')
-    mapped = {name: ROOT / name for name in SOURCES if not probe_only or name.startswith('backend/scripts/')}
-    mapped.update({'.github/workflows/' + p.name: p for p in (ROOT/'deploy/actions/workflows').glob('*.yml')
-                   if not probe_only or p.name == 'source-probe.yml'})
-    contents = {}
-    for name, source in mapped.items():
-        if source.is_symlink() or not source.is_file():
+
+def _read_source(name):
+    source = ROOT
+    for part in Path(name).parts:
+        source /= part
+        if source.is_symlink():
             raise ValueError('Missing or symlinked source: ' + name)
-        raw = source.read_bytes()
-        text = raw.decode()
-        if any(re.search(pattern, text) for pattern in SECRET_PATTERNS):
-            raise ValueError('Credential-like content in ' + name)
-        contents[name] = raw
-    contents['requirements.txt'] = (ROOT/'requirements.txt').read_bytes() + b'boto3>=1.40,<2\n'
+    if not source.is_file():
+        raise ValueError('Missing or symlinked source: ' + name)
+    raw = source.read_bytes()
+    text = raw.decode()
+    if any(re.search(pattern, text) for pattern in SECRET_PATTERNS):
+        raise ValueError('Credential-like content in ' + name)
+    return raw
+
+
+def _destination(path):
+    destination = Path(os.path.abspath(path))
+    for component in (destination, *destination.parents):
+        if component.is_symlink():
+            if component == Path('/var') and component.resolve() == Path('/private/var'):
+                continue
+            raise ValueError('Symlinked destination: ' + str(destination))
+    canonical = destination.resolve()
+    root = ROOT.resolve()
+    staging = (root / 'outputs', root / 'var/work')
+    if (root.is_relative_to(canonical)
+            or canonical.is_relative_to(root) and not any(canonical.is_relative_to(path) for path in staging)):
+        raise ValueError('Destination overlaps runtime sources: ' + str(destination))
+    if destination.exists() and (not destination.is_dir() or any(destination.iterdir())):
+        raise ValueError('Use an empty destination; existing files are never overwritten')
+    return destination
+
+
+def build(destination, probe_only=False):
+    destination = _destination(destination)
+    names = [name for name in SOURCES if not probe_only or name.startswith('backend/scripts/')]
+    names += ['.github/workflows/' + name for name in WORKFLOWS if not probe_only or name == 'source-probe.yml']
+    names.append('requirements.txt')
+    contents = {name: _read_source(name) for name in names}
     contents['.gitignore'] = b'.venv/\n__pycache__/\n*.pyc\n.env*\nvar/\noutputs/\n'
     contents['README.md'] = b'''# A-share opening volume collector
 

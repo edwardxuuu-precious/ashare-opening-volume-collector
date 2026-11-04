@@ -80,8 +80,7 @@ class Workflow(unittest.TestCase):
         self.job = self.workflow['jobs']['chips']
         self.steps = {step.get('id'): step for step in self.job['steps'] if step.get('id')}
 
-    def test_both_release_workflows_share_two_group_derivation_and_fixed_schedule(self):
-        self.assertEqual(self.raw, Path('deploy/actions/workflows/chips.yml').read_text())
+    def test_canonical_workflow_keeps_two_group_derivation_and_fixed_schedule(self):
         self.assertEqual(self.job['timeout-minutes'], '310')
         self.assertEqual([x['cron'] for x in self.workflow['on']['schedule']], ['40 7 * * *', '20 13 * * *', '20 18 * * *'])
         command = self.steps['concentration']['run']
