@@ -1,4 +1,3 @@
-"""Publish a complete triangle screen and full saved price history without provider calls."""
 from __future__ import annotations
 
 import argparse
