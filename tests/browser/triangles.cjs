@@ -66,6 +66,15 @@ const mark = (name) => checks.push(name);
         });
       if (url.pathname === '/auth/me')
         return json({ username: '隔离样例验收' });
+      if (url.pathname.startsWith('/data/triangles/daily/'))
+        return route.fulfill({
+          status: 404,
+          json: { error: 'Research-only fixture.' },
+          headers: {
+            'access-control-allow-origin': origin,
+            'access-control-allow-credentials': 'true',
+          },
+        });
       if (url.pathname === '/data/stocks.json')
         return json({ rows: securities });
       if (url.pathname === '/data/manifest.json')
@@ -149,6 +158,9 @@ const mark = (name) => checks.push(name);
       return route.continue();
     });
     await page.goto(SITE + '/triangles');
+    await page
+      .getByRole('button', { name: '自定义参数研究', exact: true })
+      .click();
     await page
       .getByRole('button', { name: '开始筛选', exact: true })
       .waitFor({ timeout: 60000 });

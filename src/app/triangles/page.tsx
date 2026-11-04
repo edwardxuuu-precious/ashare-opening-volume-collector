@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { SiteHeader } from '@/components/site-header';
 import { StockPicker } from '@/components/stock-picker';
 import { TriangleChart } from '@/components/triangle-chart';
+import { TriangleDaily } from '@/components/triangle-daily';
 import {
   loadTriangleCatalog,
   loadTriangleData,
@@ -227,6 +228,21 @@ function ZoneEvidence({
 }
 
 export default function TrianglesPage() {
+  const [mode, setMode] = useState<'daily' | 'research'>('daily');
+  return mode === 'daily' ? (
+    <TriangleDaily onResearch={() => setMode('research')} />
+  ) : (
+    <>
+      <div className="triangle-research-return">
+        <button onClick={() => setMode('daily')}>返回每日自动结果</button>
+        <span>自定义参数研究 · 需应用参数后重新计算</span>
+      </div>
+      <TriangleResearch />
+    </>
+  );
+}
+
+function TriangleResearch() {
   const [catalogState, setCatalogState] = useState<CatalogState>({
     kind: 'loading',
   });

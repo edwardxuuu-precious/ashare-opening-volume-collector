@@ -26,10 +26,12 @@ export function TriangleChart({
   analysis,
   formation,
   name,
+  onFormationSelect,
 }: {
   analysis: TriangleAnalysis;
   formation: TriangleFormation | null;
   name: string;
+  onFormationSelect?: (formation: TriangleFormation) => void;
 }) {
   const [focused, setFocused] = useState<string>('');
   const viewport = useRef<HTMLDivElement>(null);
@@ -40,9 +42,9 @@ export function TriangleChart({
   const points = analysis.points;
   const current =
     points.find((point) => point.date === focused) ?? points.at(-1);
-  const width = 1120,
+  const width = Math.max(1120, analysis.points.length * 7),
     height = 430;
-  const plot = { left: 64, right: 1036, top: 34, bottom: 374 };
+  const plot = { left: 64, right: width - 84, top: 78, bottom: 336 };
   const prices = points.flatMap((point) =>
     point.bar.kind === 'bar' ? [point.bar.low, point.bar.high] : [],
   );
@@ -181,7 +183,9 @@ export function TriangleChart({
           MA{analysis.params.slowPeriod}
         </span>
         <span>空心圆为历史价位依据</span>
-        <span>三角为形成日</span>
+        <span style={{ color: '#a36c13' }}>金三角 · 背景满足</span>
+        <span style={{ color: '#7960ad' }}>死三角 · 背景满足</span>
+        <span>点击三角文字查看当时依据</span>
         <span>方块为后续事件</span>
       </div>
       <label className="triangle-chart-date">
@@ -205,6 +209,7 @@ export function TriangleChart({
         <svg
           className="triangle-chart-svg"
           viewBox={`0 0 ${width} ${height}`}
+          style={{ minWidth: width }}
           aria-label={`${name}日K线、均线和关键点位`}
         >
           <title>{name}日K线与趋势三角</title>
@@ -330,23 +335,97 @@ export function TriangleChart({
               </circle>
             );
           })}
-          {analysis.formations.map((item) => {
-            const position = xDate(item.formedAt);
-            if (position === null) return null;
-            const vertical = y(item.price),
-              direction = item.direction === 'golden' ? -1 : 1;
-            const color = item.direction === 'golden' ? '#b77e20' : '#8670ba';
-            return (
-              <g key={item.id} opacity={item.qualified ? 1 : 0.45}>
-                <path
-                  d={`M${position},${vertical} l-7,${direction * 13} h14 Z`}
-                  fill={color}
-                  stroke="white"
-                />
-                <title>{`${item.formedAt} ${item.direction === 'golden' ? '金三角' : '死三角'} · ${item.price.toFixed(2)}元 · ${item.qualified ? '背景满足' : item.reasons.join('；')}`}</title>
-              </g>
-            );
-          })}
+          {analysis.formations
+            .filter((item) => item.qualified)
+            .map((item, index) => {
+              const position = xDate(item.formedAt);
+              if (position === null) return null;
+              const vertical = y(item.price),
+                direction = item.direction === 'golden' ? -1 : 1;
+              const color = item.direction === 'golden' ? '#b77e20' : '#8670ba';
+              const selected = formation?.id === item.id;
+              const label = item.direction === 'golden' ? '金三角' : '死三角';
+              const labelY =
+                item.direction === 'golden'
+                  ? 27 + (index % 3) * 17
+                  : 359 + (index % 3) * 17;
+              const labelX = Math.min(
+                plot.right - 58,
+                Math.max(plot.left + 58, position),
+              );
+              const trianglePoints = item.crosses
+                .flatMap((cross) => {
+                  const crossX = xDate(cross.date);
+                  return crossX === null ? [] : [`${crossX},${y(cross.value)}`];
+                })
+                .join(' ');
+              return (
+                <g
+                  key={item.id}
+                  data-triangle-formation={item.id}
+                  data-triangle-direction={item.direction}
+                  data-triangle-qualified="true"
+                  data-triangle-selected={selected ? 'true' : 'false'}
+                  role={onFormationSelect ? 'button' : undefined}
+                  tabIndex={onFormationSelect ? 0 : undefined}
+                  aria-label={`${item.formedAt} ${label}`}
+                  aria-pressed={onFormationSelect ? selected : undefined}
+                  onClick={() => onFormationSelect?.(item)}
+                  onKeyDown={(event) => {
+                    if (
+                      onFormationSelect &&
+                      (event.key === 'Enter' || event.key === ' ')
+                    ) {
+                      event.preventDefault();
+                      onFormationSelect(item);
+                    }
+                  }}
+                  style={{ cursor: onFormationSelect ? 'pointer' : 'default' }}
+                >
+                  <polygon
+                    points={trianglePoints}
+                    fill={color}
+                    fillOpacity={selected ? 0.3 : 0.13}
+                    stroke={color}
+                    strokeWidth={selected ? 2 : 1}
+                  />
+                  <path
+                    d={`M${position},${vertical} l-7,${direction * 13} h14 Z`}
+                    fill={color}
+                    stroke="white"
+                  />
+                  <line
+                    x1={position}
+                    y1={vertical + direction * 14}
+                    x2={labelX}
+                    y2={labelY + (direction < 0 ? 4 : -12)}
+                    stroke={color}
+                    strokeDasharray="2 3"
+                    opacity="0.6"
+                  />
+                  <rect
+                    x={labelX - 58}
+                    y={labelY - 12}
+                    width="116"
+                    height="16"
+                    rx="3"
+                    fill={selected ? color : '#fff'}
+                    stroke={color}
+                    strokeWidth={selected ? 1.5 : 0.7}
+                  />
+                  <text
+                    x={labelX}
+                    y={labelY}
+                    textAnchor="middle"
+                    fontSize="10"
+                    fill={selected ? '#fff' : color}
+                  >
+                    {label} {item.formedAt}
+                  </text>
+                  <title>{`${item.formedAt} ${item.direction === 'golden' ? '金三角' : '死三角'} · ${item.price.toFixed(2)}元 · ${item.qualified ? '背景满足' : item.reasons.join('；')}`}</title>
+                </g>
+              );
+            })}
           {[formation?.pretrend.from, formation?.pretrend.to].map(
             (anchor, index) => {
               if (!anchor) return null;
@@ -429,7 +508,7 @@ export function TriangleChart({
               <text
                 key={point.date}
                 x={xDate(point.date) ?? 0}
-                y={plot.bottom + 25}
+                y={height - 8}
                 textAnchor="middle"
                 fill="#6a7788"
                 fontSize="11"
