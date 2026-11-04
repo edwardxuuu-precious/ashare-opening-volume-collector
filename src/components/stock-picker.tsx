@@ -27,6 +27,7 @@ export function StockPicker({
   onChange: (codes: string[]) => void;
 }) {
   const [search, setSearch] = useState('');
+  const [open, setOpen] = useState(false);
   const anchor = useComboboxAnchor();
   const names = useMemo(
     () => new Map(stocks.map((s) => [s.code, s.name])),
@@ -45,6 +46,8 @@ export function StockPicker({
     <div className="stock-selection">
       <Combobox
         multiple
+        open={open}
+        onOpenChange={setOpen}
         items={stocks.map((s) => s.code)}
         filteredItems={matches}
         value={value}
@@ -54,6 +57,7 @@ export function StockPicker({
         onValueChange={(codes) => {
           onChange(multiple ? codes : codes.slice(-1));
           setSearch('');
+          if (!multiple) setOpen(false);
         }}
       >
         <ComboboxChips ref={anchor}>

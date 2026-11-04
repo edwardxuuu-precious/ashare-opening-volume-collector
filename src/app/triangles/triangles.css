@@ -1,0 +1,598 @@
+.triangle-site {
+  min-height: 100vh;
+  color: var(--foreground);
+  background: #fff;
+}
+.triangle-header {
+  display: flex;
+  align-items: center;
+  gap: 36px;
+  min-height: 76px;
+  padding: 16px 36px;
+  border-bottom: 1px solid var(--border);
+}
+.triangle-header .brand {
+  flex-shrink: 0;
+}
+.triangle-header nav {
+  display: flex;
+  flex: 1;
+  flex-wrap: wrap;
+  gap: 14px 24px;
+  color: var(--muted-foreground);
+  font-size: 13px;
+}
+.triangle-header nav [aria-current] {
+  color: var(--primary);
+  font-weight: 600;
+}
+.triangle-main {
+  max-width: 1320px;
+  margin: auto;
+  padding: 36px 36px 70px;
+}
+.triangle-title {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: 20px;
+  margin-bottom: 18px;
+}
+.triangle-title h1 {
+  font-size: 28px;
+  font-weight: 600;
+  letter-spacing: -0.03em;
+}
+.triangle-title p,
+.triangle-title > span {
+  font-size: 12px;
+  color: var(--muted-foreground);
+}
+.triangle-title p {
+  margin-bottom: 6px;
+}
+.triangle-scope {
+  padding: 14px 18px;
+  border-left: 2px solid #a8bedc;
+  background: #f3f6fb;
+  color: #51627a;
+  font-size: 13px;
+  line-height: 1.8;
+}
+.triangle-form {
+  margin: 26px 0 32px;
+  padding: 24px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+.triangle-form fieldset {
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+.triangle-form legend {
+  margin-bottom: 20px;
+  font-weight: 600;
+  font-size: 15px;
+}
+.triangle-query-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 16px;
+  align-items: end;
+  margin-bottom: 24px;
+}
+.triangle-stock-picker {
+  grid-column: 1/-1;
+  display: grid;
+  gap: 7px;
+  color: var(--muted-foreground);
+  font-size: 12px;
+}
+.triangle-stock-picker .stock-selection {
+  max-width: 600px;
+}
+.triangle-parameters {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 16px;
+}
+.triangle-field {
+  display: grid;
+  align-content: start;
+  gap: 7px;
+  min-width: 0;
+  font-size: 12px;
+  color: var(--muted-foreground);
+}
+.triangle-site input,
+.triangle-site select {
+  width: 100%;
+  min-width: 0;
+  min-height: 38px;
+  border: 1px solid var(--input);
+  border-radius: 4px;
+  padding: 8px 11px;
+  background: white;
+  color: var(--foreground);
+  font-size: 13px;
+}
+.triangle-site input:focus-visible,
+.triangle-site select:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+.triangle-site button {
+  min-height: 36px;
+  border: 1px solid var(--input);
+  border-radius: 4px;
+  padding: 7px 13px;
+  background: white;
+  color: var(--foreground);
+  font-size: 13px;
+}
+.triangle-site button:disabled {
+  opacity: 0.55;
+}
+.triangle-site .triangle-primary {
+  border-color: var(--primary);
+  background: var(--primary);
+  color: white;
+}
+.triangle-advanced {
+  margin-top: 20px;
+  color: var(--muted-foreground);
+  font-size: 13px;
+}
+.triangle-advanced .triangle-parameters {
+  padding-top: 20px;
+}
+.triangle-actions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 18px;
+}
+.triangle-form-note {
+  margin: 14px 0 0;
+  color: var(--muted-foreground);
+  font-size: 12px;
+  line-height: 1.8;
+}
+.triangle-error {
+  color: #a13f38;
+  font-size: 13px;
+  margin: 18px 0;
+  line-height: 1.8;
+}
+.triangle-error button {
+  margin-left: 16px;
+}
+.triangle-notice {
+  margin: 16px 0;
+  padding: 10px 14px;
+  background: #fbf7ee;
+  border-left: 2px solid #c5aa6f;
+  color: #79623f;
+  font-size: 12px;
+  line-height: 1.8;
+}
+.triangle-progress {
+  display: grid;
+  gap: 12px;
+  padding: 18px 0 28px;
+  color: var(--primary);
+  font-size: 13px;
+}
+.triangle-progress progress {
+  width: 100%;
+  height: 5px;
+  accent-color: var(--primary);
+}
+.triangle-section-heading {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: 22px;
+  margin-bottom: 18px;
+}
+.triangle-section-heading h2 {
+  font-size: 21px;
+  font-weight: 600;
+}
+.triangle-section-heading h2 span {
+  color: var(--muted-foreground);
+  font-size: 14px;
+  margin-left: 8px;
+  font-weight: 400;
+}
+.triangle-section-heading p,
+.triangle-section-heading > span {
+  color: var(--muted-foreground);
+  font-size: 12px;
+  margin-top: 7px;
+}
+.triangle-section-heading select {
+  min-width: 220px;
+}
+.triangle-coverage {
+  display: block;
+  padding: 13px 16px;
+  background: #f3f6fb;
+  color: #51627a;
+  font-size: 12px;
+  line-height: 1.9;
+}
+.triangle-missing {
+  margin: 16px 0;
+  color: #79623f;
+  font-size: 12px;
+}
+.triangle-missing ul {
+  max-height: 180px;
+  overflow: auto;
+  margin-top: 12px;
+  padding-left: 20px;
+  line-height: 1.8;
+}
+.triangle-filter-grid {
+  display: grid;
+  grid-template-columns: 1fr 1.25fr 1.25fr 0.8fr 1.2fr;
+  gap: 14px;
+  margin-top: 24px;
+}
+.triangle-table-scroll {
+  max-width: 100%;
+  overflow-x: auto;
+  margin: 20px 0;
+}
+.triangle-site table {
+  width: 100%;
+  border-collapse: collapse;
+  white-space: nowrap;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+.triangle-site caption {
+  text-align: left;
+  padding-bottom: 13px;
+  color: var(--muted-foreground);
+  line-height: 1.8;
+}
+.triangle-site th,
+.triangle-site td {
+  padding: 12px 14px;
+  text-align: right;
+  border-bottom: 1px solid var(--border);
+}
+.triangle-site th {
+  font-weight: 400;
+  color: var(--muted-foreground);
+}
+.triangle-site th:first-child,
+.triangle-site td:first-child {
+  text-align: left;
+  padding-left: 0;
+}
+.triangle-site th:nth-child(2),
+.triangle-site td:nth-child(2) {
+  text-align: left;
+}
+.triangle-site th:last-child,
+.triangle-site td:last-child {
+  padding-right: 0;
+}
+.triangle-site td small {
+  display: block;
+  margin-top: 4px;
+  color: var(--muted-foreground);
+  font-size: 11px;
+}
+.triangle-results tr[data-selected='true'] {
+  background: #f8fafd;
+}
+.triangle-tag {
+  display: inline-block;
+  border-radius: 3px;
+  padding: 2px 6px;
+  font-size: 11px;
+  margin-right: 8px;
+}
+.triangle-tag.golden {
+  color: #946a1d;
+  background: #faf4e6;
+}
+.triangle-tag.death {
+  color: #78609c;
+  background: #f2eef8;
+}
+.triangle-state {
+  color: #51627a;
+  font-size: 12px;
+}
+.triangle-site .triangle-text-button {
+  color: var(--primary);
+  background: none;
+  border: 0;
+  padding: 6px 0;
+}
+.triangle-empty {
+  padding: 26px 0;
+  color: var(--muted-foreground);
+  font-size: 13px;
+  line-height: 1.8;
+}
+.triangle-empty button {
+  margin-left: 14px;
+}
+.triangle-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: end;
+  gap: 16px;
+  margin: 18px 0;
+  font-size: 12px;
+  color: var(--muted-foreground);
+}
+.triangle-detail {
+  margin-top: 40px;
+  border-top: 1px solid var(--border);
+  padding-top: 30px;
+  scroll-margin-top: 20px;
+}
+.triangle-detail-controls {
+  display: flex;
+  align-items: end;
+  gap: 24px;
+  margin: 24px 0 16px;
+}
+.triangle-detail-controls .triangle-field {
+  min-width: 340px;
+}
+.triangle-detail-controls p {
+  padding-bottom: 10px;
+}
+.triangle-chart-wrap {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 18px 18px 12px;
+}
+.triangle-chart-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 22px;
+  color: var(--muted-foreground);
+  font-size: 11px;
+  margin-bottom: 12px;
+}
+.triangle-chart-scroll {
+  overflow-x: auto;
+  max-width: 100%;
+}
+.triangle-chart-swipe {
+  display: none;
+  color: var(--muted-foreground);
+  font-size: 11px;
+  margin: 0 0 10px;
+}
+.triangle-chart-svg {
+  display: block;
+  width: 100%;
+  min-width: 820px;
+}
+.triangle-chart-date {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 10px;
+  color: var(--muted-foreground);
+  font-size: 11px;
+}
+.triangle-chart-date select {
+  width: 150px;
+  min-height: 32px;
+  padding: 5px 9px;
+  font-size: 11px;
+}
+.triangle-chart-readout {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px 18px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+  color: var(--muted-foreground);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+.triangle-chart-readout strong {
+  color: var(--foreground);
+  font-weight: 500;
+}
+.triangle-evidence-head {
+  margin-top: 30px;
+}
+.triangle-evidence-head h3 {
+  font-size: 15px;
+  font-weight: 600;
+  margin-bottom: 8px;
+}
+.triangle-evidence-head > p:not(.triangle-notice) {
+  color: var(--muted-foreground);
+  font-size: 12px;
+}
+.triangle-zone-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 20px;
+  margin-top: 24px;
+}
+.triangle-zone-card {
+  padding: 18px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  min-width: 0;
+}
+.triangle-zone-card h3 {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--muted-foreground);
+  margin-bottom: 8px;
+}
+.triangle-zone-card > strong {
+  font-size: 18px;
+  font-weight: 500;
+}
+.triangle-zone-card > p {
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--muted-foreground);
+  line-height: 1.8;
+}
+.triangle-zone-card .triangle-table-scroll {
+  margin-bottom: 0;
+}
+.triangle-paths {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px 28px;
+  margin: 24px 0;
+  padding: 18px;
+  background: #f6f8fb;
+  color: #51627a;
+  font-size: 12px;
+}
+.triangle-thresholds {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 18px;
+  margin-top: 22px;
+}
+.triangle-thresholds p {
+  display: grid;
+  gap: 8px;
+  padding: 14px 0;
+  border-bottom: 1px solid var(--border);
+}
+.triangle-thresholds span,
+.triangle-thresholds small {
+  color: var(--muted-foreground);
+  font-size: 11px;
+  line-height: 1.7;
+}
+.triangle-thresholds strong {
+  font-size: 18px;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+}
+.triangle-paths strong {
+  display: block;
+  font-weight: 500;
+  margin-bottom: 7px;
+  color: var(--foreground);
+}
+.triangle-paths small {
+  grid-column: 1/-1;
+  font-size: 11px;
+  color: var(--muted-foreground);
+}
+.triangle-event-reason {
+  max-width: 480px;
+  min-width: 260px;
+  white-space: normal;
+  line-height: 1.8;
+}
+.triangle-method {
+  border-top: 1px solid var(--border);
+  margin-top: 40px;
+  padding-top: 20px;
+  color: var(--muted-foreground);
+  font-size: 12px;
+  line-height: 1.9;
+}
+.triangle-method p {
+  max-width: 1000px;
+  margin-top: 14px;
+}
+@media (max-width: 900px) {
+  .triangle-header {
+    gap: 22px;
+    flex-wrap: wrap;
+  }
+  .triangle-header nav {
+    order: 3;
+    flex-basis: 100%;
+  }
+  .triangle-header .account-controls {
+    margin-left: auto;
+  }
+  .triangle-parameters {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+  .triangle-filter-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+  .triangle-thresholds {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+@media (max-width: 600px) {
+  .triangle-chart-swipe {
+    display: block;
+  }
+  .triangle-header {
+    padding: 16px 20px;
+  }
+  .triangle-header nav {
+    font-size: 12px;
+    gap: 12px 20px;
+  }
+  .triangle-main {
+    padding: 26px 20px 60px;
+  }
+  .triangle-title {
+    flex-direction: column;
+    align-items: start;
+    gap: 8px;
+  }
+  .triangle-title h1 {
+    font-size: 25px;
+  }
+  .triangle-form {
+    padding: 18px 14px;
+  }
+  .triangle-query-grid,
+  .triangle-parameters,
+  .triangle-filter-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 14px 12px;
+  }
+  .triangle-section-heading {
+    align-items: start;
+    flex-direction: column;
+    gap: 14px;
+  }
+  .triangle-detail-controls {
+    align-items: start;
+    flex-direction: column;
+    gap: 12px;
+  }
+  .triangle-detail-controls .triangle-field {
+    min-width: 0;
+    width: 100%;
+  }
+  .triangle-zone-grid,
+  .triangle-paths {
+    grid-template-columns: 1fr;
+  }
+  .triangle-chart-wrap {
+    padding: 14px 10px;
+  }
+  .triangle-empty button {
+    margin-left: 0;
+    display: block;
+  }
+  .triangle-site caption {
+    white-space: normal;
+  }
+}
