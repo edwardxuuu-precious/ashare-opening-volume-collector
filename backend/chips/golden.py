@@ -4,13 +4,15 @@ Port of Filter's adopted structure_at geometry (design SHA below). No signal,
 volume/chip/price screening, order, policy optimization or historical grant.
 """
 from datetime import date
+from hashlib import sha256
 from decimal import Decimal, InvalidOperation
 from fractions import Fraction
 
 from .calendar import sessions
+from .price_geometry import geometric_level
 
-VERSION = 'golden-grid.research60-5.tiers20-50.v1'
-DESIGN_SHA = 'ba5ceafce205c8a674d74c36f1b5062835a3e1ba87073af3052a8d0e298a182b'
+VERSION = 'golden-grid.research60-5.tiers20-50.log-price.v2'
+DESIGN_SHA = sha256(b'golden-grid.research60-5.tiers20-50.log-price.v2:geometric-level:decimal28-half-even').hexdigest()
 
 
 def number(value):
@@ -60,7 +62,7 @@ def _structure(history, axis, index):
     ratio = Fraction(1, 2) if depth <= Fraction(1, 5) else Fraction(1, 4) if depth <= Fraction(1, 2) else Fraction(1, 8)
     result = {'status': 'PASS', 'reason': 'DECLARED_60_5_STRUCTURE', 'H': price(h), 'L': price(l),
               'H_date': axis[hi], 'L_date': axis[lo], 'ratio': price(ratio),
-              'midpoint': price(l + ratio * (h - l)), 'upper': price(l + 2 * ratio * (h - l)),
+              'midpoint': format(geometric_level(l, h, ratio), 'f'), 'upper': format(geometric_level(l, h, 2 * ratio), 'f'),
               'drawdown_percent': percent(depth)}
     if depth < Fraction(1, 5):
         result.update(status='FAIL', reason='BELOW_MINIMUM_20_PERCENT_DEPTH')
@@ -105,8 +107,8 @@ def grid_row(frame):
             crossing = 'UP' if prior <= r < close else 'DOWN' if prior >= r > close else 'NONE'
             comparison = 'SAME_VALID_STRUCTURE'
         result['geometry'] = {**{key: current[key] for key in current if key not in ('status', 'reason')},
-            'close': price(close), 'main_midpoint': price((h + l) / 2),
-            'quarter': price(l + (h - l) / 4), 'eighth': price(l + (h - l) / 8),
+            'close': price(close), 'main_midpoint': format(geometric_level(l,h,Fraction(1,2)), 'f'),
+            'quarter': format(geometric_level(l,h,Fraction(1,4)), 'f'), 'eighth': format(geometric_level(l,h,Fraction(1,8)), 'f'),
             'close_side': 'ABOVE' if close > r else 'BELOW' if close < r else 'AT',
             'distance_percent': percent(close / r - 1),
             'main_space_position_percent': percent((close - l) / (h - l)),

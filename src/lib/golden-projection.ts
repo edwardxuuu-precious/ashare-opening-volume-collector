@@ -34,7 +34,7 @@ type ProjectionIndexBinding =
   | { index_source_dataset_id: null; index_symbols: readonly []; stock_total: number; index_total: 0 }
   | { index_source_dataset_id: string; index_symbols: typeof projectionIndexCodes; stock_total: number; index_total: 2 };
 export type ProjectionManifest = ProjectionIndexBinding & {
-  schema: string; dataset_id: string; source_dataset_id: string; as_of: string; generated_at: string; universe_total: number;
+  schema: string; dataset_id: string; source_dataset_id: string; as_of: string; generated_at: string; universe_total: number; price_geometry: 'log-price.v1' | 'legacy-arithmetic.v1';
   counts: ProjectionCounts; state_counts: ProjectionStateCounts; rule_id: ProjectionRuleId; policy_sha256: string;
   scope: string; limitations: string[]; source_generation_stale: boolean; source_universe_coverage: string;
 };
@@ -92,6 +92,8 @@ function optionalNumberText(value: unknown): string | null { return value === nu
 function rule(v: Record<string, unknown>, expected?: ProjectionManifest): ProjectionRuleId {
   const ruleId = choice(v.rule_id, supportedProjectionRules);
   if (expected && (ruleId !== expected.rule_id || v.policy_sha256 !== expected.policy_sha256)) throw invalid();
+  const geometry = v.price_geometry === undefined ? 'legacy-arithmetic.v1' : choice(v.price_geometry, ['log-price.v1'] as const);
+  if (expected && geometry !== expected.price_geometry) throw invalid();
   match(v.policy_sha256, /^[a-f0-9]{64}$/);
   return ruleId;
 }
@@ -139,9 +141,10 @@ export function projectionInitialSelection(rows: ProjectionRow[], requested = ''
 export function parseProjectionManifest(value: unknown): ProjectionManifest {
   const v = object(value), ruleId = rule(v);
   if (v.schema !== 'stock.golden-projection.daily.manifest.v1') throw invalid();
+  const geometry = v.price_geometry === undefined ? 'legacy-arithmetic.v1' : choice(v.price_geometry, ['log-price.v1'] as const);
   const total = count(v.universe_total), counts = categoryCounts(v.counts), states = stateCounts(v.state_counts);
   if (!total || Object.values(counts).reduce((sum, n) => sum + n, 0) !== total || Object.values(states).reduce((sum, n) => sum + n, 0) !== total) throw invalid();
-  return { ...indexBinding(v, total), schema: text(v.schema), dataset_id: dataset(v.dataset_id), source_dataset_id: dataset(v.source_dataset_id), as_of: day(v.as_of), generated_at: timestamp(v.generated_at), universe_total: total, counts, state_counts: states,
+  return { price_geometry: geometry, ...indexBinding(v, total), schema: text(v.schema), dataset_id: dataset(v.dataset_id), source_dataset_id: dataset(v.source_dataset_id), as_of: day(v.as_of), generated_at: timestamp(v.generated_at), universe_total: total, counts, state_counts: states,
     rule_id: ruleId, policy_sha256: text(v.policy_sha256), scope: nonempty(v.scope), limitations: array(v.limitations, text), source_generation_stale: boolean(v.source_generation_stale), source_universe_coverage: nonempty(v.source_universe_coverage) };
 }
 function parseRow(value: unknown, asOf: string): ProjectionRow {

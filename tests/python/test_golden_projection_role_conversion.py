@@ -3,7 +3,8 @@ from decimal import Decimal
 import unittest
 
 from backend.golden_projection import model
-from test_golden_projection_model import candles
+from test_golden_projection_model import candles, logarithmic_fixture
+from backend.chips.price_geometry import reflected_price
 
 
 def conversion_rows():
@@ -42,25 +43,25 @@ def source_attempts(value, rows, index=31):
 
 class RoleConversionTests(unittest.TestCase):
     def test_shared_support_boundary_low_is_the_axis_not_retest_high(self):
-        rows = conversion_rows()
+        rows = logarithmic_fixture(conversion_rows())
         value = model.select_structure(rows, origin=origin(rows))
         self.assertEqual(value['state'], 'DRAW')
         structure = value['structure']
-        self.assertEqual(structure['axis'], {'date': rows[31]['date'], 'field': 'low', 'price': '26.1'})
-        self.assertEqual(Decimal(structure['levels']['H']), Decimal('42.2'))
+        self.assertEqual(structure['axis'], {'date': rows[31]['date'], 'field': 'low', 'price': rows[31]['low']})
+        self.assertEqual(Decimal(structure['levels']['H']), reflected_price(Decimal(rows[35]['low']), Decimal(rows[31]['low'])))
         self.assertEqual(structure['evidence_through'], rows[50]['date'])
-        self.assertEqual(structure['role_zone'], {'lower': '26.1', 'upper': '27',
+        self.assertEqual(structure['role_zone'], {'lower': rows[31]['low'], 'upper': rows[30]['close'],
                                                 'start_date': rows[30]['date'], 'end_date': rows[40]['date']})
         self.assertEqual([step['side'] for step in value['search_trace']], ['RIGHT', 'LEFT'])
         self.assertTrue(any(item['date'] == rows[30]['date'] and item['field'] == 'low'
-                            and Decimal(item['value']) == Decimal('26') for item in structure['evidence']))
+                            and Decimal(item['value']) == Decimal(rows[30]['low']) for item in structure['evidence']))
         self.assertTrue(any(item['date'] == rows[40]['date'] and item['field'] == 'high'
-                            and Decimal(item['value']) == Decimal('27.2') for item in structure['evidence']))
+                            and Decimal(item['value']) == Decimal(rows[40]['high']) for item in structure['evidence']))
         self.assertFalse(any(candidate['point']['date'] == rows[30]['date'] and candidate['result'] == 'UNASSESSED'
                              for step in value['search_trace'] for candidate in step['candidates']))
 
     def test_public_automatic_path_consumes_the_same_conversion(self):
-        rows = conversion_rows()
+        rows = logarithmic_fixture(conversion_rows())
         automatic = model.select_structure(rows)
         explicit = model.select_structure(rows, origin=origin(rows))
         self.assertEqual(automatic['state'], 'DRAW')
@@ -68,13 +69,13 @@ class RoleConversionTests(unittest.TestCase):
         self.assertEqual(automatic['structure']['axis']['field'], 'low')
 
     def test_down_mirror_uses_actual_high_at_the_shared_upper_boundary(self):
-        rows = reflect(conversion_rows())
+        rows = logarithmic_fixture(reflect(conversion_rows()))
         value = model.select_structure(rows, origin=origin(rows, direction='DOWN'))
         self.assertEqual(value['state'], 'DRAW')
         self.assertEqual(value['structure']['axis']['date'], rows[31]['date'])
         self.assertEqual(value['structure']['axis']['field'], 'high')
-        self.assertEqual(Decimal(value['structure']['levels']['M']), Decimal('173.9'))
-        self.assertEqual(Decimal(value['structure']['levels']['L']), Decimal('157.8'))
+        self.assertEqual(Decimal(value['structure']['levels']['M']), Decimal(rows[31]['high']))
+        self.assertEqual(Decimal(value['structure']['levels']['L']), reflected_price(Decimal(rows[35]['high']), Decimal(rows[31]['high'])))
         self.assertEqual(value['structure']['evidence_through'], rows[50]['date'])
 
     def test_missing_source_break_or_valid_failed_retest_cannot_supply_axis(self):
@@ -123,7 +124,7 @@ class RoleConversionTests(unittest.TestCase):
 
     def test_target_before_full_core_pairing_is_rejected(self):
         rows = conversion_rows()
-        rows[49]['high'] = '42.3'
+        rows[49]['high'] = '70'
         value = model.select_structure(rows, origin=origin(rows))
         attempts = source_attempts(value, rows)
         self.assertTrue(attempts)
@@ -132,12 +133,13 @@ class RoleConversionTests(unittest.TestCase):
 
     def test_later_target_reach_keeps_the_source_and_real_terminal_state(self):
         from backend.chips.calendar import sessions
-        rows = conversion_rows()
+        rows = logarithmic_fixture(conversion_rows())
         before = model.select_structure(rows, origin=origin(rows))
         self.assertEqual(before['state'], 'DRAW')
         dates = sessions('2026-01-01', '2026-12-31')
-        rows.append({'date': dates[dates.index(rows[-1]['date'])+1], 'open': '42.5', 'high': '43',
-                     'low': '42.3', 'close': '42.6', 'volume_shares': '100000'})
+        target = Decimal(before['structure']['levels']['H'])
+        rows.append({'date': dates[dates.index(rows[-1]['date'])+1], 'open': str(target), 'high': str(target + Decimal('.01')),
+                     'low': str(target - Decimal('.01')), 'close': str(target), 'volume_shares': '100000'})
         after = model.select_structure(rows, origin=origin(rows, index=35))
         self.assertEqual(after['structure']['id'], before['structure']['id'])
         self.assertEqual(after['structure']['life_state'], 'REACHED')

@@ -1,3 +1,4 @@
+import {priceScale} from './price-geometry.ts';
 import { chipNumber, parseChipSample, type ChipSample, type ChipSnapshot } from './chips.ts';
 import {chipPricePositionRule,chipUnchangedRule,chipStabilityThresholds,validateChipPricePosition} from './chip-price-position.ts';
 
@@ -148,7 +149,8 @@ export function tradingGeometry(history: DailyCandle[], current: ChipSnapshot | 
   const left=W<600?10:22,chipEnd=W-(W<600?10:24),chipStart=chipEnd-Math.min(198,W*.22);
   const axisWidth=Math.max(W<600?44:62,Math.max(min.toFixed(2).length,max.toFixed(2).length)*7+16);
   const right=chipStart-axisWidth,top=24,volBottom=H-32,volTop=volBottom-Math.round(H*.2),volumeDivider=volTop-22,bottom=volumeDivider-18;
-  const y=(price:number)=>top+(max-price)/(max-min)*(bottom-top),step=(right-left)/candles.length;
+  const scale=priceScale({prices:[min,max,...candles.flatMap(c=>[chipNumber(c.open),chipNumber(c.high),chipNumber(c.low),chipNumber(c.close)]),...peaks],top,bottom}); if(!scale)return null;
+  const y=scale.y,step=(right-left)/candles.length;
   const tickCount=Math.max(2,Math.min(6,Math.floor((right-left)/72)+1));
   const dateTicks=new Set(Array.from({length:tickCount},(_,i)=>Math.round(i*(candles.length-1)/(tickCount-1))));
   const maxVolume=Math.max(1,...candles.map(c=>chipNumber(c.volume_shares)));
@@ -162,6 +164,6 @@ export function tradingGeometry(history: DailyCandle[], current: ChipSnapshot | 
     return {mass,outside};
   }
   const a=histogram(current),b=histogram(previous),peak=Math.max(...a.mass,...b.mass,.000001);
-  const chips=a.mass.map((mass,i)=>({price:min+(i+.5)*width,y:y(min+(i+1)*width),height:(bottom-top)/bands+.2,currentWidth:mass/peak*(chipEnd-chipStart),previousWidth:b.mass[i]/peak*(chipEnd-chipStart),mass,previousMass:b.mass[i]}));
-  return {W,H,left,right,top,bottom,volTop,volBottom,volumeDivider,chipStart,chipEnd,dateTicks,min,max,y,step,candles:candleData,chips,bandWidth:width,outsideShare:a.outside,previousOutsideShare:b.outside,maxVolume};
+  const chips=a.mass.map((mass,i)=>({price:min+(i+.5)*width,y:y(min+(i+1)*width),height:y(min+i*width)-y(min+(i+1)*width),currentWidth:mass/peak*(chipEnd-chipStart),previousWidth:b.mass[i]/peak*(chipEnd-chipStart),mass,previousMass:b.mass[i]}));
+  return {W,H,left,right,top,bottom,volTop,volBottom,volumeDivider,chipStart,chipEnd,dateTicks,min,max,y,ticks:scale.ticks(6),step,candles:candleData,chips,bandWidth:width,outsideShare:a.outside,previousOutsideShare:b.outside,maxVolume};
 }

@@ -11,6 +11,7 @@ import json
 from pathlib import Path
 
 from backend.chips.calendar import sessions
+from backend.chips.price_geometry import reflected_price
 from backend.trend_volume.model import series_from_frame
 from .index_sources import INDEX_SYMBOLS, series_from_index_frame
 
@@ -434,7 +435,7 @@ def _assess_episode(rows, episode):
         if episode['route'] == 'ROLE' and 'break_index' in episode and origin.index > episode['break_index']:
             rejected.append(_rejection(rows, episode, origin, 'ROLE_OUTSIDE_WAVE', '失守／收复发生在原点之前，不能拼接成同一波段。'))
             continue
-        target = 2 * axis.value - origin.value
+        target = reflected_price(origin.value, axis.value)
         ordered = origin.value > axis.value > target > 0 if direction == 'DOWN' else target > axis.value > origin.value > 0
         if not ordered:
             rejected.append(_rejection(rows, episode, origin, 'INVALID_GEOMETRY', '该结构的原点与中轴不能形成正价格的等高区间。'))
@@ -834,7 +835,7 @@ def unknown_detail(*, code, name, as_of, dataset_id, source_dataset_id, reason,
            'distance_percent': {'H': None, 'M': None, 'L': None}, 'reasons': [message], 'structure_id': None}
     return {'schema': 'stock.golden-projection.daily.stock.v1', 'dataset_id': dataset_id,
             'source_dataset_id': source_dataset_id, 'as_of': as_of, 'code': code, 'name': name,
-            'rule_id': RULE_ID, 'policy_sha256': POLICY_SHA256, 'row': row, 'history': [],
+            'rule_id': RULE_ID, 'policy_sha256': POLICY_SHA256, 'price_geometry': 'log-price.v1', 'row': row, 'history': [],
             'structure': None, 'candidate_next_session': None, 'rejected_candidates': [],
             'search_trace': [], 'origin_context': None,
             'source': _source_audit(code, source_dataset_id, source_sha256, None, 'UNKNOWN',
@@ -851,6 +852,7 @@ def _verified_prior_structures(previous, rows, code, as_of, origin_context=None)
     if (not isinstance(previous, dict) or previous.get('code') != code
             or previous.get('schema') != 'stock.golden-projection.daily.stock.v1'
             or previous.get('rule_id') != RULE_ID or previous.get('policy_sha256') != POLICY_SHA256
+            or previous.get('price_geometry') != 'log-price.v1'
             or previous.get('origin_context') != origin_context
             or not isinstance(previous.get('as_of'), str) or previous['as_of'] >= as_of):
         return []
@@ -865,7 +867,7 @@ def _verified_prior_structures(previous, rows, code, as_of, origin_context=None)
             direction = structure['direction']
             if (not h > m > low or direction not in ('DOWN', 'UP') or number(axis['price']) != m
                     or number(origin['price']) != (h if direction == 'DOWN' else low)
-                    or 2 * m != h + low or digest(encoded(_identity(structure)))[:24] != structure['id']
+                    or (low if direction == 'DOWN' else h) != reflected_price(number(origin['price']), m) or digest(encoded(_identity(structure)))[:24] != structure['id']
                     or structure['evidence_through'] > previous['as_of']):
                 continue
             for point in (origin, axis):
@@ -982,7 +984,7 @@ def classify_frame(value, *, code, name, as_of, dataset_id, source_dataset_id, s
            'structure_id': structure['id'] if structure is not None else None, **position}
     return {'schema': 'stock.golden-projection.daily.stock.v1', 'dataset_id': dataset_id,
             'source_dataset_id': source_dataset_id, 'as_of': as_of, 'code': code, 'name': name,
-            'rule_id': RULE_ID, 'policy_sha256': POLICY_SHA256, 'row': row,
+            'rule_id': RULE_ID, 'policy_sha256': POLICY_SHA256, 'price_geometry': 'log-price.v1', 'row': row,
             'history': rows[-_POLICY['display_bars']:], 'structure': structure,
             'candidate_next_session': candidate if candidate is not None and candidate['life_state'] == 'OPEN' else None,
             'rejected_candidates': selection['rejected_candidates'],

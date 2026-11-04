@@ -77,13 +77,14 @@ class SecondarySearchTests(unittest.TestCase):
         self.assertEqual(value['state'], 'DRAW')
         self.assertEqual(value['structure']['axis']['field'], 'low')
         self.assertEqual(value['structure']['axis']['date'], rows[20]['date'])
-        self.assertEqual(Decimal(value['structure']['levels']['H']), Decimal('33.9'))
+        self.assertEqual(Decimal(value['structure']['levels']['H']), model.reflected_price(Decimal(value['structure']['origin']['price']), Decimal(value['structure']['axis']['price'])))
 
     def test_later_reach_keeps_right_geometry_and_does_not_search_left(self):
         rows = right_ready()
         origin = anchor(rows)
         before = model.select_structure(rows, origin=origin)['structure']
-        rows.append(next_bar(rows, high='30.5', low='29.5', close='30'))
+        target = Decimal(before['levels']['H'])
+        rows.append(next_bar(rows, high=str(target+1), low=str(target-1), close=str(target)))
         value = model.select_structure(rows, origin=origin)
         self.assertEqual(value['structure']['id'], before['id'])
         self.assertEqual(value['structure']['life_state'], 'REACHED')
@@ -199,7 +200,7 @@ class SecondarySearchTests(unittest.TestCase):
 
     def test_exterior_intervening_low_prevents_rescuing_an_older_qualified_axis(self):
         rows = right_too_early()
-        rows[40]['high'] = '35'
+        rows[40]['high'] = '49'
         for row in rows[46:]:
             row.update(open='27', high='27.1', low='26.9', close='27')
         value = model.select_structure(rows, origin=anchor(rows))
@@ -233,7 +234,7 @@ class SecondarySearchTests(unittest.TestCase):
         self.assertEqual(value['structure']['direction'], 'DOWN')
         self.assertEqual(value['structure']['axis']['field'], 'high')
         self.assertEqual(value['structure']['axis']['date'], rows[20]['date'])
-        self.assertEqual(Decimal(value['structure']['levels']['L']), Decimal('166.1'))
+        self.assertEqual(Decimal(value['structure']['levels']['L']), model.reflected_price(Decimal(value['structure']['origin']['price']), Decimal(value['structure']['axis']['price'])))
 
     def test_up_role_selects_current_retest_low_and_retains_old_high_only_as_proof(self):
         original = source([(0, 100), (20, 85), (24, 80.1), (28, 120), (34, 90),

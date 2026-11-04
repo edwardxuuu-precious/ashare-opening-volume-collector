@@ -1,3 +1,4 @@
+import { priceScale } from '@/lib/price-geometry';
 /* oxlint-disable next/no-html-link-for-pages -- Static CDN routes use document navigation. */
 'use client';
 import { useEffect, useMemo, useRef, useState } from 'react';
@@ -65,7 +66,7 @@ function newCrossingText(row: ProjectionRow): string {
   if (row.category === 'BELOW') return '收盘在低点下方';
   return stateText[row.drawing_state];
 }
-function StructureChart({ stock, structure, count }: { stock: ProjectionStock; structure: ProjectionStructure | null; count: number }) {
+function StructureChart({ stock, structure, count, geometry }: { stock: ProjectionStock; structure: ProjectionStructure | null; count: number; geometry: ProjectionManifest['price_geometry'] }) {
   const bars = stock.history.slice(-count);
   const chart = useRef<SVGSVGElement>(null), [size, setSize] = useState({ width: 900, height: 360 });
   const inspection = useCandleInspection({ history: stock.history, dates: bars.map(bar => bar.date), defaultDate: bars.at(-1)?.date ?? stock.as_of, contextDate: stock.as_of });
@@ -73,8 +74,9 @@ function StructureChart({ stock, structure, count }: { stock: ProjectionStock; s
   if (!bars.length) return <div className="gp-no-chart">行情暂不可用，未补造 K 线。</div>;
   const width = size.width, height = size.height, left = width < 600 ? 12 : 28, right = width - 112, top = 25, bottom = height * .65, volTop = height * .78, volBottom = height - 29;
   const prices = bars.flatMap(bar => [Number(bar.high), Number(bar.low)]).concat(structure ? Object.values(structure.levels).map(Number) : []);
-  const lo = Math.min(...prices), hi = Math.max(...prices), pad = Math.max((hi - lo) * .07, hi * .003), min = lo - pad, max = hi + pad;
-  const y = (value: number) => bottom - (value - min) / (max - min) * (bottom - top), step = (right - left) / bars.length, x = (index: number) => left + (index + .5) * step;
+  const scale = priceScale({prices, top, bottom});
+  if (!scale) return <div className="gp-no-chart">价格数据无效，无法绘制对数价格轴。</div>;
+  const y = scale.y, step = (right - left) / bars.length, x = (index: number) => left + (index + .5) * step;
   const dateX = (date: string) => { const at = bars.findIndex(bar => bar.date >= date); return at < 0 ? right : x(at); };
   const maxVolume = Math.max(1, ...bars.map(bar => Number(bar.volume_shares)));
   const bar = bars.find(item => item.date === inspection.activeDate) ?? bars[bars.length - 1];
@@ -85,13 +87,13 @@ function StructureChart({ stock, structure, count }: { stock: ProjectionStock; s
   function inspectPoint(event: React.PointerEvent<SVGSVGElement>, focus = false) { const rect = event.currentTarget.getBoundingClientRect(), px = (event.clientX - rect.left) / rect.width * width, py = (event.clientY - rect.top) / rect.height * height, index = candleIndexAtPoint({ x: px, y: py, left, right, top, bottom: volBottom, count: bars.length }); if (focus && index !== null) { event.preventDefault(); inspection.focus(); } inspection.inspect(index === null ? null : bars[index].date); }
   return <div className="gp-chart"><CandleReadout candle={bar} percent={candleReturn(stock.history, bar.date)} volume={Number(bar.volume_shares)} volumeUnit="shares" /><CandleInspectionControl dates={bars.map(item => item.date)} date={bar.date} onDateChange={inspection.select} onBlur={inspection.clear} inputRef={inspection.control} />
     <svg ref={chart} className="candle-inspection" viewBox={`0 0 ${width} ${height}`} role="img" aria-label="真实日K线、成交量及当前选点水平线" onPointerMove={inspectPoint} onPointerDown={event => inspectPoint(event, true)} onPointerCancel={inspection.clear} onPointerLeave={event => { if (event.pointerType !== 'touch') inspection.clear(); }}>
-      {[0, 1, 2, 3, 4].map(index => { const value = min + (max - min) * index / 4; return <g key={index}><line x1={left} x2={right} y1={y(value)} y2={y(value)} stroke="#e9edf1" /><text x={left} y={y(value) - 6} fill="#94a0ae" fontSize="11">{priceText(String(value))}</text></g>; })}
+      {scale.ticks(5).map((value,index) => { return <g key={index}><line x1={left} x2={right} y1={y(value)} y2={y(value)} stroke="#e9edf1" /><text x={left} y={y(value) - 6} fill="#94a0ae" fontSize="11">{priceText(String(value))}</text></g>; })}
       {structure?.role_zone && <rect data-role="role-zone" x={dateX(structure.role_zone.start_date)} width={Math.max(0, dateX(structure.role_zone.end_date) - dateX(structure.role_zone.start_date) + step)} y={y(Number(structure.role_zone.upper))} height={Math.max(1, y(Number(structure.role_zone.lower)) - y(Number(structure.role_zone.upper)))} fill="#e8c988" opacity=".22" />}
       {bars.map((item, index) => { const color = Number(item.close) >= Number(item.open) ? 'var(--ui-rise)' : 'var(--ui-fall)', px = x(index), bw = Math.max(1, Math.min(12, step * .6)); return <g key={item.date} data-candle-date={item.date}><title>{item.date} 开{item.open} 高{item.high} 低{item.low} 收{item.close}</title><line x1={px} x2={px} y1={y(Number(item.high))} y2={y(Number(item.low))} stroke={color} /><rect x={px - bw / 2} y={Math.min(y(Number(item.open)), y(Number(item.close)))} width={bw} height={Math.max(1, Math.abs(y(Number(item.open)) - y(Number(item.close))))} fill={color} /><rect data-volume-date={item.date} x={px - bw / 2} y={volBottom - Number(item.volume_shares) / maxVolume * (volBottom - volTop)} width={bw} height={Number(item.volume_shares) / maxVolume * (volBottom - volTop)} fill={color} opacity=".65" />{index % Math.ceil(bars.length / Math.max(2, Math.floor((right - left) / 80))) === 0 && <text x={px} y={height - 9} textAnchor="middle" fill="#8996a6" fontSize="10">{item.date.slice(5)}</text>}</g>; })}
       <line x1={left} x2={right} y1={volTop - 13} y2={volTop - 13} stroke="#e5e9ef" /><text x={left} y={volTop - 19} fill="#8996a6" fontSize="11">成交量 · 股</text>
       {guides.map((guide, index) => { const label = labelYs.find(item => item.index === index), py = y(Number(guide.price)), end = structure?.guides_end_on ? Math.min(right, dateX(structure.guides_end_on)) : right, start = structure ? Math.max(left, dateX(structure.evidence_through)) : left, stopped = end < right - step; return <g key={guide.key} data-guide={guide.key} data-price={guide.price} data-end={structure?.guides_end_on ?? stock.as_of}><line x1={Math.min(start, end)} x2={end} y1={py} y2={py} stroke={guide.key === 'M' ? '#b07c27' : '#7b91a6'} strokeWidth={guide.key === 'M' ? 1.5 : 1} strokeDasharray={guide.key === 'M' ? undefined : '5 4'} />{!stopped && <line x1={end} x2={right + 10} y1={py} y2={label?.y ?? py} stroke="#b2bdc8" />}<text x={stopped ? Math.max(left, end - 130) : right + 15} y={stopped ? py - 7 : (label?.y ?? py) + 4} fill={guide.key === 'M' ? '#9d7022' : '#62788d'} fontSize="12">{guide.key} {priceText(guide.price)}<title>{guide.label} {guide.price}</title></text></g>; })}
       {structure && [{ ...structure.origin, label: structure.origin.kind }, { ...structure.axis, label: 'M' }].map(point => { const at = bars.findIndex(item => item.date === point.date); return at < 0 ? null : <g key={point.label} data-point={point.label}><circle cx={x(at)} cy={y(Number(point.price))} r="4" fill={point.label === 'M' ? '#b07c27' : '#6688a6'} /><text x={Math.max(left, Math.min(right - 170, x(at) + 6))} y={y(Number(point.price)) - 12} fill="#60778e" fontSize="12">{point.label} · {point.date.slice(5)} · {point.field === 'low' ? 'Low' : point.field === 'high' ? 'High' : fieldText[point.field]} {point.price}</text></g>; })}
-    </svg><div className="gp-chart-foot"><span>红涨绿跌 · {bars.length} 根实际日线 · {isProjectionIndex(stock.code) ? '指数点位' : '不复权'}</span><span>{structure?.guides_end_on ? `结构参考线截至 ${structure.guides_end_on}` : structure ? '水平线为本组合的价格参考' : '当前标的没有足够依据，保留 K 线并说明不画原因'}</span></div>
+    </svg><div className="gp-chart-foot"><span>对数价格轴 · {geometry==='log-price.v1'?'对数等距参考':'历史算术参考'} · 红涨绿跌 · {bars.length} 根实际日线 · {isProjectionIndex(stock.code) ? '指数点位' : '不复权'}</span><span>{structure?.guides_end_on ? `结构参考线截至 ${structure.guides_end_on}` : structure ? '水平线为本组合的价格参考' : '当前标的没有足够依据，保留 K 线并说明不画原因'}</span></div>
   </div>;
 }
 function StructureProof({ structure, title, ruleId }: { structure: ProjectionStructure; title: string; ruleId: ProjectionStock['rule_id'] }) {
@@ -182,7 +184,7 @@ export default function GoldenProjectionPage() {
         {selected.intraday_tags.length > 0 && <div className="gp-events">{selected.intraday_tags.map(tag => <span key={tag} className={tag === 'UPPER_REJECTED' || tag === 'LOWER_RECOVERED' ? 'gp-event-warning' : ''}>{eventText[tag]}</span>)}</div>}
         {selected.near_tags.length > 1 && <p className="gp-note">同时靠近：{selected.near_tags.map(tag => tag === 'NEAR_H' ? '高点' : tag === 'NEAR_L' ? '低点' : '中轴').join('、')}。{selected.category === 'AMBIGUOUS' ? '距离相同，保留并列。' : '主分类采用比例距离最近的一条。'}</p>}
         <div className="gp-chart-toolbar"><ChartPeriodControl period={zoom} periods={[60, 120]} availableCount={stock.history.length} onPeriodChange={setZoom} /><small>{isProjectionIndex(selected.code) ? '指数点位' : '不复权'} · 截至 {manifest?.as_of}</small></div>
-        <StructureChart stock={stock} structure={selectedStructure} count={zoom} />
+        <StructureChart stock={stock} structure={selectedStructure} count={zoom} geometry={manifest?.price_geometry ?? 'legacy-arithmetic.v1'} />
         <div className="gp-levels wb-metrics"><span>{selected.direction === 'UP' ? '推算高点 H' : '原高点 H'}<strong>{priceText(selected.H)}</strong></span><span>中轴 M<strong>{priceText(selected.M)}</strong></span><span>{selected.direction === 'DOWN' ? '推算低点 L' : '原低点 L'}<strong>{priceText(selected.L)}</strong></span></div>
         <section className="wb-inspector" aria-label="画线选点核对"><InspectorTabs className="tv-inspector-tabs" label="画线依据面板" idPrefix="gp" tabs={[{ id: 'selection', label: '选点依据' }, { id: 'rules', label: '规则与数据' }]} value={tab} onChange={setTab} /><div className="tv-inspector-body" role="tabpanel" id={`gp-${tab}`} aria-labelledby={`gp-${tab}-tab`}>
           {tab === 'selection' && <><section className="gp-decision"><h3>{selectedStructure ? '为什么选这组点' : '为什么不画'}</h3>{selected.reasons.length ? <ul>{selected.reasons.map((reason, index) => <li key={index}>{reason}</li>)}</ul> : <p>请查看本次结构判断与原始选点证据。</p>}</section>
@@ -201,7 +203,7 @@ export default function GoldenProjectionPage() {
               <li>区域转换先检查至少两根下影线或上影线的共同交集。向上取共同支撑区下沿所对应的实际Low，向下取共同阻力区上沿所对应的实际High，同价取最新来源K线；不取区域均价、整组外侧极值或右侧上影线代替中轴。</li>
               <li>按“左侧原区域、收盘全区破位、当前原点、右侧另日失败回测”核对转换。回测实体须在失败一侧，影线须触及原区域；破位至回测之间不能已有收盘完整收复区域，也不假设同日盘中先后。</li>
               <li>取价日期与确认日期分别保存。原区域、破位、回测及全部父子波段证据可知后，向上须再有收盘越过完整核心区上沿，向下须跌破核心区下沿，才形成该区域的配对。共同区域边界取价是本地工程解释，不代表用户已接受某个具体中轴价。</li>
-              <li>原点与中轴选定后才计算H＝2M−L或L＝2M−H。已成立后才触达目标、原点被越过或收盘失轴的组合保留历史终态，不能转左寻找更大目标。</li>
+              <li>{manifest?.price_geometry === 'log-price.v1' ? '原点与中轴选定后才计算 H＝M²÷L 或 L＝M²÷H。' : '本批为历史算术几何，原始参考端按 2M−起点计算。'}已成立后才触达目标、原点被越过或收盘失轴的组合保留历史终态，不能转左寻找更大目标。</li>
               <li>先判断收盘在高点上方或低点下方，其余按离关键位不超过2%分类。2%只用于展示距离，不用于确认次高、次低；影线与收盘分别标记。</li>
               <li>当日采用开盘前已生效组合，新组合按实际记录后的交易日启用。证据日期、实际保存与生效时间分别保留，历史首次可知时间未知，不回填锁线或今日新跨线。</li>
             </ol>

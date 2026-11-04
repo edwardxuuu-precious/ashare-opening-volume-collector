@@ -7,6 +7,7 @@ import json, re
 from datetime import datetime, timezone, date
 from decimal import Decimal
 from .watchlist import SYMBOLS
+from backend.chips.price_geometry import GEOMETRY_VERSION, reflected_price
 
 SCHEMA = 'stock.golden.annotations.v1'
 MAX_BYTES = 1500000
@@ -43,7 +44,9 @@ def calibration_context(example, mode, axis_id):
     result=example.get('result') or {}
     axis=next((a for g in result.get('price_groups',[]) for a in g['records'] if a['id']==axis_id),None)
     if axis_id and axis is None: raise ValueError('AXIS_NOT_IN_SAVED_EXAMPLE')
-    return dict(symbol=example['symbol'],dataset_id=example['dataset_id'],as_of=example['as_of'],
+    if mode=='HM' and axis and result.get('H'):
+        axis=dict(axis, B_conditional=format(reflected_price(Decimal(result['H']['price']),Decimal(axis['price'])), 'f'))
+    return dict(price_geometry=GEOMETRY_VERSION, symbol=example['symbol'],dataset_id=example['dataset_id'],as_of=example['as_of'],
         policy_sha256=example['policy_sha256'],auto_mode=mode,axis_id=axis_id,
         H=result.get('H'),L=result.get('L'),
         M={k:axis[k] for k in ('id','price','B_conditional')} if mode=='HM' and axis else None)
@@ -75,7 +78,7 @@ def apply(document, payload, user, symbol, now=None, automatic=None):
         return updated
     if kind=='drawing':
         value=payload.get('drawing')
-        if not isinstance(value,dict) or set(value)!={'id','title','mode','points','note','as_of','dataset_id'}: raise ValueError('DRAWING_FIELDS')
+        if not isinstance(value,dict) or set(value)!={'id','title','mode','points','note','as_of','dataset_id','price_geometry'} or value.get('price_geometry')!=GEOMETRY_VERSION: raise ValueError('DRAWING_FIELDS')
         identifier=value['id']
         if not isinstance(identifier,str) or not re.fullmatch(r'[a-f0-9-]{36}',identifier): raise ValueError('ID')
         if value['mode'] not in ('HL','HM'): raise ValueError('MODE')

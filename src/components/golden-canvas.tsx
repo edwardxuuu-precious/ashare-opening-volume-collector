@@ -1,4 +1,5 @@
 'use client';
+import {priceScale, priceScaleFromBounds} from '@/lib/price-geometry';
 import {useState,useEffect,useRef} from 'react';
 import type {DailyCandle} from '@/lib/chip-market';
 import type {Anchor,Axis,ManualPoint,PriceLine} from '@/lib/golden-workbench';
@@ -24,9 +25,12 @@ export function GoldenCanvas({history:fullHistory,displayPeriod,lines=[],H,L,axi
   if(!history.length)return <div className="gw-no-chart">行情暂不可用，未补造K线。</div>;
   const W=mini?500:width,HEIGHT=mini?230:fit?chartHeight:490,left=mini?12:22,right=mini?465:W-(W<620?112:140),top=mini?18:25,bottom=mini?170:HEIGHT*.70,volTop=mini?183:HEIGHT*.78,volBottom=mini?215:HEIGHT-34;
   const shownPoints=gesture?.points??points,shownLines=gesture?[...lines.filter(l=>!l.manual),...manualLines(manualMode,shownPoints)]:lines;
-  const prices=history.flatMap(r=>[Number(r.high),Number(r.low)]).concat(lines.map(l=>l.price));const lo=Math.min(...prices),hi=Math.max(...prices),pad=Math.max((hi-lo)*.08,hi*.002),min=gesture?.scale.min??lo-pad,max=gesture?.scale.max??hi+pad;
-  const scale={left,right,top,bottom,min,max};
-  const y=(p:number)=>bottom-(p-min)/(max-min)*(bottom-top),step=(right-left)/history.length,x=(i:number)=>left+(i+.5)*step;
+  const prices=history.flatMap(r=>[Number(r.open),Number(r.high),Number(r.low),Number(r.close)]).concat(lines.map(l=>l.price));
+  const freshScale=priceScale({prices,top,bottom});
+  if(!freshScale)return <div className="gw-no-chart">价格数据无效，无法绘制对数价格轴。</div>;
+  const projection=gesture?priceScaleFromBounds(gesture.scale):freshScale;
+  const scale={left,right,top,bottom,min:projection.min,max:projection.max};
+  const y=projection.y,step=(right-left)/history.length,x=(i:number)=>left+(i+.5)*step;
   const dateX=(date:string)=>{const i=history.findIndex(r=>r.date===date);return i<0?null:x(i);};
   const maxV=Math.max(1,...history.map(r=>Number(r.volume_shares))),bar=history.find(row=>row.date===inspection.activeDate)??history.at(-1)!;
   const hover=inspection.activeDate===null?null:history.findIndex(row=>row.date===inspection.activeDate);
@@ -97,7 +101,7 @@ export function GoldenCanvas({history:fullHistory,displayPeriod,lines=[],H,L,axi
     {!mini&&<div ref={readouts} className="gw-chart-readouts"><CandleReadout className="gw-readout" candle={bar} percent={candleReturn(fullHistory,bar.date)} volume={Number(bar.volume_shares)} volumeUnit="shares"/><CandleInspectionControl dates={history.map(row=>row.date)} date={bar.date} onDateChange={inspection.select} onBlur={inspection.clear} inputRef={inspection.control}/><div className="gw-snap-readout" aria-live="off">{notice||((drawing||gesture)&&snap?`${snap.field==='custom'?'自由价位':'已吸附'} · ${snap.date} · ${pointLabel(snap.field)} ${snap.price}`:drawing?'在H处按下并拖至L / M，也可依次点两下。':points.length?'拖动蓝色锚点调整 · Shift自由取价':'画线：从H拖至L / M · 也可依次点击两点')}</div></div>}
     <svg ref={svgRef} className={mini?undefined:'candle-inspection'} viewBox={`0 0 ${W} ${HEIGHT}`} role={mini?'img':'group'} aria-label={mini?'自动画格概览':'自动选点与人工黄金分割K线及成交量'} onPointerDown={e=>{if(!mini&&!drawing&&!active.current){const xy=coordinates(e);if(xy&&candleIndexAtPoint({x:xy.x,y:xy.y,left,right,top,bottom:volBottom,count:history.length})!==null){e.preventDefault();inspection.focus();}move(e);}if(points.length<2)begin(e);}} onPointerMove={move} onPointerUp={finish} onPointerCancel={()=>{clearGesture();inspection.clear();}} onLostPointerCapture={()=>{if(active.current)clearGesture();}} onPointerLeave={e=>{if(!active.current){if(e.pointerType!=='touch')inspection.clear();setSnap(null);}}} style={{touchAction:drawing?'none':'pan-y'}}>
       <rect width={W} height={HEIGHT} fill="#ffffff"/>
-      {[0,1,2,3,4].map(i=>{const p=min+(max-min)*i/4;return <g key={i}><line x1={left} x2={right} y1={y(p)} y2={y(p)} stroke="#e6eaf0" strokeDasharray="2 5"/>{!mini&&<text x={right-5} y={y(p)-5} textAnchor="end" fill="#9aa6b6" fontSize="9">{p.toFixed(2)}</text>}</g>;})}
+      {projection.ticks(5).map((p,i)=>{return <g key={i}><line x1={left} x2={right} y1={y(p)} y2={y(p)} stroke="#e6eaf0" strokeDasharray="2 5"/>{!mini&&<text x={right-5} y={y(p)-5} textAnchor="end" fill="#9aa6b6" fontSize="9">{p.toFixed(2)}</text>}</g>;})}
       {windowStart&&dateX(windowStart)!==null&&history[0].date<windowStart&&<g><line x1={dateX(windowStart)!-step/2} x2={dateX(windowStart)!-step/2} y1={top} y2={volBottom} stroke="#aab7ca" strokeDasharray="4 4"/><text x={dateX(windowStart)!+4} y={top+12} fill="#8494aa" fontSize="10">←背景 / 60根计算→</text></g>}
       {shownLines.map((l,i)=>{const yy=labelYs.find(v=>v.i===i)!.y;return <g key={i} data-grid-price={l.price} data-manual={!!l.manual}><line x1={left} x2={right} y1={y(l.price)} y2={y(l.price)} stroke={l.manual?'#6286e5':'#bd9444'} strokeWidth={l.manual?1.5:1} strokeDasharray={l.manual?'6 3':'4 5'}/>{!mini&&<g fill={l.manual?'#345cd6':'#997729'} fontSize="9"><line x1={right} x2={right+7} y1={y(l.price)} y2={yy} stroke={l.manual?'#6286e5':'#bd9444'} opacity=".5"/><text x={right+10} y={yy+3}>{l.label.replace(" 高点","").replace(" 低点","").replace(" 等分","").replace("2M−H 条件下沿","条件下沿")} {l.price.toFixed(3)}<title>{l.label} · {l.price.toFixed(3)}</title></text></g>}</g>;})}
       {history.map((r,i)=>{const up=Number(r.close)>=Number(r.open),color=up?'var(--ui-rise)':'var(--ui-fall)',xx=x(i),bw=Math.max(.8,step*.58);return <g key={r.date} data-candle-date={r.date}>
@@ -105,7 +109,7 @@ export function GoldenCanvas({history:fullHistory,displayPeriod,lines=[],H,L,axi
         <rect data-volume-date={r.date} x={xx-bw/2} y={volBottom-Number(r.volume_shares)/maxV*(volBottom-volTop)} width={bw} height={Number(r.volume_shares)/maxV*(volBottom-volTop)} fill={color} opacity=".75"/>
         {!mini&&i%Math.ceil(history.length/6)===0&&<text x={xx} y={HEIGHT-12} fill="#8492a4" fontSize="11">{r.date.slice(5)}</text>}
       </g>;})}
-      {!mini&&<><line x1={left} x2={right} y1={volTop-14} y2={volTop-14} stroke="#e1e6ee"/><text x={left} y={volTop-3} fill="#708095" fontSize="10">成交量（股）</text>{pin(H,'H')}{pin(L,'L')}</>}
+      {!mini&&<><line x1={left} x2={right} y1={volTop-14} y2={volTop-14} stroke="#e1e6ee"/><text x={left} y={volTop-3} fill="#708095" fontSize="10">成交量（股）</text><text x={left} y={top-8} fill="#708095" fontSize="10">对数价格轴</text>{pin(H,'H')}{pin(L,'L')}</>}
       {markers.map((m,i)=>{const xx=dateX(m.date);if(xx===null)return null;return <g key={i} data-evidence={m.label} data-evidence-date={m.date}><line x1={xx} x2={xx} y1={y(Number(axis!.price))-25-(i%3)*15} y2={y(Number(axis!.price))+4} stroke={m.color} opacity=".7"/><text x={xx} y={y(Number(axis!.price))-28-(i%3)*15} textAnchor="middle" fill={m.color} fontSize="10">{m.label}</text></g>;})}
       {!mini&&shownPoints.map((p,i)=>{const xx=dateX(p.date),name=!i?'H':manualMode==='HL'?'L':'M';return xx===null?null:<g key={i} className="gw-drag-anchor" data-manual-anchor={i} data-date={p.date} data-price={p.price} data-field={p.field} role="button" tabIndex={0} aria-label={`人工${name}锚点 ${p.date} ${p.price}，拖动或方向键修改`} onPointerDown={e=>begin(e,i)} onKeyDown={e=>{if(['ArrowLeft','ArrowRight','ArrowUp','ArrowDown'].includes(e.key)){e.stopPropagation();e.preventDefault();nudge(e.key,i);}}}><circle cx={xx} cy={y(Number(p.price))} r="18" fill="transparent"/><circle cx={xx} cy={y(Number(p.price))} r={gesture?.index===i?9:7} stroke="#345cd6" strokeWidth="2" fill="#edf2ff"/><text pointerEvents="none" x={Math.min(right-110,xx+12)} y={y(Number(p.price))+(i?-17:22)} fill="#345cd6" fontSize="11">人工{name}</text></g>;})}
       {!mini&&snap&&(drawing||gesture)&&dateX(snap.date)!==null&&<g pointerEvents="none" data-snap-field={snap.field}><line x1={left} x2={right} y1={y(Number(snap.price))} y2={y(Number(snap.price))} stroke="#345cd6" opacity=".4"/><circle cx={dateX(snap.date)!} cy={y(Number(snap.price))} r="11" fill="none" stroke="#345cd6" strokeDasharray={snap.field==='custom'?'2 3':undefined}/></g>}

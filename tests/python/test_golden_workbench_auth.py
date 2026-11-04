@@ -13,7 +13,7 @@ class GoldenAnnotationGateway(AuthTests):
             raw=json.dumps(empty('600519')).encode() if '/annotations/' in Key else gzip.compress(json.dumps(example).encode())
             return dict(Body=types.SimpleNamespace(read=lambda:raw),ETag='"etag"')
         self.auth.s3.get_object.side_effect=get
-        return dict(kind='calibration',revision=0,drawing=dict(id='00000000-0000-0000-0000-000000000001',title='fictional',mode='HL',points=[dict(date='2020-01-01',field='high',price='20'),dict(date='2020-01-02',field='low',price='10')],note='',as_of='2020-01-02',dataset_id='a'*16),review=dict(status='H_ISSUE',note='round one',axis_id='',auto_mode='HL'))
+        return dict(kind='calibration',revision=0,drawing=dict(price_geometry='log-price.v1',id='00000000-0000-0000-0000-000000000001',title='fictional',mode='HL',points=[dict(date='2020-01-01',field='high',price='20'),dict(date='2020-01-02',field='low',price='10')],note='',as_of='2020-01-02',dataset_id='a'*16),review=dict(status='H_ISSUE',note='round one',axis_id='',auto_mode='HL'))
     def test_calibration_is_one_atomic_cas_with_server_published_context(self):
         body=self.calibration_fixture()
         event=self.event('/data/golden-workbench/annotations/600519.json',method='POST',token=self.token(),origin=self.auth.ORIGIN,body=body)
@@ -45,7 +45,7 @@ class GoldenAnnotationGateway(AuthTests):
         self.auth.s3.put_object.assert_not_called()
     def test_save_has_etag_and_cognito_owner_and_no_arbitrary_key(self):
         self.setup_doc()
-        body=dict(kind='drawing',revision=0,drawing=dict(id='00000000-0000-0000-0000-000000000001',title='QA fixture',mode='HL',points=[dict(date='2020-01-01',field='high',price='20'),dict(date='2020-01-02',field='low',price='10')],note='',as_of='2020-01-02',dataset_id='a'*16))
+        body=dict(kind='drawing',revision=0,drawing=dict(price_geometry='log-price.v1',id='00000000-0000-0000-0000-000000000001',title='QA fixture',mode='HL',points=[dict(date='2020-01-01',field='high',price='20'),dict(date='2020-01-02',field='low',price='10')],note='',as_of='2020-01-02',dataset_id='a'*16))
         event=self.event('/data/golden-workbench/annotations/600519.json',method='POST',token=self.token(),origin=self.auth.ORIGIN,body=body)
         response=self.auth.handler(event,None);self.assertEqual(response['statusCode'],200)
         args=self.auth.s3.put_object.call_args.kwargs

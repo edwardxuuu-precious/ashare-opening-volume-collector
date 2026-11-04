@@ -1,4 +1,5 @@
 'use client';
+import { priceScale } from '@/lib/price-geometry';
 import { useEffect, useRef, useState } from 'react';
 import { trendPrefix, type TrendStock, type TrendScreen } from '@/lib/trend-volume';
 import { candleReturn } from '@/lib/candle-quote';
@@ -33,10 +34,11 @@ export function TrendChart({ stock, date, screen, lengths = [60, 120, 250, 500],
   if (!selected || !bars.length) return <div className="tv-chart-empty">暂无可展示的行情。</div>;
   const W = size.width, H = size.height, left = W < 600 ? 10 : 22, right = W - 70, top = 24, volumeBottom = H - 32;
   const volumeTop = volumeBottom - Math.round(H * .2), volumeDivider = volumeTop - 22, bottom = volumeDivider - 18;
-  const rawMin = Math.min(...bars.map(b => b.low)), rawMax = Math.max(...bars.map(b => b.high)), pad = Math.max((rawMax - rawMin) * .065, .02);
-  const min = Math.max(.001, rawMin - pad), max = rawMax + pad, maxVolume = Math.max(1, ...bars.map(b => b.volume));
+  const scale = priceScale({prices: bars.flatMap(b => [b.open,b.high,b.low,b.close]), top, bottom});
+  if (!scale) return <div className="tv-chart-empty">价格数据无效，无法绘制对数价格轴。</div>;
+  const maxVolume = Math.max(1, ...bars.map(b => b.volume));
   const step = (right - left) / bars.length, width = Math.max(.45, Math.min(12, step * .62));
-  const x = (i: number) => left + step * (i + .5), y = (price: number) => bottom - (price - min) / (max - min) * (bottom - top);
+  const x = (i: number) => left + step * (i + .5), y = scale.y;
   const vy = (volume: number) => volumeBottom - volume / maxVolume * (volumeBottom - volumeTop);
   const recent = new Set(screen?.shrink_gate.recent_dates), reference = new Set(screen?.shrink_gate.reference_dates);
   const index = bars.findIndex(b => b.date === selected.date);
@@ -44,12 +46,12 @@ export function TrendChart({ stock, date, screen, lengths = [60, 120, 250, 500],
   const dateTicks = new Set(Array.from({ length: tickCount }, (_, i) => Math.round(i * (bars.length - 1) / (tickCount - 1))));
   function inspectPoint(event:React.PointerEvent<SVGSVGElement>,focus=false) { const r=event.currentTarget.getBoundingClientRect(),pointX=(event.clientX-r.left)/r.width*W,pointY=(event.clientY-r.top)/r.height*H,i=candleIndexAtPoint({x:pointX,y:pointY,left,right,top,bottom:volumeBottom,count:bars.length});if(focus&&i!==null){event.preventDefault();inspection.focus();}inspection.inspect(i===null?null:bars[i].date); }
   return <section className="tv-chart" aria-label="截至观察日的行情">
-    <div className="tv-chart-toolbar"><ChartPeriodControl period={period} periods={lengths} availableCount={bars.length} onPeriodChange={value=>{setPeriod(value);onPeriodChange?.(value);inspection.clear();}}/><small>不复权 · 截至 {date}</small></div>
+    <div className="tv-chart-toolbar"><ChartPeriodControl period={period} periods={lengths} availableCount={bars.length} onPeriodChange={value=>{setPeriod(value);onPeriodChange?.(value);inspection.clear();}}/><small>对数价格轴 · 不复权 · 截至 {date}</small></div>
     <CandleReadout className="tv-candle-readout" candle={selected} percent={candleReturn(stock.history, selected.date)} volume={selected.volume} volumeUnit={stock.volume_unit}/>
     <CandleInspectionControl dates={bars.map(bar=>bar.date)} date={selected.date} onDateChange={inspection.select} onBlur={inspection.clear} inputRef={inspection.control}/>
     <div className="tv-chart-scroll"><svg className="candle-inspection" ref={chart} viewBox={`0 0 ${W} ${H}`} aria-labelledby="tv-chart-title" onPointerMove={inspectPoint} onPointerDown={event=>inspectPoint(event,true)} onPointerCancel={inspection.clear} onPointerLeave={event=>{if(event.pointerType!=='touch')inspection.clear();}}><title id="tv-chart-title">{`${stock.name}截至${date}的日K线和成交量，未展示此后的K线`}</title>
       <rect width={W} height={H} fill="white" />
-      {[0, 1, 2, 3, 4, 5].map(i => { const p = min + (max - min) * i / 5, yy = y(p); return <g key={i}><line x1={left} x2={right} y1={yy} y2={yy} stroke="#e8ecf2" strokeDasharray="3 5" /><text x={right + 12} y={yy + 4} fill="#7a8698" fontSize="11">{p.toFixed(2)}</text></g>; })}
+      {scale.ticks(6).map((p,i) => { const yy = y(p); return <g key={i}><line x1={left} x2={right} y1={yy} y2={yy} stroke="#e8ecf2" strokeDasharray="3 5" /><text x={right + 12} y={yy + 4} fill="#7a8698" fontSize="11">{p.toFixed(2)}</text></g>; })}
       {bars.map((bar, i) => {
         const color = bar.close >= bar.open ? 'var(--ui-rise)' : 'var(--ui-fall)', setup = bar.date === screen?.setup_date;
         return <g key={bar.date} data-candle-date={bar.date}>

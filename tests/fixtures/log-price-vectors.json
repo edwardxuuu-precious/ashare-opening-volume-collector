@@ -1,0 +1,1 @@
+{"levels":[{"low":"10","high":"40","ratio":"0.5","expected":20},{"low":"10","high":"40","ratio":"0.25","expected":14.142135623730951},{"low":"10","high":"40","ratio":"0.125","expected":11.89207115002721}],"reflections":[{"origin":"40","middle":"20","expected":10},{"origin":"10","middle":"20","expected":40},{"origin":"3","middle":"2","expected":1.3333333333333333}]}

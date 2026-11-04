@@ -14,7 +14,7 @@ def rows():
 
 class DrawingSecurity(unittest.TestCase):
     def payload(self):
-        return dict(kind='drawing',revision=0,drawing=dict(id='00000000-0000-0000-0000-000000000001',
+        return dict(kind='drawing',revision=0,drawing=dict(price_geometry='log-price.v1',id='00000000-0000-0000-0000-000000000001',
             title='fictional',mode='HL',points=[dict(date='2020-01-01',field='high',price='20'),dict(date='2020-01-04',field='low',price='10')],
             note='why',as_of='2020-01-05',dataset_id='a'*16))
     def test_owner_inferred_and_other_owner_cannot_overwrite(self):

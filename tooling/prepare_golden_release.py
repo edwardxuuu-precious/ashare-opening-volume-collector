@@ -62,7 +62,7 @@ def main():
     data = OUT / 'golden.json'
     value = json.loads(data.read_text(encoding='utf-8'))
     paths = [
-        'backend/chips/golden.py', 'backend/chips/runner.py', 'deploy/auth/handler.py', 'deploy/auth/template.json',
+        'backend/chips/golden.py', 'backend/chips/price_geometry.py', 'backend/chips/runner.py', 'deploy/auth/handler.py', 'deploy/auth/template.json',
         'deploy/actions/package.py', 'src/app/golden/page.tsx', 'src/app/golden/golden.css',
         'src/lib/golden-grid.ts', 'src/components/stock-navigation.tsx', 'src/components/chip-trading-chart.tsx',
         'tooling/release_site.py', 'tooling/prepare_golden_grid.py', 'tooling/prepare_golden_release.py',

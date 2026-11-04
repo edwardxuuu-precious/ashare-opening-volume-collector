@@ -1,5 +1,6 @@
 'use client';
 
+import { priceScale } from '@/lib/price-geometry';
 import { useEffect, useRef, useState } from 'react';
 import type {
   MaPoint,
@@ -60,16 +61,11 @@ export function TriangleChart({
         当前范围没有完整日行情，无法绘制价格与均线。
       </p>
     );
-  const minimum = Math.min(...prices),
-    maximum = Math.max(...prices);
-  const padding = Math.max((maximum - minimum) * 0.1, maximum * 0.015);
-  const low = minimum - padding,
-    high = maximum + padding;
+  const scale = priceScale({prices, top: plot.top, bottom: plot.bottom});
+  if (!scale) return <p className="triangle-empty">价格数据无效，无法绘制对数价格轴。</p>;
   const x = (index: number) =>
-    plot.left +
-    ((plot.right - plot.left) * (index + 0.5)) / Math.max(1, points.length);
-  const y = (price: number) =>
-    plot.bottom - ((price - low) / (high - low)) * (plot.bottom - plot.top);
+    plot.left + ((plot.right - plot.left) * (index + 0.5)) / Math.max(1, points.length);
+  const y = scale.y;
   const dateIndex = new Map(points.map((point, index) => [point.date, index]));
   const xDate = (date: string) => {
     const index = dateIndex.get(date);
@@ -216,8 +212,7 @@ export function TriangleChart({
           <desc>
             红涨绿跌。价格区间从冻结可知日开始延伸。交叉圆点使用日线均线观察值。缺失交易日留空，不连接均线。
           </desc>
-          {Array.from({ length: 6 }, (_, index) => {
-            const price = low + ((high - low) * index) / 5;
+          {scale.ticks(6).map((price, index) => {
             return (
               <g key={index}>
                 <line
@@ -517,7 +512,7 @@ export function TriangleChart({
               </text>
             ))}
           <text x={plot.left} y="17" fontSize="11" fill="#6a7788">
-            不复权 · 元/股
+            对数价格轴 · 不复权 · 元/股
           </text>
         </svg>
       </div>

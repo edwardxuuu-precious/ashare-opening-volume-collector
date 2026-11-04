@@ -31,6 +31,7 @@ POLICY = {
     'view_zoom_changes_calculation': False,
     'trading_rules': None,
     'formal_policy_adoption': False,
+    'price_geometry': 'log-price.v1',
     'price_precision': 'preserve source precision internally; cent input remains identical to reference',
 }
 

@@ -87,7 +87,7 @@ def implementation_identity():
     """Bind resumed batches and exact model caches to their actual source."""
     root=Path(__file__).parent
     hashes={name:hashlib.sha256((root/name).read_text(encoding='utf-8').replace('\r\n','\n').encode()).hexdigest()
-        for name in ('runner.py','source.py','baostock_history.py','ths_history.py','listing.py','display.py','model.py','eastmoney_model.py','ohlc4_input.py','current_quote.py','screen.py','calendar.py','limit_reference.py','golden.py','stability.py','suspension_evidence.py')}
+        for name in ('runner.py','source.py','baostock_history.py','ths_history.py','listing.py','display.py','model.py','eastmoney_model.py','ohlc4_input.py','current_quote.py','screen.py','calendar.py','limit_reference.py','golden.py','price_geometry.py','stability.py','suspension_evidence.py')}
     transport=root.parent/'scripts'/'baostock_source.py'
     hashes['baostock_source.py']=hashlib.sha256(transport.read_text(encoding='utf-8').replace('\r\n','\n').encode()).hexdigest()
     status_source=root.parent/'scripts'/'exchange_status.py'

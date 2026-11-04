@@ -1,6 +1,9 @@
 from copy import deepcopy
 from decimal import Decimal
 import unittest
+import math
+
+from backend.chips.price_geometry import reflected_price
 
 from backend.chips.calendar import sessions
 from backend.golden_projection import model
@@ -27,6 +30,13 @@ def candles(knots=None):
                        'high': str(value + Decimal('.1')), 'low': str(value - Decimal('.1')),
                        'volume_shares': '100000'})
     return result
+
+
+def logarithmic_fixture(rows):
+    # Preserve the topology of arithmetic-era examples in log-price space.
+    def converted(value):
+        return format(math.exp(float(value) / 100), '.12f')
+    return [{**row, **{field: converted(row[field]) for field in ('open','high','low','close')}} for row in rows]
 
 
 def frame(rows):
@@ -92,7 +102,7 @@ class SelectionTests(unittest.TestCase):
         structure = selected['structure']
         self.assertEqual(structure['direction'], 'DOWN')
         self.assertEqual(Decimal(structure['origin']['price']), Decimal('130.1'))
-        self.assertEqual(Decimal(structure['levels']['L']), Decimal('60.1'))
+        self.assertEqual(Decimal(structure['levels']['L']), reflected_price(Decimal(structure['origin']['price']), Decimal(structure['axis']['price'])))
         self.assertEqual(structure['life_state'], 'OPEN')
         self.assertTrue(any(item['reason_code'] == 'TARGET_BEFORE_EVIDENCE'
                             and Decimal(item['origin_price']) == Decimal('110.1')
@@ -107,7 +117,7 @@ class SelectionTests(unittest.TestCase):
         selected = select_structure(reflected)
         self.assertEqual(selected['state'], 'DRAW')
         self.assertEqual(selected['structure']['direction'], 'UP')
-        self.assertEqual(Decimal(selected['structure']['levels']['H']), Decimal('139.9'))
+        self.assertEqual(Decimal(selected['structure']['levels']['H']), reflected_price(Decimal(selected['structure']['origin']['price']), Decimal(selected['structure']['axis']['price'])))
 
     def test_exact_role_can_use_left_source_with_current_break_and_retest(self):
         rows = candles([(0, 100), (20, 85), (24, 80.1), (28, 120), (34, 90),
@@ -142,11 +152,12 @@ class SelectionTests(unittest.TestCase):
     def test_internal_higher_low_does_not_erase_enclosing_down_wave(self):
         rows = candles([(0, 100), (20, 70), (25, 170), (30, 90),
                         (40, 120), (45, 95), (50, 125), (55, 112), (59, 105)])
+        rows = logarithmic_fixture(rows)
         selected = select_structure(rows)
         self.assertEqual(selected['state'], 'DRAW')
         self.assertEqual(selected['structure']['direction'], 'DOWN')
-        self.assertEqual(Decimal(selected['structure']['origin']['price']), Decimal('170.1'))
-        self.assertEqual(Decimal(selected['structure']['axis']['price']), Decimal('125.1'))
+        self.assertEqual(selected['structure']['origin']['price'], rows[25]['high'])
+        self.assertEqual(selected['structure']['axis']['price'], rows[50]['high'])
 
     def test_repeated_pressure_is_a_role_without_a_prior_support_conversion(self):
         rows = candles()
@@ -259,6 +270,11 @@ class FrameTests(unittest.TestCase):
         rows = candles()
         previous = detail(rows)
         added = {'date': '2026-11-02', 'open': '78', 'high': '79', 'low': '76', 'close': '77', 'volume_shares': '100000'}
+        legacy = deepcopy(previous)
+        legacy.pop('price_geometry')
+        migrated = detail(rows + [added], legacy)
+        self.assertEqual(migrated['row']['drawing_state'], 'NEW_REFERENCE')
+        self.assertEqual(migrated['row']['new_crossing'], 'UNKNOWN')
         bad_rule = deepcopy(previous)
         bad_rule['policy_sha256'] = '0'*64
         self.assertEqual(detail(rows + [added], bad_rule)['row']['new_crossing'], 'UNKNOWN')

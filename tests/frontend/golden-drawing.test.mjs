@@ -1,15 +1,16 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import {priceScaleFromBounds} from '../../src/lib/price-geometry.ts';
 import {pickManualPoint,draftHistory,blankDraft} from '../../src/lib/golden-drawing.ts';
 const candles=[{date:'2026-10-20',open:'3740.5700',high:'3743.0801',low:'3703.1200',close:'3713.0300'},{date:'2026-10-21',open:'10.12345678',high:'11',low:'9',close:'10'}];
-const scale={left:20,right:220,top:20,bottom:420,min:0,max:4000};
+const scale={left:20,right:220,top:20,bottom:420,min:1,max:4000};
 test('magnet preserves exact source field precision and uses a screen-pixel radius',()=>{
- const y=420-3743.0801/4000*400;
+ const y=priceScaleFromBounds(scale).y(3743.0801);
  assert.deepEqual(pickManualPoint(candles,scale,70,y,'auto'),{date:'2026-10-20',field:'high',price:'3743.0801'});
  const small={left:0,right:100,top:0,bottom:100,min:8,max:12};
  const sparse=[{...candles[1],open:'9',close:'9'}];
- assert.equal(pickManualPoint(sparse,small,50,25+20,'auto',2).field,'high');
- assert.equal(pickManualPoint(sparse,small,50,25+20,'auto',.5).field,'custom');
+ assert.equal(pickManualPoint(sparse,small,50,priceScaleFromBounds(small).y(11)+20,'auto',2).field,'high');
+ assert.equal(pickManualPoint(sparse,small,50,priceScaleFromBounds(small).y(11)+20,'auto',.5).field,'custom');
 });
 test('free placement and out-of-chart input never pretend to be an OHLC anchor',()=>{
  assert.equal(pickManualPoint(candles,scale,70,100,'custom').field,'custom');
