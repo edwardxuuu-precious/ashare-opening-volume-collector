@@ -16,6 +16,9 @@ SOURCES = [
     'cloud_worker', 'publisher_state', 'actions_runner', 'import_checkpoint_batch', 'refresh_worker', 'failure_status')] + [
     'backend/chips/' + name + '.py' for name in ('__init__','calendar','model','eastmoney_model','ohlc4_input','current_quote','probe','runner','screen','source','baostock_history','ths_history','listing','display','limit_reference','golden')]
 SOURCES += ['backend/golden/' + name + '.py' for name in ('__init__','anchors','automatic','watchlist','daily','annotations','sources','update')]
+SOURCES += ['backend/triangles/__init__.py', 'backend/triangles/daily.py',
+            'tooling/build-triangle-daily.mjs', 'src/lib/triangles.ts', 'src/lib/triangle-data.ts',
+            'src/lib/auth-fetch.ts', 'src/lib/read-request.ts']
 SECRET_PATTERNS = [r'AKIA[0-9A-Z]{16}', r'ASIA[0-9A-Z]{16}',
                    r'gh[pousr]_[A-Za-z0-9]{30,}', r'-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----']
 

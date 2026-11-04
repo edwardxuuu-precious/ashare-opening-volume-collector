@@ -1,6 +1,7 @@
 """Cognito sessions and private stock data. Never log requests or credentials."""
 import base64
 import gzip
+import io
 import json
 import math
 import os
@@ -68,6 +69,22 @@ def data_response(data, accept_encoding):
         result['headers']['content-encoding'] = 'gzip'
         result['isBase64Encoded'] = True
     # Includes JSON envelope + base64/escape expansion, with headroom below 6 MB.
+    if len(json.dumps(result, ensure_ascii=True).encode('utf-8')) > 5900000:
+        return response(413, {'error': '行情数据响应过大，请使用支持 gzip 压缩传输的客户端。'})
+    return result
+
+
+def triangle_response(raw, accept_encoding):
+    if len(raw) > 16 * 1024 * 1024:
+        raise ValueError('Triangle payload exceeds its decoded bound')
+    json.loads(raw)
+    result = response(200, None)
+    result['body'] = raw.decode('utf-8')
+    result['headers']['vary'] = 'Origin, Accept-Encoding'
+    if len(raw) >= 65536 and accepts_gzip(accept_encoding):
+        result['body'] = base64.b64encode(gzip.compress(raw, compresslevel=6, mtime=0)).decode('ascii')
+        result['headers']['content-encoding'] = 'gzip'
+        result['isBase64Encoded'] = True
     if len(json.dumps(result, ensure_ascii=True).encode('utf-8')) > 5900000:
         return response(413, {'error': '行情数据响应过大，请使用支持 gzip 压缩传输的客户端。'})
     return result
@@ -255,6 +272,22 @@ def handle_request(event, context, issued_cookies):
             return response(401, {'error': '请先登录'})
         if method == 'GET' and path == '/auth/me':
             return response(200, {'username': user})
+        if method == 'GET' and re.fullmatch(r'/data/triangles/daily/(?:(?:manifest|status)\.json|[a-f0-9]{16}/(?:screening|bundle-\d{3})\.json)', path):
+            try:
+                obj = s3.get_object(Bucket=BUCKET, Key=path.lstrip('/'))
+                raw = obj['Body'].read(16 * 1024 * 1024 + 1)
+                if len(raw) > 16 * 1024 * 1024:
+                    raise ValueError('Triangle stored payload exceeds its bound')
+                if raw[:2] == b'\x1f\x8b':
+                    with gzip.GzipFile(fileobj=io.BytesIO(raw)) as stream:
+                        raw = stream.read(16 * 1024 * 1024 + 1)
+                return triangle_response(raw, headers.get('accept-encoding', ''))
+            except ClientError as exc:
+                if exc.response['Error']['Code'] == 'NoSuchKey':
+                    return response(404, {'error': '每日三角结果尚未发布'})
+                raise
+            except (ValueError, UnicodeError, OSError, EOFError):
+                return response(503, {'error': '服务暂时不可用，请稍后重试'})
         if method == 'GET' and re.fullmatch(r'/data/trend-volume/(?:manifest\.json|[a-f0-9]{16}/(?:summary|\d{6})\.json|daily/(?:(?:manifest|status)\.json|[a-f0-9]{16}/(?:screening|\d{6})\.json))', path):
             try:
                 obj = s3.get_object(Bucket=BUCKET, Key=path.lstrip('/'))

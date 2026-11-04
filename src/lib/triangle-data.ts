@@ -227,6 +227,7 @@ export async function loadTriangleData(
     catalog: TriangleCatalog;
     asOf: string;
     historySessions: number;
+    fullHistory?: boolean;
     selection: TriangleSelection;
     onProgress?: (completed: number, total: number) => void;
   },
@@ -234,12 +235,19 @@ export async function loadTriangleData(
   const { catalog, asOf, historySessions, selection } = options;
   if (!dayKey(asOf) || !catalog.sessions.includes(asOf))
     throw Error('请选择目录中的交易日。');
+  const availableSessions = catalog.sessions.filter((date) => date <= asOf);
+  const fullHistory = options.fullHistory === true;
   if (
     !Number.isInteger(historySessions) ||
-    historySessions < 20 ||
-    historySessions > 186
+    historySessions < (fullHistory ? 1 : 20) ||
+    historySessions > (fullHistory ? 2000 : 186) ||
+    (fullHistory && historySessions !== availableSessions.length)
   )
-    throw Error('历史长度须为20至186个交易日。');
+    throw Error(
+      fullHistory
+        ? '完整历史须覆盖全部目录交易日，且不超过2000日。'
+        : '历史长度须为20至186个交易日。',
+    );
   const symbols =
     selection.kind === 'symbols' ? [...new Set(selection.symbols)] : [];
   if (
@@ -247,9 +255,7 @@ export async function loadTriangleData(
     (!symbols.length || symbols.some((code) => !/^\d{6}$/.test(code)))
   )
     throw Error('请选择至少一只股票，代码须为六位数字。');
-  const sessions = catalog.sessions
-    .filter((date) => date <= asOf)
-    .slice(-historySessions);
+  const sessions = availableSessions.slice(-historySessions);
   const wanted = selection.kind === 'symbols' ? new Set(symbols) : null;
   const failedDates: { date: string; reason: string }[] = [];
   const series = new Map<
