@@ -1,29 +1,47 @@
 {
-  "rule_id": "GOLDEN_V21_HYBRID_DAILY_V1",
-  "version": "golden-v21.daily.v1",
+  "rule_id": "GOLDEN_V21_HYBRID_DAILY_V4",
+  "version": "golden-v21.daily.v4",
   "source_standard": "V21: determine the wave, then meaningful support/resistance OR a complete secondary turn; reopen structural review before abstaining.",
-  "authorization_scope": "Daily automatic drawing and descriptive classification, approved by the owner on 2026-11-02; no trading or performance evaluation.",
+  "authorization_scope": "Owner requested local code and method updates on 2026-11-04 for left support, close break, and right failed retest as one support/resistance conversion chain, followed by redrawing the saved Jinzhongzi case. Actual secondary Low for UP and High for DOWN, RIGHT before LEFT, and early-target versus formed terminal states remain separate. Exact boundary-source pricing is an engineering interpretation, not owner acceptance of a numerical midpoint. No deployment, trading, data acquisition or performance authorization is inferred.",
+  "method_source_id": "USER20261104_SUPPORT_RESISTANCE_CONVERSION",
   "analysis_bars": 60,
   "display_bars": 120,
   "candidate_turn_left_bars": 2,
   "candidate_turn_right_bars": 2,
   "candidate_turns_are_not_alone_sufficient": true,
   "turn_confirmation": "An independent incoming opposite turn, the actual secondary extreme, and a later close beyond the reverse boundary of the extreme candle and its preceding candle. Two right candles confirm a candidate; a further completed opposite pivot or a new low/high is not required.",
-  "role_confirmation": "Either an established structural level with a current-wave close-through and separate failed exact retest, OR consecutive repeated reactions with a common upper/lower-wick price intersection, closes on the failed side and a later close departing the complete group body range. The axis is an actual extreme, not a zone average.",
+  "role_confirmation": "Existing exact-level and repeated-reaction paths retain their original guards. An additional historical-region path accepts consecutive same-side wick contacts with a common intersection, a later whole-region close break, a fixed origin on a later session, and a still later failed opposite-wick retest with its complete candle body on the failed side. Source qualification, conversion confirmation and current-wave pairing are distinct. A retest wick verifies the historical region and never becomes the opposite-field axis.",
   "role_price_tolerance": "0",
   "parent_review": "Review only preconstructed structural ancestors if a nearer origin's target was already reached by the evidence date. Never enlarge the origin to avoid a later genuine target reach.",
   "parent_scope": "Enclosing same-direction origins with independent intervening reactions form the parent chain before formula checks. A newer exterior extreme stops that chain; an internal higher low/lower high alone does not end its enclosing wave. An outside candle can provide an origin's H or L because its whole range is checked conservatively; it cannot supply an assumed intrabar order for a secondary turn.",
-  "selection": "Determine direction from the latest independently completed secondary reaction and its preconstructed wave first, then check its origins/axes. If that current reaction fails, do not retrieve an earlier arbitrary-direction projection. Equally current materially different valid combinations remain ambiguous.",
+  "selection": "Retain preconstructed automatic wave families and their structural current-reaction scope independently of target outcomes. For each fixed origin, check RIGHT then LEFT before a preconstructed ancestor review. Explicit source-validated origin input supports local review without stock-specific exceptions. Nonunique contexts or same-side combinations abstain; unconfirmed platforms and local turns remain pending rather than being assigned salience thresholds.",
   "equal_price_plateau": "Group identical neighboring extreme prices as one level and use the latest actual source candle with its later confirmation. Do not treat a unique price plateau as conflicting prices or let an unrelated old ambiguous candle invalidate every newer wave.",
   "near_percent": "2",
   "near_basis": "abs(close-level)/level; inclusive boundary",
-  "classification_priority": ["ABOVE", "BELOW", "nearest proportional distance", "AMBIGUOUS if exact tie"],
-  "intraday_events": ["UPPER_REJECTED", "LOWER_RECOVERED", "TOUCH_H", "TOUCH_M", "TOUCH_L"],
+  "classification_priority": [
+    "ABOVE",
+    "BELOW",
+    "nearest proportional distance",
+    "AMBIGUOUS if exact tie"
+  ],
+  "intraday_events": [
+    "UPPER_REJECTED",
+    "LOWER_RECOVERED",
+    "TOUCH_H",
+    "TOUCH_M",
+    "TOUCH_L"
+  ],
   "clock_policy": "Use the pre-open effective prior structure for daily events. New references are descriptive until the next effective session. Never backfill historical known_at.",
   "engineering_limits": [
     "This is a conservative engineering interpretation of V21 qualitative judgments, not proof of identical manual visual salience.",
     "Two-sided local turns generate candidates only. Independent incoming structure and a reverse range departure provide the topology gate; no numerical prominence or ATR threshold is invented.",
-    "Role zones use directly overlapping candle ranges, not a numerical clustering tolerance; visually meaningful but non-overlapping zones may still be omitted.",
-    "Competing structural levels, assumed same-bar high/low order, incomplete right evidence and missing source data do not silently pass."
-  ]
+    "Role zones use directly overlapping candle ranges, not a numerical clustering tolerance; visually meaningful but non-overlapping zones may still be omitted. Region conversion may qualify without a local-pivot minimum/maximum; its source is an actual same-field core boundary, not the group's exterior extreme.",
+    "Competing structural levels, assumed same-bar high/low order, incomplete right evidence and missing source data do not silently pass.",
+    "Intrinsic structural qualification and relative secondary pairing are separate. Visually plausible left platforms not supported by the existing stage qualifiers remain pending. The withdrawn V2 High-as-UP-axis path is not part of this method."
+  ],
+  "secondary_point_fields": "UP uses an actual Low above the fixed original L; DOWN uses an actual High below the fixed original H. Historical role provenance is distinct from the actual selected retest field. A resistance High cannot stand in for an UP secondary Low.",
+  "secondary_search": "Fix origin and wave context before pairing. Independently confirm structural extrema before classifying them relative to a new origin. Search qualified RIGHT combinations first; only when none can form, search preconstructed qualified LEFT points. TARGET_BEFORE_EVIDENCE may permit LEFT. Post-formation REACHED or INVALID remains historical and never triggers a larger target rescue. Same-side competition abstains.",
+  "left_pair_confirmation": "A standalone historical structural point must complete intrinsic evidence before the new origin. A source region qualifies before its break and new origin, while its conversion can confirm on the right. Before target math, derive current LEFT ownership from the enclosing preconstructed same-direction predecessor family; every source contact must lie within that scope. An internal higher Low/lower High preserves enclosing ancestry; an exterior lower Low/higher High stops older ownership. Out-of-scope qualified facts remain PAIR_EVIDENCE_PENDING rather than being promoted after nearer targets fail. After all origin, parent-chain, intrinsic and scope confirmations are known, standalone points require the existing directional close beyond M. Converted regions require a close beyond the complete core: UP above core.upper, DOWN below core.lower, additionally waiting for the failed retest. Record the actual confirmation close. Missing current-wave evidence is not OPEN or a mere platform.",
+  "role_conversion_region": "UP source support is the nonempty common intersection of at least two consecutive lower wicks; DOWN source resistance mirrors this with upper wicks. Each source candle's body is outside the core on its original side. The source group completes, a later close crosses the whole core, then fixed_origin, then a separate failed opposite-wick retest; source_end < break < origin < retest. No complete close reclaim is allowed between break and failed retest. Equality can contact a boundary but cannot satisfy a strict whole-region break or reclaim. Source candidates and wave ownership precede target calculations.",
+  "role_conversion_axis": "As an explicit engineering rule, UP uses the core's lower boundary corresponding to an actual source Low (maximum of the source Low fields); DOWN uses the core's upper boundary corresponding to an actual source High (minimum of source High fields). Equal boundary values use the latest actual source candle. Do not use a zone average, interpolation, the group's exterior extreme or the right retest's opposite field. Independent established conversions compete rather than being ranked by target size or whether a target remains unvisited. role_zone spans source start through failed retest; source contacts and the break, retest, and pairing dates remain individually recorded in evidence."
 }

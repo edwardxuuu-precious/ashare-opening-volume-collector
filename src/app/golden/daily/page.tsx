@@ -16,7 +16,7 @@ import { candleIndexAtPoint } from '@/lib/chart-inspection';
 import { authRead } from '@/lib/auth-fetch';
 import { startPublicationFollow } from '@/lib/publication-follow';
 import { goldenPresets, goldenPresetItems, type GoldenListItem } from '@/lib/golden-preset-list';
-import { isProjectionIndex, categoryText, stateText, eventText, featuredCategories, projectionCategories, projectionCounts, projectionDistance, projectionList, projectionStrictMatch, parseProjectionManifest, parseProjectionScreening, parseProjectionStatus, parseProjectionStock, type ProjectionFilter, type ProjectionManifest, type ProjectionScreening, type ProjectionStatus, type ProjectionStock, type ProjectionRow, type ProjectionStructure } from '@/lib/golden-projection';
+import { PROJECTION_RULE, isProjectionIndex, categoryText, stateText, eventText, featuredCategories, projectionCategories, projectionCounts, projectionDistance, projectionList, projectionStrictMatch, parseProjectionManifest, parseProjectionScreening, parseProjectionStatus, parseProjectionStock, type ProjectionFilter, type ProjectionManifest, type ProjectionScreening, type ProjectionStatus, type ProjectionStock, type ProjectionRow, type ProjectionStructure, type ProjectionSearchStep, type ProjectionSearchCandidate } from '@/lib/golden-projection';
 import '../../chips/chips.css';
 import '../../chips/workbench.css';
 import './daily.css';
@@ -39,6 +39,15 @@ const initialLists: ListState = { active: 'market', market: { filters: initialFi
 const filterText = (filter: ProjectionFilter, indices = false) => filter === 'ALL' ? indices ? '全部标的' : '全部股票' : filter === 'FEATURED' ? '五类关注' : categoryText[filter];
 const fieldText = { open: '开盘', high: '最高', low: '最低', close: '收盘' };
 const routeText = { ROLE: '支撑／阻力反应', TURN: '完整次高／次低', BOTH: '转折与支撑／阻力重合' };
+const methodNotice: Record<ProjectionStock['rule_id'], string> = {
+  GOLDEN_V21_HYBRID_DAILY_V1: '本批次为V1已发布结果，尚未按V4的先右后左及区域转换方法重算。',
+  GOLDEN_V21_HYBRID_DAILY_V2: '本批次为已撤回的V2试稿；阻力高点代替次低的选法不再采用。',
+  GOLDEN_V21_HYBRID_DAILY_V3: '本批次为V3先右后左试稿，尚未包含本次区域支撑阻力转换。',
+  GOLDEN_V21_HYBRID_DAILY_V4: '本批次按实际次高／次低先右后左检查，并核对左侧区域的支撑阻力转换。',
+};
+const searchOutcomeText: Record<ProjectionSearchStep['outcome'], string> = { SELECTED: '本侧有已成立组合', NO_USABLE_COMBINATION: '本侧没有可成立组合', AMBIGUOUS: '本侧候选存在竞争', QUALIFICATION_PENDING: '本侧候选资格待核' };
+const searchResultText: Record<ProjectionSearchCandidate['result'], string> = { OPEN: '组合成立，未结束', REACHED: '成立后已到推算端', INVALID: '成立后已失效', TARGET_BEFORE_EVIDENCE: '证据前已到推算端', ORIGIN_ALREADY_BREACHED: '证据前原点已破坏', INVALID_GEOMETRY: '等高区间不成立', ROLE_OUTSIDE_WAVE: '角色反应不属本波段', PAIR_EVIDENCE_PENDING: '本轮组合证据待核', UNASSESSED: '尚未检查组合' };
+const searchBasisText: Record<ProjectionSearchCandidate['basis'], string> = { TURN: '转折候选', ROLE: '角色反应候选', PLATFORM: '平台候选' };
 const priceText = (value: string | null) => value === null ? '—' : Number(value).toLocaleString('zh-CN', { maximumFractionDigits: 4 });
 const failed = (error: unknown) => error instanceof Error ? error.message : '画线数据暂时无法读取。';
 function timeText(value: string) { return new Intl.DateTimeFormat('zh-CN', { timeZone: 'Asia/Shanghai', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false }).format(new Date(value)); }
@@ -81,12 +90,29 @@ function StructureChart({ stock, structure, count }: { stock: ProjectionStock; s
       {bars.map((item, index) => { const color = Number(item.close) >= Number(item.open) ? 'var(--ui-rise)' : 'var(--ui-fall)', px = x(index), bw = Math.max(1, Math.min(12, step * .6)); return <g key={item.date} data-candle-date={item.date}><title>{item.date} 开{item.open} 高{item.high} 低{item.low} 收{item.close}</title><line x1={px} x2={px} y1={y(Number(item.high))} y2={y(Number(item.low))} stroke={color} /><rect x={px - bw / 2} y={Math.min(y(Number(item.open)), y(Number(item.close)))} width={bw} height={Math.max(1, Math.abs(y(Number(item.open)) - y(Number(item.close))))} fill={color} /><rect data-volume-date={item.date} x={px - bw / 2} y={volBottom - Number(item.volume_shares) / maxVolume * (volBottom - volTop)} width={bw} height={Number(item.volume_shares) / maxVolume * (volBottom - volTop)} fill={color} opacity=".65" />{index % Math.ceil(bars.length / Math.max(2, Math.floor((right - left) / 80))) === 0 && <text x={px} y={height - 9} textAnchor="middle" fill="#8996a6" fontSize="10">{item.date.slice(5)}</text>}</g>; })}
       <line x1={left} x2={right} y1={volTop - 13} y2={volTop - 13} stroke="#e5e9ef" /><text x={left} y={volTop - 19} fill="#8996a6" fontSize="11">成交量 · 股</text>
       {guides.map((guide, index) => { const label = labelYs.find(item => item.index === index), py = y(Number(guide.price)), end = structure?.guides_end_on ? Math.min(right, dateX(structure.guides_end_on)) : right, start = structure ? Math.max(left, dateX(structure.evidence_through)) : left, stopped = end < right - step; return <g key={guide.key} data-guide={guide.key} data-price={guide.price} data-end={structure?.guides_end_on ?? stock.as_of}><line x1={Math.min(start, end)} x2={end} y1={py} y2={py} stroke={guide.key === 'M' ? '#b07c27' : '#7b91a6'} strokeWidth={guide.key === 'M' ? 1.5 : 1} strokeDasharray={guide.key === 'M' ? undefined : '5 4'} />{!stopped && <line x1={end} x2={right + 10} y1={py} y2={label?.y ?? py} stroke="#b2bdc8" />}<text x={stopped ? Math.max(left, end - 130) : right + 15} y={stopped ? py - 7 : (label?.y ?? py) + 4} fill={guide.key === 'M' ? '#9d7022' : '#62788d'} fontSize="12">{guide.key} {priceText(guide.price)}<title>{guide.label} {guide.price}</title></text></g>; })}
-      {structure && [{ ...structure.origin, label: structure.origin.kind }, { ...structure.axis, label: 'M' }].map(point => { const at = bars.findIndex(item => item.date === point.date); return at < 0 ? null : <g key={point.label} data-point={point.label}><circle cx={x(at)} cy={y(Number(point.price))} r="4" fill={point.label === 'M' ? '#b07c27' : '#6688a6'} /><text x={Math.max(left, Math.min(right - 125, x(at) + 6))} y={y(Number(point.price)) - 12} fill="#60778e" fontSize="12">{point.label} · {point.date.slice(5)} · {point.price}</text></g>; })}
+      {structure && [{ ...structure.origin, label: structure.origin.kind }, { ...structure.axis, label: 'M' }].map(point => { const at = bars.findIndex(item => item.date === point.date); return at < 0 ? null : <g key={point.label} data-point={point.label}><circle cx={x(at)} cy={y(Number(point.price))} r="4" fill={point.label === 'M' ? '#b07c27' : '#6688a6'} /><text x={Math.max(left, Math.min(right - 170, x(at) + 6))} y={y(Number(point.price)) - 12} fill="#60778e" fontSize="12">{point.label} · {point.date.slice(5)} · {point.field === 'low' ? 'Low' : point.field === 'high' ? 'High' : fieldText[point.field]} {point.price}</text></g>; })}
     </svg><div className="gp-chart-foot"><span>红涨绿跌 · {bars.length} 根实际日线 · {isProjectionIndex(stock.code) ? '指数点位' : '不复权'}</span><span>{structure?.guides_end_on ? `结构参考线截至 ${structure.guides_end_on}` : structure ? '水平线为本组合的价格参考' : '当前标的没有足够依据，保留 K 线并说明不画原因'}</span></div>
   </div>;
 }
-function StructureProof({ structure, title }: { structure: ProjectionStructure; title: string }) {
-  return <section className="gp-proof"><h3>{title}</h3><dl><div><dt>画法方向</dt><dd>{structure.direction === 'DOWN' ? '高点与次高中轴推低点' : '低点与次低中轴推高点'}</dd></div><div><dt>中轴来源</dt><dd>{routeText[structure.route]}</dd></div><div><dt>起算端</dt><dd>{structure.origin.date} · {fieldText[structure.origin.field]} {structure.origin.price}</dd></div><div><dt>中轴取价</dt><dd>{structure.axis.date} · {fieldText[structure.axis.field]} {structure.axis.price}</dd></div><div><dt>证据检查至</dt><dd>{structure.evidence_through}</dd></div><div><dt>实际保存</dt><dd>{timeText(structure.recorded_at)} 北京时间</dd></div><div><dt>生效交易日</dt><dd>{structure.effective_from}</dd></div></dl><ul>{structure.reasons.map((reason, index) => <li key={index}>{reason}</li>)}</ul><details><summary>展开原始选点证据（{structure.evidence.length}项）</summary><div className="gp-evidence-table"><table><thead><tr><th>日期</th><th>字段／原价</th><th>依据</th></tr></thead><tbody>{structure.evidence.map((item, index) => <tr key={index}><td>{item.date}</td><td>{fieldText[item.field]} {item.value}</td><td>{item.role}</td></tr>)}</tbody></table></div></details></section>;
+function StructureProof({ structure, title, ruleId }: { structure: ProjectionStructure; title: string; ruleId: ProjectionStock['rule_id'] }) {
+  const secondary = ruleId === 'GOLDEN_V21_HYBRID_DAILY_V3' || ruleId === PROJECTION_RULE;
+  const direction = structure.direction === 'DOWN'
+    ? secondary ? '高点与次高中轴推低点' : '高点与中轴推低点（原批次）'
+    : secondary ? '低点与次低中轴推高点' : '低点与中轴推高点（原批次）';
+  return <section className="gp-proof"><h3>{title}</h3><dl><div><dt>画法方向</dt><dd>{direction}</dd></div><div><dt>中轴来源</dt><dd>{routeText[structure.route]}</dd></div><div><dt>起算端</dt><dd>{structure.origin.date} · {fieldText[structure.origin.field]} {structure.origin.price}</dd></div><div><dt>中轴取价</dt><dd>{structure.axis.date} · {structure.axis.field}（{fieldText[structure.axis.field]}）{structure.axis.price}</dd></div><div><dt>证据检查至</dt><dd>{structure.evidence_through}</dd></div><div><dt>实际保存</dt><dd>{timeText(structure.recorded_at)} 北京时间</dd></div><div><dt>生效交易日</dt><dd>{structure.effective_from}</dd></div></dl><ul>{structure.reasons.map((reason, index) => <li key={index}>{reason}</li>)}</ul><details><summary>展开原始选点证据（{structure.evidence.length}项）</summary><div className="gp-evidence-table"><table><thead><tr><th>日期</th><th>字段／原价</th><th>依据</th></tr></thead><tbody>{structure.evidence.map((item, index) => <tr key={index}><td>{item.date}</td><td>{fieldText[item.field]} {item.value}</td><td>{item.role}</td></tr>)}</tbody></table></div></details></section>;
+}
+function SearchProof({ steps }: { steps: ProjectionSearchStep[] }) {
+  if (!steps.length) return null;
+  return <section className="gp-proof gp-search-proof"><h3>先右后左的选点过程</h3>{steps.map((step, index) => <article key={`${step.direction}:${step.origin.date}:${step.side}:${index}`}>
+    <h4>{step.side === 'RIGHT' ? '先检查右侧' : '再检查左侧'} · {searchOutcomeText[step.outcome]}</h4>
+    <p>固定起点 {step.origin.date} · {step.origin.field} {step.origin.price}；{step.direction === 'UP' ? '向上找实际 Low 次低' : '向下找实际 High 次高'}。</p>
+    {step.trigger === 'RIGHT_NO_USABLE_COMBINATION' && <p>右侧没有可成立的组合，因此进入左侧检查；已成立后才到价或失效的结构不作为转左理由。</p>}
+    {step.candidates.length ? <div className="gp-evidence-table"><table><thead><tr><th>候选日期／实际字段</th><th>候选资格与其证据</th><th>组合结果</th><th>依据或未采用原因</th></tr></thead><tbody>{step.candidates.map((candidate, candidateIndex) => <tr key={`${candidate.point.date}:${candidate.point.field}:${candidateIndex}`}>
+      <td>{candidate.point.date}<br />{candidate.point.field} {candidate.point.price}</td>
+      <td>{searchBasisText[candidate.basis]} · {candidate.qualification === 'CONFIRMED' ? '有结构确认依据' : '资格待核'}<br />{candidate.evidence_through ? `候选资格证据截至 ${candidate.evidence_through}` : '尚无资格确认日期'}</td>
+      <td>{searchResultText[candidate.result]}</td><td>{candidate.reason}</td>
+    </tr>)}</tbody></table></div> : <p>未找到具备当前结构资格的候选，保留原始K线供核对。</p>}
+  </article>)}</section>;
 }
 export default function GoldenProjectionPage() {
   const [publication, setPublication] = useState<Publication | null>(null), [status, setStatus] = useState<ProjectionStatus | null>(null), [settled, setSettled] = useState(false), [error, setError] = useState(''), [statusError, setStatusError] = useState('');
@@ -130,7 +156,7 @@ export default function GoldenProjectionPage() {
   const selectedStructure = stock?.structure ?? null, includesIndices = (manifest?.index_total ?? 0) > 0;
   return <div className="chip-site chip-workbench gp-site wb-site">
     <SiteHeader active="golden"><button className="stock-header-refresh" aria-label="刷新每日画线" onClick={refreshData}><RefreshCw size={14} /><span>刷新</span></button></SiteHeader>
-    <WorkbenchPageBar title="每日黄金画线" date={manifest?.as_of} dateLabel="行情日" explanation={{ label: '画线与分类口径', content: <ol><li>先确定波段及层级，再找有意义的支撑／阻力反应，或完整次高／次低；依据不足不强画。</li><li>附近为收盘价距离关键位不超过 2%；突破高点、跌破低点优先分类，盘中越线后收回另标。</li><li>当日使用开盘前已生效的组合；收盘新组合下一交易日启用。首次计算只描述当前收盘位置。</li></ol> }}><SiteLink href="/golden">人工核对工作台</SiteLink></WorkbenchPageBar>
+    <WorkbenchPageBar title="每日黄金画线" date={manifest?.as_of} dateLabel="行情日" explanation={{ label: '画线与分类口径', content: <ol><li>先确定波段及起点，高点找实际High次高、低点找实际Low次低。先检查右侧，没有可成立的组合再查左侧；依据不足不强画。</li><li>附近为收盘价距离关键位不超过 2%；突破高点、跌破低点优先分类，盘中越线后收回另标。</li><li>当日使用开盘前已生效的组合；收盘新组合下一交易日启用。首次计算只描述当前收盘位置。</li></ol> }}><SiteLink href="/golden">人工核对工作台</SiteLink></WorkbenchPageBar>
     <WorkbenchShell contentClassName="gp-workspace" sidebar={<aside className="gp-sidebar wb-sidebar" aria-label="每日画线股票名单">
       <div className="gp-list-switch" role="group" aria-label="黄金分割列表"><button type="button" aria-pressed={!presetMode} onClick={() => changeLists({ ...current.current, active: 'market' })}>每日分类</button><button type="button" aria-pressed={presetMode} onClick={() => changeLists({ ...current.current, active: 'preset' })}>指定标的 <span>{goldenPresets.length}</span></button></div>
       <WorkbenchListHeader title={presetMode ? '指定标的' : '每日画线'} count={presetMode || manifest ? shown.length : null} unit={presetMode || includesIndices ? '项' : '只'} ready={presetMode || !!manifest} search={presetMode ? { label: '搜索指定标的', value: lists.preset.search, onChange: searchPreset } : { label: '搜索画线股票', value: filters.search, onChange: value => filter({ ...filters, search: value }) }} filters={presetMode ? [] : primaryFilters.map(category => ({ id: category, label: filterText(category, includesIndices), count: manifest ? category === 'FEATURED' ? featuredCategories.reduce((sum, key) => sum + counts[key], 0) : category === 'ALL' ? rows.length : counts[category] : null, active: filters.category === category, onSelect: () => filter({ ...filters, category }) }))} />
@@ -150,6 +176,7 @@ export default function GoldenProjectionPage() {
       {selected && stock && <>
         <StockDetailHeader name={selected.name} code={selected.code} date={selected.as_of} close={selected.close === null ? null : Number(selected.close)} percent={candleReturn(stock.history, selected.as_of)} basis={isProjectionIndex(selected.code) ? '指数点位' : '不复权'} badge={<span className={`gp-position gp-position-${selected.category.toLowerCase()}`}>{categoryText[selected.category]}</span>} />
         <p className="gp-context-note">{newCrossingText(selected)}</p>
+        {stock.rule_id !== PROJECTION_RULE && <p className="gp-note">{methodNotice[stock.rule_id]}</p>}
         {selected.drawing_state === 'NEW_REFERENCE' && <p className="gp-note">本组合为当前收盘计算的位置参考；新线从所列下一交易日启用，首次展示不补造“今日新突破”。</p>}
         {selected.drawing_state === 'HISTORY' && <p className="gp-note">这是已结束结构的历史参照，不列入当前有效画法。</p>}
         {selected.intraday_tags.length > 0 && <div className="gp-events">{selected.intraday_tags.map(tag => <span key={tag} className={tag === 'UPPER_REJECTED' || tag === 'LOWER_RECOVERED' ? 'gp-event-warning' : ''}>{eventText[tag]}</span>)}</div>}
@@ -159,11 +186,26 @@ export default function GoldenProjectionPage() {
         <div className="gp-levels wb-metrics"><span>{selected.direction === 'UP' ? '推算高点 H' : '原高点 H'}<strong>{priceText(selected.H)}</strong></span><span>中轴 M<strong>{priceText(selected.M)}</strong></span><span>{selected.direction === 'DOWN' ? '推算低点 L' : '原低点 L'}<strong>{priceText(selected.L)}</strong></span></div>
         <section className="wb-inspector" aria-label="画线选点核对"><InspectorTabs className="tv-inspector-tabs" label="画线依据面板" idPrefix="gp" tabs={[{ id: 'selection', label: '选点依据' }, { id: 'rules', label: '规则与数据' }]} value={tab} onChange={setTab} /><div className="tv-inspector-body" role="tabpanel" id={`gp-${tab}`} aria-labelledby={`gp-${tab}-tab`}>
           {tab === 'selection' && <><section className="gp-decision"><h3>{selectedStructure ? '为什么选这组点' : '为什么不画'}</h3>{selected.reasons.length ? <ul>{selected.reasons.map((reason, index) => <li key={index}>{reason}</li>)}</ul> : <p>请查看本次结构判断与原始选点证据。</p>}</section>
-            {selectedStructure && <StructureProof structure={selectedStructure} title={selected.basis === 'PREVIOUS_LOCK' ? '当日使用的已锁定画法' : selected.drawing_state === 'HISTORY' ? '已结束画法的选点依据' : '当前参考组合的选点依据'} />}
-            {stock.candidate_next_session && stock.candidate_next_session.id !== selectedStructure?.id && <details className="gp-next"><summary>下一交易日候选 · {stock.candidate_next_session.effective_from} 起生效</summary><div className="gp-next-levels">H {stock.candidate_next_session.levels.H} · M {stock.candidate_next_session.levels.M} · L {stock.candidate_next_session.levels.L}</div><StructureProof structure={stock.candidate_next_session} title="新组合与今日画法分别保留" /></details>}
+            <SearchProof steps={stock.search_trace} />
+            {selectedStructure && <StructureProof structure={selectedStructure} ruleId={stock.rule_id} title={selected.basis === 'PREVIOUS_LOCK' ? '当日使用的已锁定画法' : selected.drawing_state === 'HISTORY' ? '已结束画法的选点依据' : '当前参考组合的选点依据'} />}
+            {stock.candidate_next_session && stock.candidate_next_session.id !== selectedStructure?.id && <details className="gp-next"><summary>下一交易日候选 · {stock.candidate_next_session.effective_from} 起生效</summary><div className="gp-next-levels">H {stock.candidate_next_session.levels.H} · M {stock.candidate_next_session.levels.M} · L {stock.candidate_next_session.levels.L}</div><StructureProof structure={stock.candidate_next_session} ruleId={stock.rule_id} title="新组合与今日画法分别保留" /></details>}
             {stock.rejected_candidates.length > 0 && <details className="gp-rejected"><summary>未选候选及原因（{stock.rejected_candidates.length}项）</summary><div className="gp-evidence-table"><table><thead><tr><th>方向</th><th>起算端</th><th>中轴候选</th><th>未采用原因</th></tr></thead><tbody>{stock.rejected_candidates.map((candidate, index) => <tr key={index}><td>{candidate.direction === 'DOWN' ? '推低' : '推高'}</td><td>{candidate.origin_date}<br />{candidate.origin_price}</td><td>{candidate.axis_date}<br />{candidate.axis_price}</td><td>{candidate.reason}</td></tr>)}</tbody></table></div></details>}
           </>}
-          {tab === 'rules' && <div className="gp-rules"><h3>统一画线与分类口径</h3><ol><li>先核当前波段及层级，中轴来自有意义的支撑／阻力反应，或完整次高／次低。</li><li>高点与中轴推低点：L＝2M−H；低点与中轴推高点：H＝2M−L。起点或中轴证据不充分时不强画。</li><li>先判断收盘在高点上方或低点下方，其余按离关键位不超过 2% 分类。影线越线后收回另标记。</li><li>当日使用开盘前已生效的画法；收盘新组合下一交易日启用。今日新跨线须有同结构前收，换线日只说明位置。</li></ol>{manifest?.limitations.map((limitation, index) => <p key={index}>{limitation}</p>)}<p>{manifest?.scope} · 已发布行情日 {manifest?.as_of}</p><p>结果更新 {manifest && timeText(manifest.generated_at)} 北京时间。</p></div>}
+          {tab === 'rules' && <div className="gp-rules"><h3>逻辑与方法</h3>
+            {manifest && <p>{methodNotice[manifest.rule_id]}</p>}
+            <ol>
+              <li>先确定起点、方向与父子波段。向上以原低点L找高于它的实际Low次低，向下以原高点H找低于它的实际High次高；不因目标好看而移动原点。</li>
+              <li>先检查右侧。次高、次低须有独立结构依据，不是按价格排第二名，也不是出现一个更高Low或更低High就成立；支撑阻力可以提供证据，不能替换取价字段。</li>
+              <li>右侧没有可成立的组合时再查左侧。证据齐备前已到推算端的右侧组合可以拒绝后转左；保留具体拒绝原因，不写成没有任何右侧低点。</li>
+              <li>左侧也检查仍属当前波段的同性质结构，不能一直向左试到公式通过。多个已成立区域或结构仍有竞争时不强选，区域来源先于目标计算确定。</li>
+              <li>区域转换先检查至少两根下影线或上影线的共同交集。向上取共同支撑区下沿所对应的实际Low，向下取共同阻力区上沿所对应的实际High，同价取最新来源K线；不取区域均价、整组外侧极值或右侧上影线代替中轴。</li>
+              <li>按“左侧原区域、收盘全区破位、当前原点、右侧另日失败回测”核对转换。回测实体须在失败一侧，影线须触及原区域；破位至回测之间不能已有收盘完整收复区域，也不假设同日盘中先后。</li>
+              <li>取价日期与确认日期分别保存。原区域、破位、回测及全部父子波段证据可知后，向上须再有收盘越过完整核心区上沿，向下须跌破核心区下沿，才形成该区域的配对。共同区域边界取价是本地工程解释，不代表用户已接受某个具体中轴价。</li>
+              <li>原点与中轴选定后才计算H＝2M−L或L＝2M−H。已成立后才触达目标、原点被越过或收盘失轴的组合保留历史终态，不能转左寻找更大目标。</li>
+              <li>先判断收盘在高点上方或低点下方，其余按离关键位不超过2%分类。2%只用于展示距离，不用于确认次高、次低；影线与收盘分别标记。</li>
+              <li>当日采用开盘前已生效组合，新组合按实际记录后的交易日启用。证据日期、实际保存与生效时间分别保留，历史首次可知时间未知，不回填锁线或今日新跨线。</li>
+            </ol>
+            {manifest?.limitations.map((limitation, index) => <p key={index}>{limitation}</p>)}<p>{manifest?.scope} · 已发布行情日 {manifest?.as_of}</p><p>结果更新 {manifest && timeText(manifest.generated_at)} 北京时间。</p></div>}
         </div></section>
       </>}
     </WorkbenchShell>

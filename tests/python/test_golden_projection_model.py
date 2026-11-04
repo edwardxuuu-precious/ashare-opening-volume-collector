@@ -116,8 +116,13 @@ class SelectionTests(unittest.TestCase):
         self.assertEqual(selected['state'], 'DRAW')
         structure = selected['structure']
         self.assertEqual(structure['route'], 'ROLE')
-        self.assertLess(structure['axis']['date'], structure['origin']['date'])
+        self.assertGreater(structure['axis']['date'], structure['origin']['date'])
+        self.assertEqual(structure['axis']['field'], 'high')
         self.assertEqual(Decimal(structure['levels']['M']), Decimal('80'))
+        self.assertTrue(any(proof['role'] == '已有结构支撑／阻力'
+                            and proof['date'] < structure['origin']['date']
+                            and proof['field'] == 'low' and Decimal(proof['value']) == Decimal('80')
+                            for proof in structure['evidence']))
         self.assertTrue(any(proof['role'] == '本波段收盘失守／收复' for proof in structure['evidence']))
 
     def test_constant_prices_and_short_background_do_not_force_a_turn(self):

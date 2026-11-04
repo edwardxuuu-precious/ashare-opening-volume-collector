@@ -14,7 +14,13 @@ function manifestValue() { return { schema: 'stock.golden-projection.daily.manif
 function screeningValue() { return { schema: 'stock.golden-projection.daily.screen.v1', dataset_id: dataset, source_dataset_id: source, as_of: asOf, universe_total: 5, rule_id: PROJECTION_RULE, policy_sha256: policy, rows }; }
 function bar(date, open, high, low, close) { return { date, open, high, low, close, volume_shares: '1000', amount_cny: '9000', turnover_percent: '0.1' }; }
 function structureValue() { return { id: 'synthetic-structure', direction: 'DOWN', levels: { H: '10.00', M: '9.00', L: '8.00' }, origin: { date: '2026-10-20', field: 'high', price: '10.00', kind: 'H' }, axis: { date: '2026-10-22', field: 'high', price: '9.00' }, route: 'TURN', evidence_through: '2026-10-23', recorded_at: '2026-11-02T07:30:00Z', effective_from: '2026-11-03', life_state: 'OPEN', guides_end_on: null, reasons: ['完整虚构转折'], evidence: [{ date: '2026-10-22', field: 'high', value: '9.00', role: '中轴原价' }], role_zone: null }; }
-function stockValue() { return { schema: 'stock.golden-projection.daily.stock.v1', dataset_id: dataset, source_dataset_id: source, as_of: asOf, code: nearLow.code, name: nearLow.name, rule_id: PROJECTION_RULE, policy_sha256: policy, row: nearLow, history: [bar('2026-10-20', '9.80', '10.00', '9.60', '9.70'), bar('2026-10-22', '8.80', '9.00', '8.70', '8.90'), bar('2026-10-23', '8.80', '8.90', '8.50', '8.60'), bar(asOf, '8.17', '8.20', '8.06', '8.12')], structure: structureValue(), candidate_next_session: structureValue(), rejected_candidates: [], source: { provider: 'SYNTHETIC' } }; }
+function stockValue() { return { schema: 'stock.golden-projection.daily.stock.v1', dataset_id: dataset, source_dataset_id: source, as_of: asOf, code: nearLow.code, name: nearLow.name, rule_id: PROJECTION_RULE, policy_sha256: policy, row: nearLow, history: [bar('2026-10-20', '9.80', '10.00', '9.60', '9.70'), bar('2026-10-22', '8.80', '9.00', '8.70', '8.90'), bar('2026-10-23', '8.80', '8.90', '8.50', '8.60'), bar(asOf, '8.17', '8.20', '8.06', '8.12')], structure: structureValue(), candidate_next_session: structureValue(), rejected_candidates: [], search_trace: [], source: { provider: 'SYNTHETIC' } }; }
+function searchStep() { return { direction: 'DOWN', origin: { date: '2026-10-20', field: 'high', price: '10.00' }, side: 'RIGHT', trigger: 'RIGHT_FIRST', outcome: 'SELECTED', candidates: [{ point: { date: '2026-10-22', field: 'high', price: '9.00' }, basis: 'TURN', qualification: 'CONFIRMED', evidence_through: '2026-10-23', result: 'OPEN', reason: '完整虚构次高' }] }; }
+function parseStockForRule(value, ruleId = PROJECTION_RULE) {
+  const manifest = parseProjectionManifest({ ...manifestValue(), rule_id: ruleId });
+  const screen = parseProjectionScreening({ ...screeningValue(), rule_id: ruleId, rows: rows.map(row => row.code === value.row.code ? value.row : row) }, manifest);
+  return parseProjectionStock({ ...value, rule_id: ruleId }, manifest, screen.rows.find(row => row.code === value.row.code));
+}
 
 test('five price categories are the default while abstentions, historical structures and unknowns remain separate', () => {
   const manifest = parseProjectionManifest(manifestValue()), screen = parseProjectionScreening(screeningValue(), manifest);
@@ -46,6 +52,196 @@ test('manifest requires complete count partitions and a known rule identity', ()
   assert.throws(() => parseProjectionManifest({ ...manifestValue(), rule_id: 'OTHER' }));
   assert.throws(() => parseProjectionManifest({ ...manifestValue(), policy_sha256: 'not-a-hash' }));
 });
+const readableRules = ['GOLDEN_V21_HYBRID_DAILY_V1', 'GOLDEN_V21_HYBRID_DAILY_V2', 'GOLDEN_V21_HYBRID_DAILY_V3', 'GOLDEN_V21_HYBRID_DAILY_V4'];
+
+test('the current method identity is V4', () => {
+  assert.equal(PROJECTION_RULE, readableRules[3]);
+});
+
+for (const ruleId of readableRules) {
+  test(`readable ${ruleId} keeps its identity through manifest, screening and stock detail`, () => {
+    const manifest = parseProjectionManifest({ ...manifestValue(), rule_id: ruleId });
+    const screening = parseProjectionScreening({ ...screeningValue(), rule_id: ruleId }, manifest);
+    const stock = parseProjectionStock({ ...stockValue(), rule_id: ruleId }, manifest, screening.rows[0]);
+    assert.equal(manifest.rule_id, ruleId);
+    assert.equal(screening.rule_id, ruleId);
+    assert.equal(stock.rule_id, ruleId);
+  });
+}
+
+test('supported method versions cannot mix rule identities or policy hashes in a publication', () => {
+  for (const ruleId of readableRules) {
+    const otherRule = readableRules.find(value => value !== ruleId);
+    const manifest = parseProjectionManifest({ ...manifestValue(), rule_id: ruleId });
+    const screening = parseProjectionScreening({ ...screeningValue(), rule_id: ruleId }, manifest);
+    assert.throws(() => parseProjectionScreening({ ...screeningValue(), rule_id: otherRule }, manifest));
+    assert.throws(() => parseProjectionStock({ ...stockValue(), rule_id: otherRule }, manifest, screening.rows[0]));
+    assert.throws(() => parseProjectionScreening({ ...screeningValue(), rule_id: ruleId, policy_sha256: 'b'.repeat(64) }, manifest));
+    assert.throws(() => parseProjectionStock({ ...stockValue(), rule_id: ruleId, policy_sha256: 'b'.repeat(64) }, manifest, screening.rows[0]));
+  }
+  assert.throws(() => parseProjectionManifest({ ...manifestValue(), rule_id: 'GOLDEN_V21_HYBRID_DAILY_V5' }));
+});
+
+test('V3 and V4 require and validate search audit while V1 and V2 retain their original empty audit', () => {
+  const value = stockValue(); delete value.search_trace;
+  for (const rule of readableRules.slice(2)) {
+    assert.throws(() => parseStockForRule(value, rule));
+    const trace = [searchStep()];
+    assert.deepEqual(parseStockForRule({ ...stockValue(), search_trace: trace }, rule).search_trace, trace);
+    const wrongSide = { ...searchStep(), side: 'LEFT', trigger: 'RIGHT_NO_USABLE_COMBINATION' };
+    assert.throws(() => parseStockForRule({ ...stockValue(), search_trace: [wrongSide] }, rule));
+    const ended = { ...searchStep(), outcome: 'NO_USABLE_COMBINATION', candidates: [{ ...searchStep().candidates[0], result: 'REACHED' }] };
+    assert.throws(() => parseStockForRule({ ...stockValue(), search_trace: [ended] }, rule));
+  }
+  for (const rule of readableRules.slice(0, 2)) assert.deepEqual(parseStockForRule(value, rule).search_trace, []);
+});
+
+test('V3 and V4 reject opposite-field axes without relabelling a legacy level', () => {
+  const down = stockValue();
+  down.history[1] = bar('2026-10-22', '9.05', '9.20', '9.00', '9.10');
+  down.structure = { ...structureValue(), axis: { date: '2026-10-22', field: 'low', price: '9.00' }, evidence: [{ date: '2026-10-22', field: 'low', value: '9.00', role: '旧支撑来源' }] };
+  down.candidate_next_session = null;
+  assert.equal(parseStockForRule(down, readableRules[1]).structure.axis.field, 'low');
+  for (const rule of readableRules.slice(2)) assert.throws(() => parseStockForRule(down, rule));
+  const up = stockValue();
+  up.row = { ...nearLow, direction: 'UP' };
+  up.history[0] = bar('2026-10-20', '8.20', '8.50', '8.00', '8.30');
+  up.structure = { ...structureValue(), direction: 'UP', origin: { date: '2026-10-20', field: 'low', price: '8.00', kind: 'L' } };
+  up.candidate_next_session = null;
+  assert.equal(parseStockForRule(up, readableRules[1]).structure.axis.field, 'high');
+  for (const rule of readableRules.slice(2)) assert.throws(() => parseStockForRule(up, rule));
+});
+
+test('search audit binds actual source fields, side, chronology and known outcomes', () => {
+  const value = { ...stockValue(), search_trace: [searchStep()] };
+  const parsed = parseStockForRule(value);
+  assert.equal(parsed.search_trace[0].side, 'RIGHT');
+  assert.equal(parsed.search_trace[0].candidates[0].point.field, 'high');
+  const change = step => ({ ...value, search_trace: [step] });
+  assert.throws(() => parseStockForRule(change({ ...searchStep(), side: 'LEFT', trigger: 'RIGHT_NO_USABLE_COMBINATION' })));
+  assert.throws(() => parseStockForRule(change({ ...searchStep(), trigger: 'LEFT_FIRST' })));
+  assert.throws(() => parseStockForRule(change({ ...searchStep(), candidates: [{ ...searchStep().candidates[0], point: { ...searchStep().candidates[0].point, price: '8.99' } }] })));
+  assert.throws(() => parseStockForRule(change({ ...searchStep(), candidates: [{ ...searchStep().candidates[0], point: { date: '2026-10-22', field: 'low', price: '8.70' } }] })));
+  assert.throws(() => parseStockForRule(change({ ...searchStep(), candidates: [{ ...searchStep().candidates[0], evidence_through: '2026-11-03' }] })));
+  assert.throws(() => parseStockForRule(change({ ...searchStep(), candidates: [{ ...searchStep().candidates[0], evidence_through: null }] })));
+  assert.throws(() => parseStockForRule(change({ ...searchStep(), candidates: [{ ...searchStep().candidates[0], result: 'BETTER_TARGET' }] })));
+});
+
+test('search audit keeps early rejection distinct from a formed combination reaching its target', () => {
+  const first = searchStep();
+  first.outcome = 'NO_USABLE_COMBINATION';
+  first.candidates[0] = { ...first.candidates[0], result: 'TARGET_BEFORE_EVIDENCE', reason: '证据齐备前已到推算端' };
+  const left = { ...searchStep(), side: 'LEFT', trigger: 'RIGHT_NO_USABLE_COMBINATION', candidates: [{ ...searchStep().candidates[0], point: { date: '2026-10-19', field: 'high', price: '9.50' }, evidence_through: '2026-10-20' }] };
+  const value = { ...stockValue(), history: [bar('2026-10-19', '9.35', '9.50', '9.20', '9.40'), ...stockValue().history], search_trace: [first, left] };
+  const parsed = parseStockForRule(value);
+  assert.equal(parsed.search_trace[0].candidates[0].result, 'TARGET_BEFORE_EVIDENCE');
+  assert.equal(parsed.search_trace[1].side, 'LEFT');
+  const reached = { ...searchStep(), candidates: [{ ...searchStep().candidates[0], result: 'REACHED', reason: '成立后首次到价，保留历史' }] };
+  const historyResult = parseStockForRule({ ...stockValue(), search_trace: [reached] });
+  assert.equal(historyResult.search_trace.length, 1);
+  assert.equal(historyResult.search_trace[0].candidates[0].result, 'REACHED');
+});
+
+test('pending qualifications remain inspectable even when no drawing is selected', () => {
+  const value = stockValue();
+  value.code = noDraw.code; value.name = noDraw.name; value.row = noDraw;
+  value.history[value.history.length - 1] = bar(asOf, '7.90', '8.00', '7.70', '7.80');
+  value.structure = null; value.candidate_next_session = null;
+  value.search_trace = [{ ...searchStep(), outcome: 'QUALIFICATION_PENDING', candidates: [{ ...searchStep().candidates[0], basis: 'PLATFORM', qualification: 'PENDING', evidence_through: null, result: 'UNASSESSED', reason: '只有平台事实，阶段意义待核' }] }];
+  const parsed = parseStockForRule(value);
+  assert.equal(parsed.structure, null);
+  assert.equal(parsed.search_trace[0].candidates[0].qualification, 'PENDING');
+  assert.equal(parsed.search_trace[0].candidates[0].result, 'UNASSESSED');
+});
+
+test('a confirmed historical secondary remains confirmed while its current pairing is pending', () => {
+  const step = { ...searchStep(), side: 'LEFT', trigger: 'RIGHT_NO_USABLE_COMBINATION', outcome: 'QUALIFICATION_PENDING', candidates: [{ ...searchStep().candidates[0], point: { date: '2026-10-16', field: 'high', price: '9.50' }, evidence_through: '2026-10-19', result: 'PAIR_EVIDENCE_PENDING', reason: '历史结构已确认，本轮配对证据仍待核' }] };
+  const right = { ...searchStep(), outcome: 'NO_USABLE_COMBINATION', candidates: [] };
+  const value = { ...stockValue(), history: [bar('2026-10-16', '9.35', '9.50', '9.20', '9.40'), ...stockValue().history], search_trace: [right, step] };
+  const candidate = parseStockForRule(value).search_trace[1].candidates[0];
+  assert.equal(candidate.qualification, 'CONFIRMED');
+  assert.equal(candidate.basis, 'TURN');
+  assert.equal(candidate.result, 'PAIR_EVIDENCE_PENDING');
+  assert.equal(candidate.evidence_through, '2026-10-19');
+});
+
+test('search qualifications reject contradictory basis, evidence and result combinations', () => {
+  const candidate = searchStep().candidates[0];
+  const cases = [
+    { ...candidate, basis: 'PLATFORM' },
+    { ...candidate, result: 'UNASSESSED' },
+    { ...candidate, basis: 'PLATFORM', qualification: 'PENDING', result: 'UNASSESSED' },
+    { ...candidate, basis: 'PLATFORM', qualification: 'PENDING', evidence_through: null },
+  ];
+  for (const value of cases) {
+    assert.throws(() => parseStockForRule({ ...stockValue(), search_trace: [{ ...searchStep(), outcome: 'QUALIFICATION_PENDING', candidates: [value] }] }), JSON.stringify(value));
+  }
+});
+
+test('unconfirmed turn and role candidates retain their actual evidence kind', () => {
+  for (const basis of ['TURN', 'ROLE']) {
+    const step = { ...searchStep(), outcome: 'QUALIFICATION_PENDING', candidates: [{ ...searchStep().candidates[0], basis, qualification: 'PENDING', evidence_through: null, result: 'UNASSESSED', reason: '候选尚未取得完整确认' }] };
+    const candidate = parseStockForRule({ ...stockValue(), search_trace: [step] }).search_trace[0].candidates[0];
+    assert.equal(candidate.basis, basis);
+    assert.equal(candidate.qualification, 'PENDING');
+    assert.equal(candidate.evidence_through, null);
+    assert.equal(candidate.result, 'UNASSESSED');
+  }
+});
+
+test('search origins and candidate points must exist in the supplied history', () => {
+  const step = searchStep();
+  assert.throws(() => parseStockForRule({ ...stockValue(), search_trace: [{ ...step, origin: { ...step.origin, date: '2026-10-19' } }] }));
+  assert.throws(() => parseStockForRule({ ...stockValue(), search_trace: [{ ...step, candidates: [{ ...step.candidates[0], point: { ...step.candidates[0].point, date: '2026-10-21' } }] }] }));
+});
+
+test('left search requires an earlier right search for the same fixed origin', () => {
+  const left = { ...searchStep(), side: 'LEFT', trigger: 'RIGHT_NO_USABLE_COMBINATION', candidates: [{ ...searchStep().candidates[0], point: { date: '2026-10-19', field: 'high', price: '9.50' }, evidence_through: '2026-10-20' }] };
+  const value = { ...stockValue(), history: [bar('2026-10-19', '9.35', '9.50', '9.20', '9.40'), ...stockValue().history] };
+  const otherRight = { ...searchStep(), origin: { date: '2026-10-23', field: 'high', price: '8.90' }, outcome: 'NO_USABLE_COMBINATION', candidates: [{ ...searchStep().candidates[0], point: { date: asOf, field: 'high', price: '8.20' }, evidence_through: asOf, result: 'TARGET_BEFORE_EVIDENCE' }] };
+  assert.throws(() => parseStockForRule({ ...value, search_trace: [left] }));
+  assert.throws(() => parseStockForRule({ ...value, search_trace: [otherRight, left] }));
+});
+
+test('formed right results cannot be declared unusable or pending', () => {
+  for (const result of ['OPEN', 'REACHED', 'INVALID']) {
+    for (const outcome of ['NO_USABLE_COMBINATION', 'QUALIFICATION_PENDING']) {
+      const step = { ...searchStep(), outcome, candidates: [{ ...searchStep().candidates[0], result }] };
+      assert.throws(() => parseStockForRule({ ...stockValue(), search_trace: [step] }), `${result}:${outcome}`);
+    }
+  }
+});
+
+test('selected or ambiguous right searches cannot continue on the left', () => {
+  const left = { ...searchStep(), side: 'LEFT', trigger: 'RIGHT_NO_USABLE_COMBINATION', candidates: [{ ...searchStep().candidates[0], point: { date: '2026-10-19', field: 'high', price: '9.50' }, evidence_through: '2026-10-20' }] };
+  const value = { ...stockValue(), history: [bar('2026-10-19', '9.35', '9.50', '9.20', '9.40'), ...stockValue().history] };
+  for (const outcome of ['SELECTED', 'AMBIGUOUS']) {
+    assert.throws(() => parseStockForRule({ ...value, search_trace: [{ ...searchStep(), outcome }, left] }));
+  }
+});
+
+test('a selected search step must contain a formed combination', () => {
+  const step = searchStep();
+  for (const candidates of [[], [{ ...step.candidates[0], result: 'TARGET_BEFORE_EVIDENCE' }], [{ ...step.candidates[0], result: 'PAIR_EVIDENCE_PENDING' }], [{ ...step.candidates[0], basis: 'PLATFORM', qualification: 'PENDING', evidence_through: null, result: 'UNASSESSED' }]]) {
+    assert.throws(() => parseStockForRule({ ...stockValue(), search_trace: [{ ...step, candidates }] }));
+  }
+});
+
+test('pending right pairing allows left inspection without upgrading platform evidence', () => {
+  const right = { ...searchStep(), outcome: 'QUALIFICATION_PENDING', candidates: [{ ...searchStep().candidates[0], result: 'PAIR_EVIDENCE_PENDING', reason: '本轮配对证据待核' }] };
+  const left = { ...searchStep(), side: 'LEFT', trigger: 'RIGHT_NO_USABLE_COMBINATION', outcome: 'QUALIFICATION_PENDING', candidates: [{ ...searchStep().candidates[0], point: { date: '2026-10-19', field: 'high', price: '9.50' }, basis: 'PLATFORM', qualification: 'PENDING', evidence_through: null, result: 'UNASSESSED', reason: '左侧平台资格待核' }] };
+  const value = { ...stockValue(), history: [bar('2026-10-19', '9.35', '9.50', '9.20', '9.40'), ...stockValue().history], search_trace: [right, left] };
+  const parsed = parseStockForRule(value);
+  assert.equal(parsed.search_trace[0].candidates[0].qualification, 'CONFIRMED');
+  assert.equal(parsed.search_trace[1].candidates[0].qualification, 'PENDING');
+  assert.equal(parsed.search_trace[1].candidates[0].result, 'UNASSESSED');
+});
+
+test('one fixed origin cannot restart a completed search with different price formatting', () => {
+  const restart = { ...searchStep(), origin: { ...searchStep().origin, price: '10.0' }, outcome: 'NO_USABLE_COMBINATION', candidates: [] };
+  assert.throws(() => parseStockForRule({ ...stockValue(), search_trace: [searchStep(), restart] }));
+});
+
 test('screening cannot mix dates, policies, source batches or duplicate stocks', () => {
   const manifest = parseProjectionManifest(manifestValue());
   assert.throws(() => parseProjectionScreening({ ...screeningValue(), as_of: '2026-10-30' }, manifest));

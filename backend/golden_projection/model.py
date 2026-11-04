@@ -59,6 +59,47 @@ class Pivot:
     ambiguous: bool = False
 
 
+@dataclass(frozen=True)
+class WaveContext:
+    direction: str
+    origin: Pivot
+    trace: tuple[Pivot, ...]
+    left_boundary: Pivot | None
+    left_scope_proofs: tuple[Pivot, ...]
+    left_scope_reason: str
+
+
+@dataclass(frozen=True)
+class SourceBand:
+    direction: str
+    contacts: tuple[int, ...]
+    lower: Decimal
+    upper: Decimal
+    source: Pivot
+    qualified_index: int
+
+
+@dataclass(frozen=True)
+class RoleConversion:
+    band: SourceBand
+    broken_index: int
+    retest_index: int
+
+
+@dataclass(frozen=True)
+class StructuralAxis:
+    point: Pivot
+    evidence_index: int
+    route: str
+    proofs: tuple[dict, ...]
+    reason: str
+    start_index: int
+    role_source: Pivot | None = None
+    break_index: int | None = None
+    zone: dict | None = None
+    conversion: RoleConversion | None = None
+
+
 def _pivots(rows):
     points = []
     left = _POLICY['candidate_turn_left_bars']
@@ -167,6 +208,15 @@ def _episodes(rows, points):
                                     {'date': rows[departure]['date'], 'field': 'close', 'value': rows[departure]['close'],
                                      'role': '右侧收盘已离开峰谷及前一根K线的范围'}],
                          'reason': '左侧反弹／回落有独立起点，中轴取本段实际极值；右侧收盘已越过峰谷及其前一根K线的反向边界，确认回转，不额外等待另一个完整新低／新高。'})
+    for event in _role_events(rows, points):
+        family = _origin_family(rows, points, event['reaction'], event['direction'])
+        if family and _is_secondary(family, event['axis'].value, event['direction']):
+            episodes.append({**event, 'family': family})
+    return episodes + _pressure_episodes(rows, points)
+
+
+def _role_events(rows, points):
+    output = []
     for support in points:
         if support.kind == 'X' or support.ambiguous:
             continue
@@ -188,45 +238,111 @@ def _episodes(rows, points):
                             for j in range(broken + 1, reaction + 1))
             if reclaimed:
                 continue
-            family = _origin_family(rows, points, reaction, direction)
-            if not family or not _is_secondary(family, p, direction):
-                continue
             axis = Pivot(reaction, 'H' if direction == 'DOWN' else 'L', p, reaction)
             episode = {'direction': direction, 'axis': axis, 'source': support, 'reaction': reaction, 'break_index': broken,
-                       'evidence_index': max(support.confirmed, reaction), 'route': 'ROLE', 'family': family,
+                       'evidence_index': max(support.confirmed, reaction), 'route': 'ROLE',
                        'proofs': [_proof(rows, support, '已有结构支撑／阻力'),
                                   {'date': rows[broken]['date'], 'field': 'close', 'value': rows[broken]['close'], 'role': '本波段收盘失守／收复'},
                                   _proof(rows, axis, '独立回测到原价'),
                                   {'date': row['date'], 'field': 'close', 'value': row['close'], 'role': '回测收盘仍在失败一侧'}],
                        'reason': '已有结构价位经收盘穿越后，另一个交易日精确回测并收在失败一侧；角色来源可以在原点左侧，但失守和回测必须属于当前结构。'}
-            episodes.append(episode)
-    return episodes + _pressure_episodes(rows, points)
+            output.append(episode)
+    return output
 
 
-def _pressure_episodes(rows, points):
+def _reaction_groups(rows, direction):
+    groups, active, shared_low, shared_high = [], [], None, None
+    for index, row in enumerate(rows):
+        body_low, body_high = sorted((number(row['open']), number(row['close'])))
+        low, high = ((body_high, number(row['high'])) if direction == 'DOWN'
+                     else (number(row['low']), body_low))
+        if low >= high:
+            if len(active) >= 2:
+                groups.append(tuple(active))
+            active, shared_low, shared_high = [], None, None
+            continue
+        new_low = max(shared_low, low) if shared_low is not None else low
+        new_high = min(shared_high, high) if shared_high is not None else high
+        if active and new_low > new_high:
+            if len(active) >= 2:
+                groups.append(tuple(active))
+            active, new_low, new_high = [], low, high
+        active.append(index)
+        shared_low, shared_high = new_low, new_high
+    if len(active) >= 2:
+        groups.append(tuple(active))
+    return groups
+
+
+def _role_conversions(rows):
+    output = []
+    for direction in ('UP', 'DOWN'):
+        field, kind = ('low', 'L') if direction == 'UP' else ('high', 'H')
+        for contacts in _reaction_groups(rows, direction):
+            if direction == 'UP':
+                lower = max(number(rows[j]['low']) for j in contacts)
+                upper = min(min(number(rows[j]['open']), number(rows[j]['close'])) for j in contacts)
+                value = lower
+            else:
+                lower = max(max(number(rows[j]['open']), number(rows[j]['close'])) for j in contacts)
+                upper = min(number(rows[j]['high']) for j in contacts)
+                value = upper
+            source_index = next(j for j in reversed(contacts) if number(rows[j][field]) == value)
+            band = SourceBand(direction, contacts, lower, upper,
+                              Pivot(source_index, kind, value, contacts[-1]), contacts[-1])
+            broken = next((j for j in range(band.qualified_index + 1, len(rows))
+                           if (number(rows[j]['close']) < lower if direction == 'UP'
+                               else number(rows[j]['close']) > upper)), None)
+            if broken is None:
+                continue
+            for j in range(broken + 1, len(rows)):
+                row = rows[j]
+                reclaimed = number(row['close']) > upper if direction == 'UP' else number(row['close']) < lower
+                if reclaimed:
+                    break
+                body_low, body_high = sorted((number(row['open']), number(row['close'])))
+                failed = (body_high < lower and number(row['high']) >= lower if direction == 'UP'
+                          else body_low > upper and number(row['low']) <= upper)
+                if failed:
+                    output.append(RoleConversion(band, broken, j))
+    return tuple(output)
+
+
+def _conversion_axes(rows, wave, conversions):
+    output = []
+    for conversion in conversions:
+        band = conversion.band
+        if (band.direction != wave.direction
+                or not band.qualified_index < conversion.broken_index < wave.origin.index < conversion.retest_index):
+            continue
+        source_role = '原支撑区域的实际Low' if wave.direction == 'UP' else '原阻力区域的实际High'
+        field = 'low' if wave.direction == 'UP' else 'high'
+        retest_field = 'high' if wave.direction == 'UP' else 'low'
+        proofs = []
+        for j in band.contacts:
+            proofs.extend(({'date': rows[j]['date'], 'field': field, 'value': rows[j][field], 'role': source_role},
+                           {'date': rows[j]['date'], 'field': 'close', 'value': rows[j]['close'],
+                            'role': '来源区域形成时收盘仍在原支撑／阻力一侧'}))
+        proofs.extend(({'date': rows[conversion.broken_index]['date'], 'field': 'close',
+                        'value': rows[conversion.broken_index]['close'], 'role': '区域收盘跌破／突破'},
+                       {'date': rows[conversion.retest_index]['date'], 'field': retest_field,
+                        'value': rows[conversion.retest_index][retest_field], 'role': '支撑阻力转换的失败回测High／Low'},
+                       {'date': rows[conversion.retest_index]['date'], 'field': 'close',
+                        'value': rows[conversion.retest_index]['close'], 'role': '区域失败回测收盘仍在失守一侧'}))
+        zone = {'lower': price(band.lower), 'upper': price(band.upper),
+                'start_date': rows[band.contacts[0]]['date'], 'end_date': rows[conversion.retest_index]['date']}
+        output.append(StructuralAxis(
+            band.source, conversion.retest_index, 'ROLE', tuple(proofs),
+            '左侧至少两次同侧影线的共同区域先形成，收盘穿过整个区域后，原点右侧另一日影线回测该区域且实体仍在失败一侧；'
+            '中轴取共同区域边界对应的实际Low／High，不取右侧回测极值、整组外侧极值或均价。',
+            band.contacts[0], zone=zone, conversion=conversion))
+    return tuple(output)
+
+
+def _pressure_events(rows):
     output = []
     for direction in ('DOWN', 'UP'):
-        groups, active, shared_low, shared_high = [], [], None, None
-        for index, row in enumerate(rows):
-            body_low, body_high = sorted((number(row['open']), number(row['close'])))
-            low, high = ((body_high, number(row['high'])) if direction == 'DOWN'
-                         else (number(row['low']), body_low))
-            if low >= high:
-                if len(active) >= 2:
-                    groups.append(active)
-                active, shared_low, shared_high = [], None, None
-                continue
-            new_low = max(shared_low, low) if shared_low is not None else low
-            new_high = min(shared_high, high) if shared_high is not None else high
-            if active and new_low > new_high:
-                if len(active) >= 2:
-                    groups.append(active)
-                active, new_low, new_high = [], low, high
-            active.append(index)
-            shared_low, shared_high = new_low, new_high
-        if len(active) >= 2:
-            groups.append(active)
-        for group in groups:
+        for group in _reaction_groups(rows, direction):
             field, kind = ('high', 'H') if direction == 'DOWN' else ('low', 'L')
             values = [number(rows[j][field]) for j in group]
             value = max(values) if direction == 'DOWN' else min(values)
@@ -252,9 +368,6 @@ def _pressure_episodes(rows, points):
                     break
             if departure is None:
                 continue
-            family = _origin_family(rows, points, group[0], direction)
-            if not family or not _is_secondary(family, value, direction):
-                continue
             axis = Pivot(peak, kind, value, peak+2)
             proofs = []
             for j in group:
@@ -264,11 +377,20 @@ def _pressure_episodes(rows, points):
                            'role': '收盘离开整段反复测试的实体范围'})
             output.append({'direction': direction, 'axis': axis, 'source': axis, 'reaction': peak,
                            'evidence_index': departure, 'route': 'ROLE', 'role_kind': 'REPEATED_REACTION',
-                           'family': family, 'proofs': proofs,
+                           'start_index': group[0], 'proofs': proofs,
                            'zone': {'lower': price(zone_edge if direction == 'DOWN' else value),
                                     'upper': price(value if direction == 'DOWN' else zone_edge),
                                     'start_date': rows[group[0]]['date'], 'end_date': rows[group[-1]]['date']},
                            'reason': '同段至少两次上影／下影存在共同价位交集，收盘均未穿过压力／支撑区，随后收盘离开整段实体范围；区域由实际K线交集形成，中轴取该段实际极值，不用2%或均价聚类。'})
+    return output
+
+
+def _pressure_episodes(rows, points):
+    output = []
+    for event in _pressure_events(rows):
+        family = _origin_family(rows, points, event['start_index'], event['direction'])
+        if family and _is_secondary(family, event['axis'].value, event['direction']):
+            output.append({**event, 'family': family})
     return output
 
 
@@ -297,7 +419,7 @@ def evaluate_structure(rows, structure):
 
 
 def _rejection(rows, episode, origin, code, reason):
-    source = episode['source']
+    source = episode['axis']
     return {'direction': episode['direction'], 'origin_date': rows[origin.index]['date'],
             'origin_price': price(origin.value), 'axis_date': rows[source.index]['date'],
             'axis_price': price(source.value), 'route': episode['route'],
@@ -326,9 +448,10 @@ def _assess_episode(rows, episode):
         pre_reached = any(number(row['low']) <= target if direction == 'DOWN' else number(row['high']) >= target
                           for row in prefix)
         if pre_reached:
-            rejected.append(_rejection(rows, episode, origin, 'TARGET_BEFORE_EVIDENCE', '从原点至全部选点证据完成日已经到过推算端；仅复查预先形成的父结构，不沿价格向左搜索。'))
+            rejected.append(_rejection(rows, episode, origin, 'TARGET_BEFORE_EVIDENCE', '从原点至全部选点证据完成日已经到过推算端，该组合不能作为新参考；可按既定先右后左顺序检查，不移动原点凑目标。'))
             continue
-        source = episode['source']
+        source = episode['axis']
+        role_source = episode.get('role_source', episode['source'])
         origin_data = {'date': rows[origin.index]['date'], 'field': _field(origin), 'price': price(origin.value), 'kind': origin.kind}
         axis_data = {'date': rows[source.index]['date'], 'field': _field(source), 'price': price(source.value)}
         levels = {'H': price(origin.value if direction == 'DOWN' else target), 'M': price(axis.value),
@@ -348,58 +471,294 @@ def _assess_episode(rows, episode):
                   'role_zone': None}
         if episode['route'] == 'ROLE':
             result['role_zone'] = episode.get('zone', {'lower': price(axis.value), 'upper': price(axis.value),
-                                                       'start_date': rows[source.index]['date'], 'end_date': rows[episode['reaction']]['date']})
+                                                       'start_date': rows[role_source.index]['date'], 'end_date': rows[episode['reaction']]['date']})
         return evaluate_structure(rows, result), rejected
     return None, rejected
 
 
-def select_structure(history):
-    rows = history[-_POLICY['analysis_bars']:]
-    if len(rows) < _POLICY['analysis_bars']:
-        return {'state': 'NO_DRAW', 'structure': None, 'rejected_candidates': [],
-                'reasons': ['实际日线不足60根，波段及阶段转折背景不足，不强画。']}
-    points = _pivots(rows)
-    episodes = _episodes(rows, points)
-    rejected = []
-    latest_reaction = max((item['reaction'] for item in episodes), default=None)
-    for episode in episodes:
-        if episode['reaction'] != latest_reaction:
-            rejected.append(_rejection(rows, episode, episode['family'][0][0], 'EARLIER_REACTION_NOT_CURRENT',
-                                       '属于更早的独立反应段，不用旧段替换当前波段的判断，也不为保留未到价目标回捞旧组合。'))
-    for reaction in ([] if latest_reaction is None else [latest_reaction]):
-        accepted = []
-        for episode in (item for item in episodes if item['reaction'] == reaction):
-            structure, reasons = _assess_episode(rows, episode)
+def _structural_axes(rows, points):
+    output = []
+    for before, point in zip(points, points[1:]):
+        if point.kind == 'X' or before.kind == 'X' or point.kind == before.kind:
+            continue
+        direction = 'DOWN' if point.kind == 'H' else 'UP'
+        boundary = (min(number(rows[j]['low']) for j in (point.index-1, point.index)) if direction == 'DOWN'
+                    else max(number(rows[j]['high']) for j in (point.index-1, point.index)))
+        departure = next((j for j in range(point.confirmed, len(rows))
+                          if (number(rows[j]['close']) < boundary if direction == 'DOWN'
+                              else number(rows[j]['close']) > boundary)), None)
+        if departure is None:
+            continue
+        proofs = (_proof(rows, before, '独立结构反应的来路'),
+                  _proof(rows, point, '已完成反应的实际高低点'),
+                  {'date': rows[departure]['date'], 'field': 'close', 'value': rows[departure]['close'],
+                   'role': '收盘已离开该高低点及前一根K线的反向范围'})
+        output.append(StructuralAxis(point, max(before.confirmed, point.confirmed, departure),
+                                     'TURN', proofs, '该实际高低点已有独立完整反应；是否相对本轮原点构成次高或次低另行配对。', before.index))
+    for event in _pressure_events(rows):
+        output.append(StructuralAxis(event['axis'], event['evidence_index'], 'ROLE',
+                                     tuple(event['proofs']), event['reason'], event['start_index'],
+                                     zone=event['zone']))
+    for event in _role_events(rows, points):
+        output.append(StructuralAxis(event['axis'], event['evidence_index'], 'ROLE',
+                                     tuple(event['proofs']), event['reason'], event['break_index'],
+                                     role_source=event['source'], break_index=event['break_index']))
+    unique = {}
+    for axis in output:
+        key = (axis.point.kind, axis.point.index, axis.point.value, axis.evidence_index,
+               axis.route, axis.break_index, axis.role_source.index if axis.role_source else None)
+        unique[key] = axis
+    return tuple(unique.values())
+
+
+def _source_point(rows, point):
+    return {'date': rows[point.index]['date'], 'field': _field(point), 'price': price(point.value)}
+
+
+def _wave_context(rows, points, direction, origin, trace):
+    family = _origin_family(rows, points, origin.index, direction)
+    boundary = family[-1][0] if family else None
+    scope_proofs = family[-1][1] if family else ()
+    if boundary is None:
+        reason = '本轮原点之前没有可确认的同向前序波段家族，历史结构点与当前波段的归属尚未确认。'
+    elif any(point.kind == 'X' for point in points if boundary.index <= point.index < origin.index):
+        reason = f'前序波段边界候选为{rows[boundary.index]["date"]}，但期间有日内高低先后未知的外包K线，左侧归属尚未确认。'
+        boundary = None
+    else:
+        reason = (f'本轮左侧波段边界在公式检查前由同向前序家族确定为{rows[boundary.index]["date"]}'
+                  f'的{_field(boundary)} {price(boundary.value)}；内部次高或次低沿既有父链保留，'
+                  '外侧新低或新高停止向更早波段延伸。边界之前的历史结构资格不等于本轮配对资格。')
+    return WaveContext(direction, origin, trace, boundary, scope_proofs, reason)
+
+
+def _explicit_wave(rows, points, value):
+    if not isinstance(value, dict) or value.get('direction') not in ('UP', 'DOWN'):
+        raise ValueError('EXPLICIT_ORIGIN_INVALID')
+    direction = value['direction']
+    kind, field = ('L', 'low') if direction == 'UP' else ('H', 'high')
+    if value.get('field') != field:
+        raise ValueError('ORIGIN_DIRECTION_FIELD_MISMATCH')
+    index = next((i for i, row in enumerate(rows) if row['date'] == value.get('date')), None)
+    if index is None or number(value.get('price')) != number(rows[index][field]):
+        raise ValueError('ORIGIN_POINT_NOT_IN_SOURCE')
+    point = next((point for point in points if point.index == index and point.kind == kind),
+                 Pivot(index, kind, number(rows[index][field]), index))
+    return _wave_context(rows, points, direction, point, (point,)), {'direction': direction, **_source_point(rows, point)}
+
+
+def _axis_episode(rows, wave, axis, side):
+    evidence = max(axis.evidence_index, wave.origin.confirmed, *(point.confirmed for point in wave.trace))
+    proofs = list(axis.proofs)
+    outside_role = axis.break_index is not None and wave.origin.index > axis.break_index
+    if side == 'LEFT' and not outside_role:
+        evidence = max(evidence, *(point.confirmed for point in wave.left_scope_proofs))
+        boundary = axis.point.value
+        if axis.conversion is not None:
+            boundary = axis.conversion.band.upper if wave.direction == 'UP' else axis.conversion.band.lower
+        pairing = next((j for j in range(evidence, len(rows))
+                        if (number(rows[j]['close']) > boundary if wave.direction == 'UP'
+                            else number(rows[j]['close']) < boundary)), None)
+        if pairing is None:
+            return None
+        evidence = pairing
+        proofs.extend(_proof(rows, point, '公式计算前确定的左侧前序波段边界及父链')
+                      for point in wave.left_scope_proofs)
+        proofs.append({'date': rows[pairing]['date'], 'field': 'close', 'value': rows[pairing]['close'],
+                       'role': ('当前波段收盘已越过完整转换区域' if axis.conversion is not None
+                                else '本轮原点确认后收盘已回到历史中轴的画法方向一侧')})
+    event = {'direction': wave.direction, 'axis': axis.point, 'source': axis.point,
+             'reaction': axis.conversion.retest_index if axis.conversion is not None else axis.point.index,
+             'evidence_index': evidence, 'route': axis.route,
+             'family': [(wave.origin, wave.trace)], 'proofs': proofs,
+             'reason': f'固定本轮原点，先右后左查找；本候选来自原点{"右" if side == "RIGHT" else "左"}侧的实际{_field(axis.point)}。' + axis.reason
+                       + (wave.left_scope_reason if side == 'LEFT' else '')}
+    if axis.role_source is not None:
+        event['role_source'] = axis.role_source
+    if axis.break_index is not None:
+        event['break_index'] = axis.break_index
+    if axis.zone is not None:
+        event['zone'] = axis.zone
+    return event
+
+
+def _pending_platforms(rows, wave, axes, side):
+    kind = wave.origin.kind
+    field = _field(wave.origin)
+    qualified = {(axis.point.index, axis.point.value) for axis in axes if axis.point.kind == kind}
+    qualified.update((j, number(rows[j][field])) for axis in axes if axis.conversion is not None
+                     for j in axis.conversion.band.contacts if axis.point.kind == kind)
+    output = []
+    for group in _reaction_groups(rows, 'UP' if kind == 'L' else 'DOWN'):
+        values = [number(rows[j][field]) for j in group]
+        value = min(values) if kind == 'L' else max(values)
+        index = next(j for j in reversed(group) if number(rows[j][field]) == value)
+        if ((index, value) in qualified or index == wave.origin.index
+                or (index > wave.origin.index) != (side == 'RIGHT')
+                or not (value > wave.origin.value if kind == 'L' else value < wave.origin.value)):
+            continue
+        point = Pivot(index, kind, value, group[-1])
+        output.append({'point': _source_point(rows, point), 'basis': 'PLATFORM', 'qualification': 'PENDING',
+                       'evidence_through': None, 'result': 'UNASSESSED',
+                       'reason': '只有连续影线低位或高位平台事实，独立阶段意义及完整反应尚未确认，不因价位接近就提升为次低或次高。'})
+    left, right = _POLICY['candidate_turn_left_bars'], _POLICY['candidate_turn_right_bars']
+    for index in range(left, len(rows)):
+        value = number(rows[index][field])
+        neighbors = rows[index-left:index] + rows[index+1:index+right+1]
+        extreme = min if kind == 'L' else max
+        if ((index, value) in qualified or index == wave.origin.index
+                or (index > wave.origin.index) != (side == 'RIGHT')
+                or not (value > wave.origin.value if kind == 'L' else value < wave.origin.value)
+                or value != extreme([value] + [number(row[field]) for row in neighbors])):
+            continue
+        point = Pivot(index, kind, value, min(index+right, len(rows)-1))
+        missing = max(0, index+right-len(rows)+1)
+        reason = (f'局部转折候选尚缺{missing}根右侧确认K线，没有计算目标或假造确认时间。' if missing
+                  else '局部极值候选已有可见K线，但尚不具备独立完整反应或阶段资格，不能仅据两侧几根K线认定次高或次低。')
+        output.append({'point': _source_point(rows, point), 'basis': 'TURN', 'qualification': 'PENDING',
+                       'evidence_through': None, 'result': 'UNASSESSED', 'reason': reason})
+    unique = {}
+    for attempt in output:
+        point = attempt['point']
+        unique[(point['date'], point['field'], point['price'])] = attempt
+    return list(unique.values())
+
+
+def _merge_structures(values):
+    merged = {}
+    for candidate in values:
+        key = encoded({'direction': candidate['direction'], 'origin': candidate['origin'], 'levels': candidate['levels']})
+        old = merged.get(key)
+        if old is None or candidate['evidence_through'] < old['evidence_through']:
+            merged[key] = candidate
+        elif candidate['evidence_through'] == old['evidence_through'] and candidate['route'] != old['route']:
+            old['route'] = 'BOTH'
+            old['reasons'] = list(dict.fromkeys(old['reasons'] + candidate['reasons']))
+            proofs = {(proof['date'], proof['field'], proof['value'], proof['role']): proof
+                      for proof in old['evidence'] + candidate['evidence']}
+            old['evidence'] = sorted(proofs.values(), key=lambda proof: (proof['date'], proof['field'], proof['role']))
+    return list(merged.values())
+
+
+def _search_in_wave(rows, wave, axes, right_reaction=None, *, conversions=()):
+    searches, rejected = [], []
+    for side in ('RIGHT', 'LEFT'):
+        attempts, accepted = [], []
+        side_axes = axes if side == 'RIGHT' else axes + _conversion_axes(rows, wave, conversions)
+        for axis in side_axes:
+            point = axis.point
+            if (point.kind != wave.origin.kind or point.index == wave.origin.index
+                    or (point.index > wave.origin.index) != (side == 'RIGHT')
+                    or not (point.value > wave.origin.value if wave.direction == 'UP' else point.value < wave.origin.value)):
+                continue
+            if side == 'RIGHT':
+                if right_reaction is not None and point.index != right_reaction:
+                    continue
+                if axis.start_index < wave.origin.index or (axis.route == 'TURN' and axis.start_index == wave.origin.index):
+                    continue
+            elif axis.conversion is None and axis.evidence_index >= wave.origin.index:
+                continue
+            source_start = axis.conversion.band.contacts[0] if axis.conversion is not None else point.index
+            if side == 'LEFT' and (wave.left_boundary is None or source_start < wave.left_boundary.index):
+                attempts.append({'point': _source_point(rows, point), 'basis': axis.route,
+                                 'qualification': 'CONFIRMED', 'evidence_through': rows[axis.evidence_index]['date'],
+                                 'result': 'PAIR_EVIDENCE_PENDING', 'reason': wave.left_scope_reason
+                                           + '该点自身已确认，但当前波段归属未成立，不计算目标，也不因近端组合失败而启用。'})
+                continue
+            event = _axis_episode(rows, wave, axis, side)
+            if event is None:
+                attempts.append({'point': _source_point(rows, point), 'basis': axis.route,
+                                 'qualification': 'CONFIRMED', 'evidence_through': rows[axis.evidence_index]['date'],
+                                 'result': 'PAIR_EVIDENCE_PENDING',
+                                 'reason': ('来源区域及右侧转换已确认，但全部本轮证据可知后尚无收盘越过完整转换区域，不把它直接标成有效组合。'
+                                            if axis.conversion is not None else
+                                            '历史结构点资格已确认，但本轮原点确认后尚无收盘返回中轴画法方向一侧的配对证据，不把它直接标成有效组合。')})
+                continue
+            structure, reasons = _assess_episode(rows, event)
             rejected.extend(reasons)
+            evidence = rows[event['evidence_index']]['date']
+            result = structure['life_state'] if structure is not None else reasons[0]['reason_code']
+            reason = (structure.get('end_reason') or '组合在证据齐备时成立；之后的到价或失效单独保留。') if structure else reasons[0]['reason']
+            attempts.append({'point': _source_point(rows, point), 'basis': axis.route,
+                             'qualification': 'CONFIRMED', 'evidence_through': evidence,
+                             'result': result, 'reason': reason})
             if structure is not None:
                 accepted.append(structure)
-        merged = {}
-        for candidate in accepted:
-            key = encoded({'direction': candidate['direction'], 'origin': candidate['origin'], 'levels': candidate['levels']})
-            previous = merged.get(key)
-            if previous is None or candidate['evidence_through'] < previous['evidence_through']:
-                merged[key] = candidate
-            elif (candidate['evidence_through'] == previous['evidence_through'] and candidate['route'] != previous['route']):
-                previous['route'] = 'BOTH'
-                previous['reasons'] = list(dict.fromkeys(previous['reasons'] + candidate['reasons']))
-                proofs = {(v['date'], v['field'], v['value'], v['role']): v for v in previous['evidence'] + candidate['evidence']}
-                previous['evidence'] = sorted(proofs.values(), key=lambda v: (v['date'], v['field'], v['role']))
+        attempts.extend(_pending_platforms(rows, wave, side_axes, side))
+        merged = _merge_structures(accepted)
+        outcome = ('AMBIGUOUS' if len(merged) > 1 else 'SELECTED' if merged
+                   else 'QUALIFICATION_PENDING' if any(attempt['result'] in ('UNASSESSED', 'PAIR_EVIDENCE_PENDING') for attempt in attempts)
+                   else 'NO_USABLE_COMBINATION')
+        searches.append({'direction': wave.direction, 'origin': _source_point(rows, wave.origin),
+                         'side': side, 'trigger': 'RIGHT_FIRST' if side == 'RIGHT' else 'RIGHT_NO_USABLE_COMBINATION',
+                         'outcome': outcome, 'candidates': attempts})
         if len(merged) > 1:
-            for candidate in merged.values():
+            for candidate in merged:
                 rejected.append({'direction': candidate['direction'], 'origin_date': candidate['origin']['date'],
                                  'origin_price': candidate['origin']['price'], 'axis_date': candidate['axis']['date'],
                                  'axis_price': candidate['axis']['price'], 'route': candidate['route'],
                                  'reaction_date': candidate['reaction_on'], 'reason_code': 'COMPETING_CURRENT_STRUCTURES',
-                                 'reason': '同一最新反应段存在不同但均可成立的原点／中轴组合，不按目标大小强选。'})
-            return {'state': 'AMBIGUOUS', 'structure': None, 'rejected_candidates': rejected,
-                    'reasons': ['最新独立反应段存在同等可解释的不同组合，中轴与波段归属待核，不强画。']}
+                                 'reason': '同一原点、同一搜索侧存在多个可成立组合，不转到另一侧绕开竞争，也不按目标大小强选。'})
+            return 'AMBIGUOUS', None, rejected, searches
         if merged:
-            structure = next(iter(merged.values()))
-            return {'state': 'DRAW', 'structure': structure, 'rejected_candidates': rejected,
-                    'reasons': structure['reasons']}
-    reason = ('已有局部候选，但原点、完整阶段或提前到价检查未能形成一致组合，不强画。' if episodes
-              else '尚无同时具备完整阶段转折或清楚角色反应与可配对波段的中轴，不强画。')
-    return {'state': 'NO_DRAW', 'structure': None, 'rejected_candidates': rejected, 'reasons': [reason]}
+            return 'DRAW', merged[0], rejected, searches
+    return 'NO_DRAW', None, rejected, searches
+
+
+def select_structure(history, *, origin=None):
+    rows = history[-_POLICY['analysis_bars']:]
+    if len(rows) < _POLICY['analysis_bars']:
+        return {'state': 'NO_DRAW', 'structure': None, 'rejected_candidates': [], 'search_trace': [],
+                'origin_context': None, 'reasons': ['实际日线不足60根，波段及阶段转折背景不足，不强画。']}
+    points = _pivots(rows)
+    episodes = _episodes(rows, points)
+    axes = _structural_axes(rows, points)
+    conversions = _role_conversions(rows)
+    origin_context = None
+    if origin is not None:
+        wave, origin_context = _explicit_wave(rows, points, origin)
+        state, structure, rejected, searches = _search_in_wave(rows, wave, axes, conversions=conversions)
+        reasons = (structure['reasons'] if structure else
+                   ['固定明确原点后已按先右后左检查；没有可唯一成立的同字段次高或次低，保留缺失资格和拒绝原因。'])
+        return {'state': state, 'structure': structure, 'rejected_candidates': rejected,
+                'search_trace': searches, 'origin_context': origin_context, 'reasons': reasons}
+    latest = max((episode['reaction'] for episode in episodes), default=None)
+    current = [episode for episode in episodes if episode['reaction'] == latest]
+    rejected, searches, accepted, checked = [], [], [], {}
+    for episode in episodes:
+        if episode['reaction'] != latest:
+            rejected.append(_rejection(rows, episode, episode['family'][0][0], 'EARLIER_REACTION_NOT_CURRENT',
+                                       '属于更早独立反应段，不用它在目标检查后反向选择当前波段。'))
+    for episode in current:
+        for position, (point, trace) in enumerate(episode['family']):
+            key = (episode['direction'], point.index, point.value)
+            if key not in checked:
+                wave = _wave_context(rows, points, episode['direction'], point, trace)
+                result = _search_in_wave(rows, wave, axes, latest, conversions=conversions)
+                checked[key] = result
+                rejected.extend(result[2])
+                searches.extend(result[3])
+            state, structure, _, _ = checked[key]
+            if state == 'AMBIGUOUS':
+                return {'state': state, 'structure': None, 'rejected_candidates': rejected,
+                        'search_trace': searches, 'origin_context': None,
+                        'reasons': ['当前固定波段的同侧次高或次低组合存在竞争，不换方向或目标绕过。']}
+            if structure is not None:
+                if position:
+                    structure['reasons'].insert(0, '近端原点的左右两侧均无可成立组合；复核预先构造的同向父波段原点，保留原点切换依据。')
+                accepted.append(structure)
+                break
+    merged = _merge_structures(accepted)
+    if len(merged) > 1:
+        return {'state': 'AMBIGUOUS', 'structure': None, 'rejected_candidates': rejected,
+                'search_trace': searches, 'origin_context': None,
+                'reasons': ['预先构造的原点或波段仍有多个可成立组合，不能按目标大小决定归属。']}
+    if merged:
+        return {'state': 'DRAW', 'structure': merged[0], 'rejected_candidates': rejected,
+                'search_trace': searches, 'origin_context': None, 'reasons': merged[0]['reasons']}
+    reason = ('已按固定原点先右后左检查，尚无可成立组合；平台事实和结构资格待核分别保留。' if current
+              else '没有可唯一确认的结构原点及波段上下文，未伪造左右查轴过程，不强画。')
+    return {'state': 'NO_DRAW', 'structure': None, 'rejected_candidates': rejected,
+            'search_trace': searches, 'origin_context': None, 'reasons': [reason]}
 
 
 def classify_position(bar, structure, previous_bar=None, *, same_structure=False, near_percent='2'):
@@ -477,6 +836,7 @@ def unknown_detail(*, code, name, as_of, dataset_id, source_dataset_id, reason,
             'source_dataset_id': source_dataset_id, 'as_of': as_of, 'code': code, 'name': name,
             'rule_id': RULE_ID, 'policy_sha256': POLICY_SHA256, 'row': row, 'history': [],
             'structure': None, 'candidate_next_session': None, 'rejected_candidates': [],
+            'search_trace': [], 'origin_context': None,
             'source': _source_audit(code, source_dataset_id, source_sha256, None, 'UNKNOWN',
                                     source_key, source_metadata),
             'reason_code': reason, 'historical_known_at': None, 'can_generate_order': False}
@@ -487,10 +847,11 @@ def _identity(structure):
             'reaction_on': structure['reaction_on'], 'levels': structure['levels']}
 
 
-def _verified_prior_structures(previous, rows, code, as_of):
+def _verified_prior_structures(previous, rows, code, as_of, origin_context=None):
     if (not isinstance(previous, dict) or previous.get('code') != code
             or previous.get('schema') != 'stock.golden-projection.daily.stock.v1'
             or previous.get('rule_id') != RULE_ID or previous.get('policy_sha256') != POLICY_SHA256
+            or previous.get('origin_context') != origin_context
             or not isinstance(previous.get('as_of'), str) or previous['as_of'] >= as_of):
         return []
     by_date = {row['date']: row for row in rows}
@@ -549,7 +910,7 @@ def _adjacent_previous(previous, rows, as_of):
 
 def classify_frame(value, *, code, name, as_of, dataset_id, source_dataset_id, source_sha256,
                    previous=None, recorded_at=None, effective_from=None,
-                   source_key=None, source_metadata=None):
+                   source_key=None, source_metadata=None, origin=None):
     context = {'code': code, 'name': name, 'as_of': as_of, 'dataset_id': dataset_id,
                'source_dataset_id': source_dataset_id, 'source_sha256': source_sha256,
                'source_key': source_key, 'source_metadata': source_metadata}
@@ -564,11 +925,11 @@ def classify_frame(value, *, code, name, as_of, dataset_id, source_dataset_id, s
                 for bar in series.bars]
         if series.bars[-1].volume == 0:
             raise ValueError('ZERO_VOLUME_TRADE_STATUS_UNVERIFIED')
-        selection = select_structure(rows)
+        selection = select_structure(rows, origin=origin)
     except (ValueError, TypeError, KeyError, ArithmeticError) as exc:
         reason = str(exc) if isinstance(exc, ValueError) else 'SOURCE_FRAME_INVALID'
         return unknown_detail(**context, reason=reason)
-    priors = _verified_prior_structures(previous, rows, code, as_of)
+    priors = _verified_prior_structures(previous, rows, code, as_of, selection['origin_context'])
     candidate = selection['structure']
     if candidate is not None:
         known = next((old for old in priors if old['id'] == candidate['id']), None)
@@ -625,6 +986,7 @@ def classify_frame(value, *, code, name, as_of, dataset_id, source_dataset_id, s
             'history': rows[-_POLICY['display_bars']:], 'structure': structure,
             'candidate_next_session': candidate if candidate is not None and candidate['life_state'] == 'OPEN' else None,
             'rejected_candidates': selection['rejected_candidates'],
+            'search_trace': selection['search_trace'], 'origin_context': selection['origin_context'],
             'source': _source_audit(code, source_dataset_id, source_sha256, rows[-1]['date'],
                                     series.provider, source_key, source_metadata),
             'historical_known_at': None, 'can_generate_order': False}

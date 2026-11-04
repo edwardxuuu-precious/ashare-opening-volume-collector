@@ -189,11 +189,33 @@ class AuthTests(unittest.TestCase):
                 self.assertEqual(self.auth.handler(self.event('/data/2026-09-30.json', token=self.token()), None)['statusCode'], 503)
 
     def test_embedded_template_handler_is_current(self):
+        import base64
+        import hashlib
+        from io import BytesIO
+        import re
+        import zipfile
         from deploy.auth.chip_bundle import inline_handler
         directory = Path(__file__).parents[2] / 'deploy/auth'
         template = json.loads((directory / 'template.json').read_text(encoding='utf-8'))
-        self.assertEqual(template['Resources']['Function']['Properties']['Code']['ZipFile'],
-                         inline_handler())
+
+        def contents(code):
+            match = re.search(r"_bundle64\.b64decode\('([A-Za-z0-9+/=]+)'\)", code)
+            self.assertIsNotNone(match)
+            raw = base64.b64decode(match.group(1), validate=True)
+            digest = hashlib.sha256(raw).hexdigest()
+            library = f"_chip_library='/tmp/stock-chip-library-{digest}.zip'"
+            self.assertIn(library, code)
+            with zipfile.ZipFile(BytesIO(raw)) as archive:
+                modules = []
+                for item in archive.infolist():
+                    self.assertIn(item.compress_type, (zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED))
+                    modules.append((item.filename, item.compress_type, archive.read(item)))
+            normalized = code.replace(match.group(0), "_bundle64.b64decode('<shared-module-archive>')", 1)
+            normalized = normalized.replace(library, "_chip_library='<shared-module-path>'", 1)
+            return modules, normalized
+
+        self.assertEqual(contents(template['Resources']['Function']['Properties']['Code']['ZipFile']),
+                         contents(inline_handler()))
 
     def test_full_market_gzip_fits_lambda_envelope_and_decodes_exactly(self):
         observation = {'source': 'sina', 'stage': 'refresh', 'status': 'unverified',
