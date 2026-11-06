@@ -1,4 +1,5 @@
 import { authRead } from './auth-fetch.ts';
+import { observeAutoPlatform, type AutoResult } from './video-space-auto.ts';
 
 export type VideoCode = '300502' | '300308' | '300394';
 type Endpoint = { readonly date: string; readonly field: 'high' | 'low' };
@@ -177,6 +178,9 @@ export type VerifiedVideoStock = {
   readonly sourceDataset: string;
   readonly frozen: Frame;
   readonly history: readonly VideoBar[];
+  readonly autoHistory?:
+    | { kind: 'ready'; history: readonly VideoBar[]; historyStartDate: string }
+    | { kind: 'pending'; reason: string };
 };
 export type SpaceRuler = { readonly H: number; readonly L: number };
 export type SpaceLine = { readonly k: number; readonly price: number };
@@ -210,7 +214,16 @@ export type VideoObservation =
       readonly kind: 'ready';
       readonly date: string;
       readonly bar: VideoBar;
-      readonly scenario: VideoScenario;
+      readonly source:
+        | { readonly kind: 'FIXED'; readonly scenario: VideoScenario }
+        | {
+            readonly kind: 'AUTO';
+            readonly version: Extract<AutoResult, { kind: 'ready' }>['version'];
+            readonly versions: Extract<
+              AutoResult,
+              { kind: 'ready' }
+            >['versions'];
+          };
       readonly ruler: SpaceRuler;
       readonly startDate: string;
       readonly high: Endpoint & { readonly price: string };
@@ -419,6 +432,128 @@ export async function verifyVideoStock({
     history: latest.history,
   };
 }
+const AUTO_DATASET = '105823211e44568a';
+const AUTO_PINS: Record<VideoCode, { sourceSha: string; historySha: string }> =
+  {
+    '300502': {
+      sourceSha:
+        'c3fb2943b2cc4e1f90baf3fa140c93ffaaa88c57f6da81bb57a74b1f7783be79',
+      historySha:
+        '0ccf61101e49ab048c6b16d6f3ffb6db7728ff6ebc9f80dd77e8b74281b4827a',
+    },
+    '300308': {
+      sourceSha:
+        'bf6f0e3c93f5b51c83326ced2406f8a22121abd1852100e62b2e0ed953967910',
+      historySha:
+        'a5299f232d1701d0f053986b45cc3778d99ca5eb6f577eb947f7ec094c4f2993',
+    },
+    '300394': {
+      sourceSha:
+        '6df30c02d03e4e0fe2752b04477362c434f58c47f5d985b297fe18bb19014b53',
+      historySha:
+        '6835b177a7d8cac7ecbe22736a6d447799dc793c10d6e40915c5cf3bab43a8fa',
+    },
+  };
+export async function verifyAutoHistory(
+  code: VideoCode,
+  seedInput: unknown,
+  latestInput: unknown,
+  manifest: VideoManifest,
+): Promise<readonly VideoBar[]> {
+  const seed = parseVideoFrame(seedInput, code, {
+    dataset: AUTO_DATASET,
+    sourceDataset: AUTO_DATASET,
+    asOf: '2026-11-06',
+  });
+  const latest = parseVideoFrame(latestInput, code, manifest);
+  const tuples = seed.history.map((b) => [
+    b.date,
+    b.open,
+    b.high,
+    b.low,
+    b.close,
+    b.volume_shares,
+  ]);
+  const digest = await crypto.subtle.digest(
+    'SHA-256',
+    new TextEncoder().encode(JSON.stringify(tuples)),
+  );
+  const hash = Array.from(new Uint8Array(digest), (b) =>
+    b.toString(16).padStart(2, '0'),
+  ).join('');
+  const pin = AUTO_PINS[code];
+  if (
+    seed.sourceSha !== pin.sourceSha ||
+    hash !== pin.historySha ||
+    seed.history.length !== 500 ||
+    seed.history[0].date !== '2024-10-17' ||
+    latest.asOf < seed.asOf
+  )
+    throw Error('自动平台种子来源或历史指纹不符，待核。');
+  const first = latest.history[0].date;
+  const oldOverlap = seed.history.filter((b) => b.date >= first);
+  const newOverlap = latest.history.filter((b) => b.date <= seed.asOf);
+  if (
+    !oldOverlap.length ||
+    oldOverlap.length !== newOverlap.length ||
+    oldOverlap.at(-1)?.date !== seed.asOf
+  )
+    throw Error('自动平台种子与最新数据无法连续衔接，待核。');
+  for (let i = 0; i < oldOverlap.length; i++) {
+    const a = oldOverlap[i],
+      b = newOverlap[i];
+    if (
+      a.date !== b.date ||
+      Number(a.open) !== Number(b.open) ||
+      Number(a.high) !== Number(b.high) ||
+      Number(a.low) !== Number(b.low) ||
+      Number(a.close) !== Number(b.close)
+    )
+      throw Error('自动平台重叠历史缺日或修订，待核。');
+  }
+  return [...seed.history, ...latest.history.filter((b) => b.date > seed.asOf)];
+}
+export function reconcileVideoRefresh(
+  previous: VerifiedVideoStock | null,
+  incoming: VerifiedVideoStock,
+):
+  | { kind: 'ready'; stock: VerifiedVideoStock }
+  | { kind: 'error'; previous: VerifiedVideoStock; message: string } {
+  if (
+    !previous ||
+    previous.code !== incoming.code ||
+    previous.autoHistory?.kind !== 'ready'
+  )
+    return { kind: 'ready', stock: incoming };
+  if (incoming.autoHistory?.kind !== 'ready')
+    return {
+      kind: 'error',
+      previous,
+      message: `自动历史待核：${incoming.autoHistory?.reason ?? '自动历史不可用'}。请重试。`,
+    };
+  const oldBars = previous.autoHistory.history;
+  const newBars = incoming.autoHistory.history;
+  if (
+    incoming.asOf < previous.asOf ||
+    newBars.length < oldBars.length ||
+    oldBars.some((a, i) => {
+      const b = newBars[i];
+      return (
+        !b ||
+        a.date !== b.date ||
+        (['open', 'high', 'low', 'close'] as const).some(
+          (field) => Number(a[field]) !== Number(b[field]),
+        )
+      );
+    })
+  )
+    return {
+      kind: 'error',
+      previous,
+      message: '自动历史倒退、缺日或 OHLC 修订，待核。请重试。',
+    };
+  return { kind: 'ready', stock: incoming };
+}
 export async function loadVideoSpace(
   code: VideoCode,
   { signal }: { signal: AbortSignal },
@@ -444,7 +579,42 @@ export async function loadVideoSpace(
     read(`${PREFIX}${FROZEN_DATASET}/${code}.json`),
     read(`/data/chips/daily/${manifest.dataset}/${code}.json`),
   ]);
-  return verifyVideoStock({ code, manifest, frozenInput, latestInput });
+  const stock = await verifyVideoStock({
+    code,
+    manifest,
+    frozenInput,
+    latestInput,
+  });
+  try {
+    const seedInput =
+      manifest.dataset === AUTO_DATASET
+        ? latestInput
+        : await read(`/data/chips/daily/${AUTO_DATASET}/${code}.json`);
+    const history = await verifyAutoHistory(
+      code,
+      seedInput,
+      latestInput,
+      manifest,
+    );
+    return {
+      ...stock,
+      autoHistory: {
+        kind: 'ready',
+        history,
+        historyStartDate: history[0].date,
+      },
+    };
+  } catch (error: unknown) {
+    if (signal.aborted) throw error;
+    return {
+      ...stock,
+      autoHistory: {
+        kind: 'pending',
+        reason:
+          error instanceof Error ? error.message : '自动平台种子不可用，待核。',
+      },
+    };
+  }
 }
 export function boundaryAt(ruler: SpaceRuler, k: number): number {
   return ruler.H * Math.pow(ruler.L / ruler.H, k);
@@ -524,9 +694,51 @@ export function observeVideoDay(
       kind: 'pending',
       reason: '原尺尚未形成；晚端点后的下一实际交易日起才判读。',
     };
-  const index = stock.history.findIndex((b) => b.date === selectedDate),
-    bar = stock.history[index],
-    previous = stock.history[index - 1] ?? null;
+  return observeResolved(
+    stock.history,
+    { kind: 'FIXED', scenario },
+    { ...scenario.high, price: h.high },
+    { ...scenario.low, price: l.low },
+    startDate,
+    selectedDate,
+    selection,
+  );
+}
+export function observeAutomaticVideoDay(
+  stock: VerifiedVideoStock,
+  selectedDate: string,
+  selection: ReferenceSelection,
+): VideoObservation {
+  if (!stock.autoHistory || stock.autoHistory.kind === 'pending')
+    return {
+      kind: 'pending',
+      reason: stock.autoHistory?.reason ?? '自动平台种子不可用，待核。',
+    };
+  const result = observeAutoPlatform(stock.autoHistory.history, selectedDate);
+  if (result.kind === 'pending') return result;
+  const v = result.version;
+  return observeResolved(
+    stock.autoHistory.history,
+    { kind: 'AUTO', version: v, versions: result.versions },
+    { date: v.H.date, field: 'high', price: String(v.H.price) },
+    { date: v.L.date, field: 'low', price: String(v.L.price) },
+    v.activationDate ?? selectedDate,
+    selectedDate,
+    selection,
+  );
+}
+function observeResolved(
+  history: readonly VideoBar[],
+  source: Extract<VideoObservation, { kind: 'ready' }>['source'],
+  high: Endpoint & { price: string },
+  low: Endpoint & { price: string },
+  startDate: string,
+  selectedDate: string,
+  selection: ReferenceSelection,
+): VideoObservation {
+  const index = history.findIndex((b) => b.date === selectedDate),
+    bar = history[index],
+    previous = history[index - 1] ?? null;
   if (!bar)
     return { kind: 'pending', reason: '所选交易日没有已保存行情，待核。' };
   if (selection.kind === 'AUTO_PREVIOUS_CLOSE' && !previous)
@@ -539,7 +751,7 @@ export function observeVideoDay(
     (!Number.isFinite(selection.k) || !Number.isInteger(selection.k * 2))
   )
     return { kind: 'pending', reason: '固定k须为有限整数或半整数。' };
-  const ruler = { H: Number(h.high), L: Number(l.low) },
+  const ruler = { H: Number(high.price), L: Number(low.price) },
     location = locateSpace(ruler, Number(bar.close));
   const reference =
     selection.kind === 'FIXED'
@@ -559,11 +771,11 @@ export function observeVideoDay(
     kind: 'ready',
     date: selectedDate,
     bar,
-    scenario,
+    source,
     ruler,
     startDate,
-    high: { ...scenario.high, price: h.high },
-    low: { ...scenario.low, price: l.low },
+    high,
+    low,
     location,
     reference: observe(reference),
     referenceSelection: selection,

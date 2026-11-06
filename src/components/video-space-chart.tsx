@@ -19,10 +19,12 @@ export function VideoSpaceChart({
   stock,
   observation,
   expanded,
+  comparison,
 }: {
   stock: VerifiedVideoStock;
   observation: Extract<VideoObservation, { kind: 'ready' }>;
   expanded: boolean;
+  comparison: Extract<VideoObservation, { kind: 'ready' }> | null;
 }) {
   const ref = useRef<SVGSVGElement>(null),
     [width, setWidth] = useState(900);
@@ -47,6 +49,14 @@ export function VideoSpaceChart({
     : [...observation.spaceLines];
   if (!guides.some((g) => g.k === observation.reference.k))
     guides.push(observation.reference);
+  const comparisonLines = comparison
+    ? [
+        comparison.location.upper,
+        comparison.location.middle,
+        comparison.location.lower,
+        comparison.reference,
+      ].filter((g, i, all) => all.findIndex((x) => x.k === g.k) === i)
+    : [];
   const height = 340,
     left = 12,
     right = width - 104,
@@ -55,7 +65,10 @@ export function VideoSpaceChart({
   const scale = priceScale({
     prices: bars
       .flatMap((b) => [Number(b.low), Number(b.high)])
-      .concat(guides.map((g) => g.price)),
+      .concat(
+        guides.map((g) => g.price),
+        comparisonLines.map((g) => g.price),
+      ),
     top,
     bottom,
   });
@@ -64,6 +77,10 @@ export function VideoSpaceChart({
     x = (i: number) => left + (i + 0.5) * step;
   const firstLine = bars.findIndex((b) => b.date >= observation.startDate);
   const startX = firstLine < 0 ? right : x(firstLine);
+  const comparisonIndex = comparison
+    ? bars.findIndex((b) => b.date >= comparison.startDate)
+    : -1;
+  const comparisonStart = comparisonIndex < 0 ? right : x(comparisonIndex);
   const labels = guides
     .map((g) => ({ ...g, y: scale.y(g.price) }))
     .sort((a, b) => a.y - b.y);
@@ -85,7 +102,7 @@ export function VideoSpaceChart({
         viewBox={`0 0 ${width} ${height}`}
         role="img"
         data-price-geometry="log-price.v1"
-        aria-label={`${stock.code} ${observation.date} 固定视频空间与真实日K线`}
+        aria-label={`${stock.code} ${observation.date} ${observation.source.kind === 'AUTO' ? '自动平台（试验）' : '固定视频空间'}与真实日K线`}
       >
         {scale.ticks(5).map((p, i) => (
           <g key={i}>
@@ -163,6 +180,20 @@ export function VideoSpaceChart({
             </g>
           );
         })}
+        {comparisonLines.map((g) => (
+          <line
+            key={`comparison-${g.k}`}
+            data-comparison-k={g.k}
+            data-price={g.price}
+            x1={comparisonStart}
+            x2={right}
+            y1={scale.y(g.price)}
+            y2={scale.y(g.price)}
+            stroke="#a352a8"
+            strokeWidth={g.k === comparison?.reference.k ? 2 : 1}
+            strokeDasharray={Number.isInteger(g.k) ? '2 3' : '7 3'}
+          />
+        ))}
         {guides.map((g) => {
           const label = labels.find((l) => l.k === g.k),
             y = scale.y(g.price),
@@ -230,12 +261,17 @@ export function VideoSpaceChart({
             );
           })}
         <text x={left} y={height - 10} fontSize="10" fill="var(--ui-muted)">
-          实线整格 · 虚线半格 · 蓝线为本日共同参考
+          {observation.source.kind === 'AUTO' ? '自动' : '固定'}
+          主尺：实线整格、虚线半格 · 蓝线为共同参考
+          {comparison &&
+            ` · 紫线为${observation.source.kind === 'AUTO' ? '固定' : '自动'}对照尺`}
         </text>
       </svg>
       <p>
-        水平线从 {observation.startDate}{' '}
-        开始。日线只显示开高低收，不推断盘中路径。
+        水平线从 {observation.startDate} 开始。
+        {comparison &&
+          `紫线是${observation.source.kind === 'AUTO' ? '固定' : '自动'}对照尺的所在空间和参考线，价格见下方表格；两尺共用同一 LOG 价格轴。`}
+        日线不推断盘中路径。
       </p>
     </figure>
   );

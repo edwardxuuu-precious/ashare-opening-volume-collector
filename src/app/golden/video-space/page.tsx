@@ -9,7 +9,10 @@ import {
   FROZEN_DATASET,
   VIDEO_RULE_VERSION,
   loadVideoSpace,
+  reconcileVideoRefresh,
   observeVideoDay,
+  observeAutomaticVideoDay,
+  boundaryAt,
   videoScenarios,
   videoStocks,
   type LineObservation,
@@ -92,11 +95,13 @@ function Observation({
   observation,
   expanded,
   onExpand,
+  comparison,
 }: {
   stock: VerifiedVideoStock;
   observation: Extract<VideoObservation, { kind: 'ready' }>;
   expanded: boolean;
   onExpand: () => void;
+  comparison: Extract<VideoObservation, { kind: 'ready' }> | null;
 }) {
   const o = observation,
     lines = o.spaceLines.some((l) => l.k === o.reference.k)
@@ -185,11 +190,18 @@ function Observation({
           {expanded ? '聚焦相关空间' : '展开120根与0至6标尺'}
         </button>
       </div>
-      <VideoSpaceChart stock={stock} observation={o} expanded={expanded} />
+      <VideoSpaceChart
+        stock={stock}
+        observation={o}
+        expanded={expanded}
+        comparison={comparison}
+      />
       <h3>同线开收核对</h3>
       <LineTable lines={lines} referenceK={o.reference.k} />
       <section className="vs-ruler">
-        <h3>固定原尺与候选依据</h3>
+        <h3>
+          {o.source.kind === 'AUTO' ? '自动平台原尺' : '固定原尺与候选依据'}
+        </h3>
         <dl>
           <div>
             <dt>H · {o.high.date} · high</dt>
@@ -200,12 +212,243 @@ function Observation({
             <dd>{o.low.price}</dd>
           </div>
         </dl>
-        <p>{o.scenario.reason}</p>
         <p>
-          候选为视频波段人工固定，原作者当时锁线时间未知。历史日为描述性回看。
+          {o.source.kind === 'FIXED'
+            ? o.source.scenario.reason
+            : '重复上下影线形成平台；旧平台仅在连续两日上破后退役。'}
+        </p>
+        {o.source.kind === 'AUTO' && (
+          <details>
+            <summary>平台确认与版本记录</summary>
+            <p>同一确认日取索引最早的四点组合。</p>
+            <p>
+              历史版本：
+              {o.source.versions
+                .map(
+                  (v) =>
+                    `锁定 ${v.confirmationDate}，启用 ${v.activationDate ?? '待核'}，退役 ${v.retiredAt ?? '尚无'}`,
+                )
+                .join('；')}
+            </p>
+            <p>
+              锁定 {o.source.version.confirmationDate} · 启用{' '}
+              {o.source.version.activationDate} · 竞争候选{' '}
+              {o.source.version.candidateCount} · 首次跌破{' '}
+              {o.source.version.downBreak ?? '尚无'}
+            </p>
+            <p>
+              {o.source.version.points
+                .map(
+                  (p) =>
+                    `${p.kind} ${p.date} ${money(p.price)}（确认 ${p.confirmed}）`,
+                )
+                .join('；')}
+            </p>
+          </details>
+        )}
+        <p>
+          {o.source.kind === 'AUTO'
+            ? '当前快照历史模拟，原作者自动算法未知。旧平台可能保留较久，推广尚未开放。'
+            : '候选为视频波段人工固定，原作者当时锁线时间未知。历史日为描述性回看。'}
         </p>
       </section>
     </>
+  );
+}
+function Comparison({
+  stock,
+  date,
+  selection,
+  fixed,
+  automatic,
+  scenarioId,
+}: {
+  stock: VerifiedVideoStock;
+  date: string;
+  selection: ReferenceSelection;
+  fixed: VideoObservation | null;
+  automatic: VideoObservation | null;
+  scenarioId: string;
+}) {
+  const recent = stock.history
+    .filter((b) => b.date <= date)
+    .slice(-5)
+    .reverse();
+  if (fixed?.kind !== 'ready' || automatic?.kind !== 'ready')
+    return (
+      <section className="vs-ruler">
+        <h3>固定与自动对照</h3>
+        <p>
+          固定：{fixed?.kind === 'pending' ? fixed.reason : '可用'}；自动：
+          {automatic?.kind === 'pending' ? automatic.reason : '可用'}。
+        </p>
+      </section>
+    );
+  const a = automatic,
+    f = fixed;
+  const matching = videoScenarios.some(
+    (s) =>
+      s.code === stock.code &&
+      s.high.date === a.high.date &&
+      s.low.date === a.low.date,
+  );
+  const ks = [
+    ...new Set([
+      f.location.upper.k,
+      f.location.middle.k,
+      f.location.lower.k,
+      f.reference.k,
+      a.location.upper.k,
+      a.location.middle.k,
+      a.location.lower.k,
+      a.reference.k,
+    ]),
+  ].sort((x, y) => x - y);
+  const line = (
+    label: string,
+    value: Extract<VideoObservation, { kind: 'ready' }>,
+  ) => (
+    <tr>
+      <th>{label}</th>
+      <td>
+        {value.high.date} high {money(value.high.price)}
+        <br />
+        {value.low.date} low {money(value.low.price)}
+      </td>
+      <td>{Math.log(value.ruler.H / value.ruler.L).toFixed(4)}</td>
+      <td>
+        B({value.reference.k}) {money(value.reference.price)}
+      </td>
+      <td>
+        <Relation value={value.reference.open} />
+      </td>
+      <td>
+        <Relation value={value.reference.close} />
+      </td>
+    </tr>
+  );
+  return (
+    <section className="vs-ruler">
+      <h3>固定与自动对照</h3>
+      <p>
+        {matching ? '自动端点等于一组固定候选。' : '端点不同，波段待核。'} H 差{' '}
+        {((a.ruler.H / f.ruler.H - 1) * 100).toFixed(2)}%，L 差{' '}
+        {((a.ruler.L / f.ruler.L - 1) * 100).toFixed(2)}%；LOG 高度比{' '}
+        {(
+          Math.log(a.ruler.H / a.ruler.L) / Math.log(f.ruler.H / f.ruler.L)
+        ).toFixed(3)}
+        。
+      </p>
+      <p className="vs-comparison-hint">表格可横向滚动查看完整日期与价格。</p>
+      <div className="vs-table-wrap vs-endpoint-comparison">
+        <table>
+          <thead>
+            <tr>
+              <th>尺</th>
+              <th>H / L 实际点位</th>
+              <th>LOG 高度</th>
+              <th>各自参考线</th>
+              <th>开盘</th>
+              <th>收盘</th>
+            </tr>
+          </thead>
+          <tbody>
+            {line('固定', f)}
+            {line('自动', a)}
+          </tbody>
+        </table>
+      </div>
+      <h4>同 k 价格对照</h4>
+      <div className="vs-table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>k</th>
+              <th>固定</th>
+              <th>自动</th>
+              <th>自动相对固定</th>
+            </tr>
+          </thead>
+          <tbody>
+            {ks.map((k) => (
+              <tr key={k}>
+                <th>{k}</th>
+                <td>{money(boundaryAt(f.ruler, k))}</td>
+                <td>{money(boundaryAt(a.ruler, k))}</td>
+                <td>
+                  {(
+                    (boundaryAt(a.ruler, k) / boundaryAt(f.ruler, k) - 1) *
+                    100
+                  ).toFixed(2)}
+                  %
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <details>
+        <summary>展开 0 至 6 同 k 全表</summary>
+        <div className="vs-table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>k</th>
+                <th>固定</th>
+                <th>自动</th>
+              </tr>
+            </thead>
+            <tbody>
+              {Array.from({ length: 13 }, (_, i) => i / 2).map((k) => (
+                <tr key={k}>
+                  <th>{k}</th>
+                  <td>{money(boundaryAt(f.ruler, k))}</td>
+                  <td>{money(boundaryAt(a.ruler, k))}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </details>
+      <h4>最近五个实际交易日</h4>
+      <div className="vs-table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>日期</th>
+              <th>固定参考 / 开收</th>
+              <th>自动参考 / 开收</th>
+            </tr>
+          </thead>
+          <tbody>
+            {recent.map((b) => {
+              const x = observeVideoDay(stock, scenarioId, b.date, selection),
+                y = observeAutomaticVideoDay(stock, b.date, selection);
+              const cell = (o: VideoObservation) =>
+                o.kind === 'pending' ? (
+                  '待核'
+                ) : (
+                  <span>
+                    B({o.reference.k}) {money(o.reference.price)}
+                    <br />开 <Relation value={o.reference.open} /> 收{' '}
+                    <Relation value={o.reference.close} />
+                  </span>
+                );
+              return (
+                <tr key={b.date}>
+                  <th>{b.date}</th>
+                  <td>{cell(x)}</td>
+                  <td>{cell(y)}</td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+      <p>
+        当前快照历史模拟，不代表历史实时运行。原作者自动公式未知；旧平台可能长期保留，推广尚未开放。
+      </p>
+    </section>
   );
 }
 export default function VideoSpacePage() {
@@ -220,13 +463,17 @@ export default function VideoSpacePage() {
       'AUTO_PREVIOUS_CLOSE',
     ),
     [fixedK, setFixedK] = useState('1'),
-    [expanded, setExpanded] = useState(false);
+    [expanded, setExpanded] = useState(false),
+    [rulerMode, setRulerMode] = useState<'fixed' | 'auto'>('fixed');
   useEffect(() => {
     const controller = new AbortController();
     void loadVideoSpace(code, { signal: controller.signal })
       .then((stock) => {
         if (!controller.signal.aborted)
-          setLoads((old) => ({ ...old, [code]: { kind: 'ready', stock } }));
+          setLoads((old) => ({
+            ...old,
+            [code]: reconcileVideoRefresh(saved(old[code]), stock),
+          }));
       })
       .catch((error: unknown) => {
         if (!controller.signal.aborted)
@@ -249,9 +496,15 @@ export default function VideoSpacePage() {
     mode === 'AUTO_PREVIOUS_CLOSE'
       ? { kind: mode }
       : { kind: mode, k: fixedK.trim() ? Number(fixedK) : NaN };
-  const observation = stock
+  const fixedObservation = stock
     ? observeVideoDay(stock, scenarioId, date, selection)
     : null;
+  const autoObservation = stock
+    ? observeAutomaticVideoDay(stock, date, selection)
+    : null;
+  const observation =
+    rulerMode === 'fixed' ? fixedObservation : autoObservation;
+  const other = rulerMode === 'fixed' ? autoObservation : fixedObservation;
   const scenario = videoScenarios.find((s) => s.id === scenarioId),
     name = videoStocks.find((s) => s.code === code)?.name;
   function beginLoading(next: VideoCode) {
@@ -284,7 +537,7 @@ export default function VideoSpacePage() {
       </WorkbenchPageBar>
       <div className="vs-layout">
         <aside className="vs-sidebar">
-          <h2>三股固定候选</h2>
+          <h2>三股试点</h2>
           <p>人工波段原尺，不随新行情换点。</p>
           <nav aria-label="选择股票">
             {videoStocks.map((s) => (
@@ -307,7 +560,10 @@ export default function VideoSpacePage() {
               <h2>
                 {name} <small>{code}</small>
               </h2>
-              <p>固定视频空间 · 不复权 · LOG</p>
+              <p>
+                {rulerMode === 'auto' ? '自动平台空间（试验）' : '固定视频空间'}{' '}
+                · 不复权 · LOG
+              </p>
             </div>
             <button
               onClick={() => {
@@ -321,7 +577,20 @@ export default function VideoSpacePage() {
           </div>
           <div className="vs-controls">
             <label>
-              场景
+              原尺模式
+              <select
+                aria-label="原尺模式"
+                value={rulerMode}
+                onChange={(e) =>
+                  setRulerMode(e.target.value === 'auto' ? 'auto' : 'fixed')
+                }
+              >
+                <option value="fixed">固定候选</option>
+                <option value="auto">自动平台（试验）</option>
+              </select>
+            </label>
+            <label>
+              固定对照基线
               <select
                 aria-label="场景"
                 value={scenarioId}
@@ -411,6 +680,17 @@ export default function VideoSpacePage() {
               observation={observation}
               expanded={expanded}
               onExpand={() => setExpanded((v) => !v)}
+              comparison={other?.kind === 'ready' ? other : null}
+            />
+          )}
+          {stock && (
+            <Comparison
+              stock={stock}
+              date={date}
+              selection={selection}
+              fixed={fixedObservation}
+              automatic={autoObservation}
+              scenarioId={scenarioId}
             />
           )}
           <details className="vs-rules">
@@ -425,6 +705,22 @@ export default function VideoSpacePage() {
             <p>
               冻结原尺来自固定批次 {FROZEN_DATASET}
               ，逐股核验来源与120根冻结历史。最新行情直接读取已发布的同批日线原帧，逐重叠日核验OHLC；口径冲突保留待核，不自动换尺。
+            </p>
+            <p>
+              自动 B 是工程候选，并非原作者公式。从{' '}
+              {stock?.autoHistory?.kind === 'ready'
+                ? stock.autoHistory.historyStartDate
+                : '2024-10-17'}{' '}
+              冷启动，之前的平台状态未知。固定种子与最新行情逐重叠日核验 OHLC
+              后衔接；本会话继续核对已接受的全部历史，新浏览器会话无法核对上次会话追加历史的修订，因此并非永久时点快照。
+            </p>
+            <p>
+              自动平台使用前后各两根确认的严格转折，排除同日双转折；40
+              根内四点高低交替、跨度至少 10 根，上下影线分别按 0.5%
+              容差重叠，区间内收盘占比至少 80%，LOG 高度在 log(1.05) 至 log(1.6)
+              之间。同日多候选取最早点位组合，确认后下一实际交易日启用。跌破 L
+              仅记录，不换点；连续两日收盘高于 H 的 1.01
+              倍才退役，之后只用退役后的点寻找新平台。旧平台没有期限，可能长期保留，是已知缺口。
             </p>
             <p>
               实际数据日 {stock?.asOf ?? '待核'}；最新批次{' '}
