@@ -22,6 +22,7 @@ const pages = {
   '/trend/research': () => import('../app/trend/research/page'),
   '/golden': () => import('../app/golden/page'),
   '/golden/daily': () => import('../app/golden/daily/page'),
+  '/golden/video-space': () => import('../app/golden/video-space/page'),
   '/triangles': () => import('../app/triangles/page'),
 } satisfies Record<SitePath, () => Promise<{ default: ComponentType }>>;
 type PagePath = SitePath;
