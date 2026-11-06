@@ -1,7 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readResponse } from '../../src/lib/read-request.ts';
-import { authRead } from '../../src/lib/auth-fetch.ts';
+import {
+  authFetch,
+  authRead,
+  invalidateAuthRequests,
+} from '../../src/lib/auth-fetch.ts';
 
 const url = 'https://fixture.test/data/manifest.json';
 const consumeJson = (response) => response.json();
@@ -328,4 +332,41 @@ test('authRead uses one retry owner for a persistent GET failure', async (t) => 
   });
   assert.equal(status, 503);
   assert.equal(fetchMock.mock.callCount(), 3);
+});
+
+test('a late 401 cannot expire a newer session while its current 401 still expires it', async (t) => {
+  const windowTarget = new EventTarget();
+  let expired = 0;
+  windowTarget.addEventListener('stock-session-expired', () => expired++);
+  const previousWindow = Object.getOwnPropertyDescriptor(globalThis, 'window');
+  Object.defineProperty(globalThis, 'window', {
+    value: windowTarget,
+    configurable: true,
+  });
+  t.after(() => {
+    if (previousWindow)
+      Object.defineProperty(globalThis, 'window', previousWindow);
+    else delete globalThis.window;
+  });
+  let releaseOld;
+  const fetchMock = t.mock.method(globalThis, 'fetch', async (_input, init) => {
+    assert.equal(init.credentials, 'include');
+    if (!releaseOld)
+      return new Promise((resolve) => {
+        releaseOld = resolve;
+      });
+    return new Response(null, { status: 401 });
+  });
+  const oldRequest = authFetch(url);
+  invalidateAuthRequests();
+  releaseOld(new Response(null, { status: 401 }));
+  assert.equal((await oldRequest).status, 401);
+  assert.equal(
+    expired,
+    0,
+    'the previous session cannot revoke the new session',
+  );
+  assert.equal((await authFetch(url)).status, 401);
+  assert.equal(expired, 1, 'the current session must still report expiration');
+  assert.equal(fetchMock.mock.callCount(), 2);
 });
