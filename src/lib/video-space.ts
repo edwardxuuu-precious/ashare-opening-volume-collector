@@ -179,7 +179,7 @@ export type VerifiedVideoStock = {
   readonly frozen: Frame;
   readonly history: readonly VideoBar[];
   readonly autoHistory?:
-    | { kind: 'ready'; history: readonly VideoBar[] }
+    | { kind: 'ready'; history: readonly VideoBar[]; historyStartDate: string }
     | { kind: 'pending'; reason: string };
 };
 export type SpaceRuler = { readonly H: number; readonly L: number };
@@ -513,6 +513,47 @@ export async function verifyAutoHistory(
   }
   return [...seed.history, ...latest.history.filter((b) => b.date > seed.asOf)];
 }
+export function reconcileVideoRefresh(
+  previous: VerifiedVideoStock | null,
+  incoming: VerifiedVideoStock,
+):
+  | { kind: 'ready'; stock: VerifiedVideoStock }
+  | { kind: 'error'; previous: VerifiedVideoStock; message: string } {
+  if (
+    !previous ||
+    previous.code !== incoming.code ||
+    previous.autoHistory?.kind !== 'ready'
+  )
+    return { kind: 'ready', stock: incoming };
+  if (incoming.autoHistory?.kind !== 'ready')
+    return {
+      kind: 'error',
+      previous,
+      message: `自动历史待核：${incoming.autoHistory?.reason ?? '自动历史不可用'}。请重试。`,
+    };
+  const oldBars = previous.autoHistory.history;
+  const newBars = incoming.autoHistory.history;
+  if (
+    incoming.asOf < previous.asOf ||
+    newBars.length < oldBars.length ||
+    oldBars.some((a, i) => {
+      const b = newBars[i];
+      return (
+        !b ||
+        a.date !== b.date ||
+        (['open', 'high', 'low', 'close'] as const).some(
+          (field) => Number(a[field]) !== Number(b[field]),
+        )
+      );
+    })
+  )
+    return {
+      kind: 'error',
+      previous,
+      message: '自动历史倒退、缺日或 OHLC 修订，待核。请重试。',
+    };
+  return { kind: 'ready', stock: incoming };
+}
 export async function loadVideoSpace(
   code: VideoCode,
   { signal }: { signal: AbortSignal },
@@ -555,7 +596,14 @@ export async function loadVideoSpace(
       latestInput,
       manifest,
     );
-    return { ...stock, autoHistory: { kind: 'ready', history } };
+    return {
+      ...stock,
+      autoHistory: {
+        kind: 'ready',
+        history,
+        historyStartDate: history[0].date,
+      },
+    };
   } catch (error: unknown) {
     if (signal.aborted) throw error;
     return {

@@ -415,3 +415,13 @@
 .vs-main > output {
   display: block;
 }
+
+.video-space .vs-endpoint-comparison table {
+  min-width: 760px;
+  table-layout: auto;
+  white-space: nowrap;
+}
+.video-space .vs-comparison-hint {
+  color: var(--ui-muted);
+  font-size: 11px;
+}

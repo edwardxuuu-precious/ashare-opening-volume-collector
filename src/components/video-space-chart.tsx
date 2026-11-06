@@ -261,13 +261,17 @@ export function VideoSpaceChart({
             );
           })}
         <text x={left} y={height - 10} fontSize="10" fill="var(--ui-muted)">
-          主尺实线整格、虚线半格 · 蓝线为共同参考 · 紫线为对照尺
+          {observation.source.kind === 'AUTO' ? '自动' : '固定'}
+          主尺：实线整格、虚线半格 · 蓝线为共同参考
+          {comparison &&
+            ` · 紫线为${observation.source.kind === 'AUTO' ? '固定' : '自动'}对照尺`}
         </text>
       </svg>
       <p>
-        水平线从 {observation.startDate}{' '}
-        开始。紫线是对照尺的所在空间和参考线，价格见下方表格；两尺共用同一 LOG
-        价格轴。日线不推断盘中路径。
+        水平线从 {observation.startDate} 开始。
+        {comparison &&
+          `紫线是${observation.source.kind === 'AUTO' ? '固定' : '自动'}对照尺的所在空间和参考线，价格见下方表格；两尺共用同一 LOG 价格轴。`}
+        日线不推断盘中路径。
       </p>
     </figure>
   );

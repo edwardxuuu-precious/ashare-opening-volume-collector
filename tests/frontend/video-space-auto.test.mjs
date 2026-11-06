@@ -55,3 +55,50 @@ test('ambiguous dual pivot cannot form a platform', () => {
   data[3] = { ...data[3], low: '80' };
   assert.equal(observeAutoPlatform(data, data[18].date).kind, 'pending');
 });
+
+test('refresh preserves accepted auto history on pending, revision, missing dates and rollback', async () => {
+  const { reconcileVideoRefresh } =
+    await import('../../src/lib/video-space.ts');
+  const history = bars().slice(0, 3);
+  const stock = (items, asOf = items.at(-1).date) => ({
+    code: '300502',
+    asOf,
+    autoHistory: { kind: 'ready', history: items },
+  });
+  const initial = stock(history);
+  const pending = {
+    ...initial,
+    autoHistory: { kind: 'pending', reason: 'seed 404' },
+  };
+  assert.equal(reconcileVideoRefresh(null, pending).stock, pending);
+  assert.deepEqual(reconcileVideoRefresh(initial, pending), {
+    kind: 'error',
+    previous: initial,
+    message: '自动历史待核：seed 404。请重试。',
+  });
+  const appended = stock([...history, { ...history[2], date: '2025-01-04' }]);
+  assert.equal(reconcileVideoRefresh(initial, appended).stock, appended);
+  const revision = stock([
+    ...history,
+    { ...appended.autoHistory.history[3], close: '96' },
+  ]);
+  assert.equal(reconcileVideoRefresh(appended, revision).previous, appended);
+  assert.equal(
+    reconcileVideoRefresh(appended, stock(history)).previous,
+    appended,
+  );
+  assert.equal(
+    reconcileVideoRefresh(
+      appended,
+      stock([history[0], history[2], appended.autoHistory.history[3]]),
+    ).previous,
+    appended,
+  );
+  assert.equal(
+    reconcileVideoRefresh(
+      appended,
+      stock(appended.autoHistory.history, '2025-01-03'),
+    ).previous,
+    appended,
+  );
+});

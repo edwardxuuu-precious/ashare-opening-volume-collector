@@ -9,6 +9,7 @@ import {
   FROZEN_DATASET,
   VIDEO_RULE_VERSION,
   loadVideoSpace,
+  reconcileVideoRefresh,
   observeVideoDay,
   observeAutomaticVideoDay,
   boundaryAt,
@@ -338,7 +339,8 @@ function Comparison({
         ).toFixed(3)}
         。
       </p>
-      <div className="vs-table-wrap">
+      <p className="vs-comparison-hint">表格可横向滚动查看完整日期与价格。</p>
+      <div className="vs-table-wrap vs-endpoint-comparison">
         <table>
           <thead>
             <tr>
@@ -468,7 +470,10 @@ export default function VideoSpacePage() {
     void loadVideoSpace(code, { signal: controller.signal })
       .then((stock) => {
         if (!controller.signal.aborted)
-          setLoads((old) => ({ ...old, [code]: { kind: 'ready', stock } }));
+          setLoads((old) => ({
+            ...old,
+            [code]: reconcileVideoRefresh(saved(old[code]), stock),
+          }));
       })
       .catch((error: unknown) => {
         if (!controller.signal.aborted)
@@ -532,7 +537,7 @@ export default function VideoSpacePage() {
       </WorkbenchPageBar>
       <div className="vs-layout">
         <aside className="vs-sidebar">
-          <h2>三股固定候选</h2>
+          <h2>三股试点</h2>
           <p>人工波段原尺，不随新行情换点。</p>
           <nav aria-label="选择股票">
             {videoStocks.map((s) => (
@@ -555,7 +560,10 @@ export default function VideoSpacePage() {
               <h2>
                 {name} <small>{code}</small>
               </h2>
-              <p>固定视频空间 · 不复权 · LOG</p>
+              <p>
+                {rulerMode === 'auto' ? '自动平台空间（试验）' : '固定视频空间'}{' '}
+                · 不复权 · LOG
+              </p>
             </div>
             <button
               onClick={() => {
@@ -697,6 +705,22 @@ export default function VideoSpacePage() {
             <p>
               冻结原尺来自固定批次 {FROZEN_DATASET}
               ，逐股核验来源与120根冻结历史。最新行情直接读取已发布的同批日线原帧，逐重叠日核验OHLC；口径冲突保留待核，不自动换尺。
+            </p>
+            <p>
+              自动 B 是工程候选，并非原作者公式。从{' '}
+              {stock?.autoHistory?.kind === 'ready'
+                ? stock.autoHistory.historyStartDate
+                : '2024-10-17'}{' '}
+              冷启动，之前的平台状态未知。固定种子与最新行情逐重叠日核验 OHLC
+              后衔接；本会话继续核对已接受的全部历史，新浏览器会话无法核对上次会话追加历史的修订，因此并非永久时点快照。
+            </p>
+            <p>
+              自动平台使用前后各两根确认的严格转折，排除同日双转折；40
+              根内四点高低交替、跨度至少 10 根，上下影线分别按 0.5%
+              容差重叠，区间内收盘占比至少 80%，LOG 高度在 log(1.05) 至 log(1.6)
+              之间。同日多候选取最早点位组合，确认后下一实际交易日启用。跌破 L
+              仅记录，不换点；连续两日收盘高于 H 的 1.01
+              倍才退役，之后只用退役后的点寻找新平台。旧平台没有期限，可能长期保留，是已知缺口。
             </p>
             <p>
               实际数据日 {stock?.asOf ?? '待核'}；最新批次{' '}
