@@ -247,6 +247,9 @@
   max-width: 100%;
   margin: 10px 0 24px;
 }
+.video-space .vs-table-wrap table {
+  white-space: normal;
+}
 .video-space table {
   width: 100%;
   border-collapse: collapse;
