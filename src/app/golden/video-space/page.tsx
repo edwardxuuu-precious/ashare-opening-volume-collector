@@ -1,0 +1,443 @@
+'use client';
+
+import { useEffect, useState } from 'react';
+import { SiteHeader } from '@/components/site-header';
+import { SiteLink } from '@/components/site-router';
+import { WorkbenchPageBar } from '@/components/workbench';
+import { VideoSpaceChart } from '@/components/video-space-chart';
+import {
+  FROZEN_DATASET,
+  VIDEO_RULE_VERSION,
+  loadVideoSpace,
+  observeVideoDay,
+  videoScenarios,
+  videoStocks,
+  type LineObservation,
+  type PriceRelation,
+  type ReferenceSelection,
+  type VerifiedVideoStock,
+  type VideoCode,
+  type VideoObservation,
+} from '@/lib/video-space';
+import '../../chips/chips.css';
+import './video-space.css';
+
+export const dynamic = 'force-static';
+type LoadState =
+  | { kind: 'loading'; previous: VerifiedVideoStock | null }
+  | { kind: 'ready'; stock: VerifiedVideoStock }
+  | { kind: 'error'; previous: VerifiedVideoStock | null; message: string };
+function saved(state: LoadState | undefined): VerifiedVideoStock | null {
+  return state?.kind === 'ready' ? state.stock : (state?.previous ?? null);
+}
+const money = (n: number | string) =>
+  Number(n).toLocaleString('zh-CN', {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 4,
+  });
+const side = { ABOVE: '线上', ON: '精确落线', BELOW: '线下' };
+function Relation({ value }: { value: PriceRelation }) {
+  return (
+    <span data-side={value.side} data-in-band={value.inBand}>
+      {side[value.side]}
+      <small>
+        {value.distancePercent >= 0 ? '+' : ''}
+        {value.distancePercent.toFixed(3)}% ·{' '}
+        {value.inBand ? '贴线（±0.5%带内）' : '带外'}
+      </small>
+    </span>
+  );
+}
+function LineTable({
+  lines,
+  referenceK,
+}: {
+  lines: readonly LineObservation[];
+  referenceK: number;
+}) {
+  return (
+    <div className="vs-table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>同一边界／价格</th>
+            <th>开盘严格侧别</th>
+            <th>收盘严格侧别</th>
+            <th>日范围含线</th>
+          </tr>
+        </thead>
+        <tbody>
+          {lines.map((l) => (
+            <tr key={l.k} data-reference={l.k === referenceK}>
+              <th>
+                B({l.k}) · {money(l.price)}
+                {l.k === referenceK && <small>本日共同参考</small>}
+              </th>
+              <td>
+                <Relation value={l.open} />
+              </td>
+              <td>
+                <Relation value={l.close} />
+              </td>
+              <td>{l.rangeIncludes ? '包含' : '不包含'}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+function Observation({
+  stock,
+  observation,
+  expanded,
+  onExpand,
+}: {
+  stock: VerifiedVideoStock;
+  observation: Extract<VideoObservation, { kind: 'ready' }>;
+  expanded: boolean;
+  onExpand: () => void;
+}) {
+  const o = observation,
+    lines = o.spaceLines.some((l) => l.k === o.reference.k)
+      ? o.spaceLines
+      : [o.reference, ...o.spaceLines];
+  return (
+    <>
+      <div className="vs-quote">
+        <h2>
+          {o.date} <small>已保存日线 · 非实时</small>
+        </h2>
+        <dl>
+          {[
+            ['开盘 O', o.bar.open],
+            ['最高 H', o.bar.high],
+            ['最低 L', o.bar.low],
+            ['收盘 C', o.bar.close],
+          ].map(([label, value]) => (
+            <div key={label}>
+              <dt>{label}</dt>
+              <dd>{money(value)}</dd>
+            </div>
+          ))}
+        </dl>
+      </div>
+      <section
+        className="vs-reference"
+        aria-label="共同参考线"
+        data-reference-k={o.reference.k}
+        data-reference-price={o.reference.price}
+        data-date={o.date}
+      >
+        <h3>
+          开盘与收盘共用 B({o.reference.k}) · {money(o.reference.price)}
+        </h3>
+        <p>
+          {o.referenceSelection.kind === 'AUTO_PREVIOUS_CLOSE'
+            ? `自动参考仅使用前收 ${o.previous?.date} · ${o.previous?.close}，按LOG距离选最近整格／半格，同距取较高价。`
+            : `手动固定 k=${o.reference.k}，切换日期仍使用同一条线。`}
+        </p>
+        <div className="vs-relations">
+          <div>
+            开盘 {money(o.bar.open)}
+            <Relation value={o.reference.open} />
+          </div>
+          <div>
+            收盘 {money(o.bar.close)}
+            <Relation value={o.reference.close} />
+          </div>
+        </div>
+        <p>
+          严格线上下与贴线分开呈现。贴线带内不据此判为站稳；范围含线不证明盘中顺序。
+        </p>
+      </section>
+      <section className="vs-space" aria-label="收盘所在空间">
+        <h3>
+          {o.location.onBoundary ? '收盘精确落在整格边界' : '收盘所在整格空间'}
+        </h3>
+        <dl>
+          {[
+            { label: '上沿', item: o.location.upper },
+            { label: '半格', item: o.location.middle },
+            { label: '下沿', item: o.location.lower },
+          ].map(({ label, item }) => (
+            <div key={label}>
+              <dt>
+                {label} B({item.k})
+              </dt>
+              <dd>{money(item.price)}</dd>
+            </div>
+          ))}
+        </dl>
+        {o.location.adjacent && (
+          <p>
+            边界两侧均列示。相邻空间 B({o.location.adjacent.upper.k}){' '}
+            {money(o.location.adjacent.upper.price)} ／ 半格{' '}
+            {money(o.location.adjacent.middle.price)} ／ B(
+            {o.location.adjacent.lower.k}){' '}
+            {money(o.location.adjacent.lower.price)}。
+          </p>
+        )}
+      </section>
+      <div className="vs-chart-control">
+        <span>相关空间 · 同一原尺 · LOG</span>
+        <button onClick={onExpand} aria-pressed={expanded}>
+          {expanded ? '聚焦相关空间' : '展开120根与0至6标尺'}
+        </button>
+      </div>
+      <VideoSpaceChart stock={stock} observation={o} expanded={expanded} />
+      <h3>同线开收核对</h3>
+      <LineTable lines={lines} referenceK={o.reference.k} />
+      <section className="vs-ruler">
+        <h3>固定原尺与候选依据</h3>
+        <dl>
+          <div>
+            <dt>H · {o.high.date} · high</dt>
+            <dd>{o.high.price}</dd>
+          </div>
+          <div>
+            <dt>L · {o.low.date} · low</dt>
+            <dd>{o.low.price}</dd>
+          </div>
+        </dl>
+        <p>{o.scenario.reason}</p>
+        <p>
+          候选为视频波段人工固定，原作者当时锁线时间未知。历史日为描述性回看。
+        </p>
+      </section>
+    </>
+  );
+}
+export default function VideoSpacePage() {
+  const [code, setCode] = useState<VideoCode>('300502'),
+    [scenarioId, setScenarioId] = useState('XY_SUPP_PRIMARY'),
+    [selectedDate, setDate] = useState('');
+  const [loads, setLoads] = useState<Partial<Record<VideoCode, LoadState>>>({
+      '300502': { kind: 'loading', previous: null },
+    }),
+    [revision, setRevision] = useState(0),
+    [mode, setMode] = useState<ReferenceSelection['kind']>(
+      'AUTO_PREVIOUS_CLOSE',
+    ),
+    [fixedK, setFixedK] = useState('1'),
+    [expanded, setExpanded] = useState(false);
+  useEffect(() => {
+    const controller = new AbortController();
+    void loadVideoSpace(code, { signal: controller.signal })
+      .then((stock) => {
+        if (!controller.signal.aborted)
+          setLoads((old) => ({ ...old, [code]: { kind: 'ready', stock } }));
+      })
+      .catch((error: unknown) => {
+        if (!controller.signal.aborted)
+          setLoads((old) => ({
+            ...old,
+            [code]: {
+              kind: 'error',
+              previous: saved(old[code]),
+              message:
+                error instanceof Error ? error.message : '行情读取失败，待核。',
+            },
+          }));
+      });
+    return () => controller.abort();
+  }, [code, revision]);
+  const state = loads[code],
+    stock = saved(state),
+    date = selectedDate || stock?.asOf || '';
+  const selection: ReferenceSelection =
+    mode === 'AUTO_PREVIOUS_CLOSE'
+      ? { kind: mode }
+      : { kind: mode, k: fixedK.trim() ? Number(fixedK) : NaN };
+  const observation = stock
+    ? observeVideoDay(stock, scenarioId, date, selection)
+    : null;
+  const scenario = videoScenarios.find((s) => s.id === scenarioId),
+    name = videoStocks.find((s) => s.code === code)?.name;
+  function beginLoading(next: VideoCode) {
+    setLoads((old) => ({
+      ...old,
+      [next]: { kind: 'loading', previous: saved(old[next]) },
+    }));
+  }
+  function changeStock(next: VideoCode) {
+    if (next === code) return;
+    beginLoading(next);
+    setCode(next);
+    setScenarioId(
+      videoScenarios.find((s) => s.code === next && s.primary)?.id ?? '',
+    );
+    setDate('');
+    setExpanded(false);
+  }
+  return (
+    <div className="chip-site video-space">
+      <SiteHeader active="golden" />
+      <WorkbenchPageBar
+        title="视频空间观察"
+        date={stock?.asOf}
+        dateLabel="实际数据日"
+        modeLabel="三股试点 · 非实时"
+      >
+        <SiteLink href="/golden/daily">每日画线</SiteLink>
+        <SiteLink href="/golden">人工核对</SiteLink>
+      </WorkbenchPageBar>
+      <div className="vs-layout">
+        <aside className="vs-sidebar">
+          <h2>三股固定候选</h2>
+          <p>人工波段原尺，不随新行情换点。</p>
+          <nav aria-label="选择股票">
+            {videoStocks.map((s) => (
+              <button
+                key={s.code}
+                onClick={() => changeStock(s.code)}
+                aria-pressed={code === s.code}
+              >
+                <strong>{s.name}</strong>
+                <span>{s.code}</span>
+              </button>
+            ))}
+          </nav>
+          <p>共11个候选，保留端点敏感性。</p>
+          <p>当前候选来源为原视频观察，尚非全市场自动选点规则。</p>
+        </aside>
+        <main className="vs-main">
+          <div className="vs-heading">
+            <div>
+              <h2>
+                {name} <small>{code}</small>
+              </h2>
+              <p>固定视频空间 · 不复权 · LOG</p>
+            </div>
+            <button
+              onClick={() => {
+                beginLoading(code);
+                setRevision((n) => n + 1);
+              }}
+              disabled={state?.kind === 'loading'}
+            >
+              {state?.kind === 'loading' ? '读取中…' : '刷新已发布行情'}
+            </button>
+          </div>
+          <div className="vs-controls">
+            <label>
+              场景
+              <select
+                aria-label="场景"
+                value={scenarioId}
+                onChange={(e) => setScenarioId(e.target.value)}
+              >
+                {videoScenarios
+                  .filter((s) => s.code === code)
+                  .map((s) => (
+                    <option key={s.id} value={s.id}>
+                      {s.label}
+                    </option>
+                  ))}
+              </select>
+            </label>
+            <label>
+              查看交易日
+              <select
+                aria-label="查看交易日"
+                value={date}
+                onChange={(e) => setDate(e.target.value)}
+                disabled={!stock}
+              >
+                {!stock && <option value="">待行情</option>}
+                {stock?.history
+                  .slice()
+                  .reverse()
+                  .map((b) => (
+                    <option key={b.date} value={b.date}>
+                      {b.date}
+                    </option>
+                  ))}
+              </select>
+            </label>
+            <label>
+              共同参考
+              <select
+                aria-label="共同参考"
+                value={mode}
+                onChange={(e) =>
+                  setMode(
+                    e.target.value === 'FIXED'
+                      ? 'FIXED'
+                      : 'AUTO_PREVIOUS_CLOSE',
+                  )
+                }
+              >
+                <option value="AUTO_PREVIOUS_CLOSE">
+                  自动 · 前收最近整／半格
+                </option>
+                <option value="FIXED">手动固定 k</option>
+              </select>
+            </label>
+            {mode === 'FIXED' && (
+              <label>
+                固定 k
+                <input
+                  aria-label="固定 k"
+                  type="number"
+                  step="0.5"
+                  value={fixedK}
+                  onChange={(e) => setFixedK(e.target.value)}
+                />
+              </label>
+            )}
+          </div>
+          {state?.kind === 'loading' && (
+            <output>
+              {stock
+                ? `正在刷新；暂保留已核验数据日 ${stock.asOf}。`
+                : '正在读取行情并核验固定原尺…'}
+            </output>
+          )}
+          {state?.kind === 'error' && (
+            <p className="vs-error" role="alert">
+              {state.message}
+              {stock
+                ? ` 刷新未成功，继续展示旧数据日 ${stock.asOf}。`
+                : ' 本股暂停判读，可切换其他股票。'}
+            </p>
+          )}
+          {observation?.kind === 'pending' && (
+            <output className="vs-error">{observation.reason}</output>
+          )}
+          {stock && observation?.kind === 'ready' && (
+            <Observation
+              stock={stock}
+              observation={observation}
+              expanded={expanded}
+              onExpand={() => setExpanded((v) => !v)}
+            />
+          )}
+          <details className="vs-rules">
+            <summary>选点、公式与数据口径</summary>
+            <p>{scenario?.reason}</p>
+            <p>
+              B(k)=H×(L/H)^k，B(0)=H、B(1)=L；半格为k+0.5的几何中点，仅作辅助细分。负k可用。整格编号为实现编号，未声称原作者全部黄金比例已确认。
+            </p>
+            <p>
+              默认共同参考只由前一根收盘选择。所选日开高低收及未来日线不会参与自动选线。±0.5%是工程观察带，不是作者参数或交易信号。
+            </p>
+            <p>
+              冻结原尺来自固定批次 {FROZEN_DATASET}
+              ，逐股核验来源与120根冻结历史。最新行情直接读取已发布的同批日线原帧，逐重叠日核验OHLC；口径冲突保留待核，不自动换尺。
+            </p>
+            <p>
+              实际数据日 {stock?.asOf ?? '待核'}；最新批次{' '}
+              {stock?.dataset ?? '待核'}；来源 THS_UNADJUSTED /
+              00_UNADJUSTED；规则 {VIDEO_RULE_VERSION}
+              。未把客户端日期当行情日期。
+            </p>
+            <p>
+              本页只描述已保存日线与固定候选的关系，不提供盘中顺序、预测或买卖指令。线上可用不代表选点普适性或策略有效性已验证。
+            </p>
+          </details>
+        </main>
+      </div>
+    </div>
+  );
+}

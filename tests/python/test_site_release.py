@@ -92,7 +92,8 @@ class SiteReleaseTests(unittest.TestCase):
         return respond
 
     def test_package_preserves_api_and_contains_every_current_route_and_actual_asset(self):
-        self.assertEqual(len(self.routes), 9)
+        self.assertEqual(len(self.routes), 10)
+        self.assertIn('golden/video-space.html', self.routes)
         self.assertTrue({'concentration.html', 'triangles.html'} <= set(self.routes))
         output = self.root / 'outputs/releases/site.zip'
         value = release_site.package(self.root, output)
