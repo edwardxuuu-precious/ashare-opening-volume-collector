@@ -26,10 +26,10 @@
 
 ## 其他每日结果与历史研究
 
-| 页面 | 当前入口与规则说明 |
-| --- | --- |
-| 连续集中度 | `/concentration` 读取每日筹码批次的连续20天及大于20天结果，见[连续集中度说明](docs/features/concentration-streaks.md)。 |
-| 趋势量价 | `/trend` 展示每日筛选，`/trend/research` 保留历史研究，见[趋势量价说明](docs/features/trend-volume.md)。 |
+| 页面           | 当前入口与规则说明                                                                                                                                        |
+| -------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 连续集中度     | `/concentration` 读取每日筹码批次的连续20天及大于20天结果，见[连续集中度说明](docs/features/concentration-streaks.md)。                                   |
+| 趋势量价       | `/trend` 展示每日筛选，`/trend/research` 保留历史研究，见[趋势量价说明](docs/features/trend-volume.md)。                                                  |
 | 金三角与死三角 | `/triangles` 默认展示后台已计算的全市场结果，也支持个股全部已保存日线的形态与关键点位标记、自定义参数研究，见[趋势三角说明](docs/features/triangles.md)。 |
 
 云端日更不依赖网页打开或个人电脑常开。各页面以实际发布的行情日期和完整批次为准；未完成时保留上一完整结果。触发关系、后备时段和恢复边界见[日更说明](docs/deployment/daily-update.md)。
@@ -74,3 +74,5 @@ GitHub Actions 直接检出本仓库。需要独立运行包时，使用 `deploy
 新增开盘量采集固定使用 AKShare 新浪。当前交易日在15:30后执行有界全市场快照，历史缺口使用新浪日线；按原始来源保存开盘量和全天量并直接计算比例。日常恢复最近六个月工作集，已保存的更早日期仍可查询；手动 OHLC 回填只使用其冻结历史范围。
 
 来源探针不需要 AWS 权限，只输出汇总诊断。生产任务通过仓库限定的 OIDC 角色写私有 S3，使用标准 GitHub 托管运行器。`STOCK_BUCKET`、`AWS_ROLE_ARN` 与停用变量单独配置。维护时须按[调度手册](deploy/actions/SCHEDULER.md)和[日更说明](docs/deployment/daily-update.md)关闭对应触发器、等待原写入者释放租约；单独设置 `DISABLE_DAILY_UPDATE` 不能替代全局停机。定时投递与免费源都可能延迟，不保证固定时刻行情齐全。
+
+视频空间观察的固定候选及三股自动平台试验说明见 [docs/video-space-rules.md](docs/video-space-rules.md)。
