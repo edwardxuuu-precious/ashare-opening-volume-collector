@@ -102,3 +102,54 @@ test('refresh preserves accepted auto history on pending, revision, missing date
     appended,
   );
 });
+
+test('lower platforms lock after a completed break and stop at root retirement', async () => {
+  const { observeAutoFamily } =
+    await import('../../src/lib/video-space-auto.ts');
+  const data = Array.from({ length: 65 }, (_, i) => ({
+    date: new Date(Date.UTC(2025, 0, i + 1)).toISOString().slice(0, 10),
+    open: i < 20 ? '95' : '76',
+    high: i < 20 ? '96' : '77',
+    low: i < 20 ? '94' : '75',
+    close: i < 20 ? '95' : '76',
+    volume_shares: '1',
+  }));
+  for (const [i, kind, price] of [
+    [3, 'H', 100],
+    [7, 'L', 90],
+    [11, 'H', 100],
+    [15, 'L', 90],
+    [23, 'H', 80],
+    [27, 'L', 72],
+    [31, 'H', 80],
+    [35, 'L', 72],
+  ]) {
+    data[i] =
+      kind === 'H'
+        ? {
+            ...data[i],
+            open: String(price - 1),
+            close: String(price - 1),
+            high: String(price),
+          }
+        : {
+            ...data[i],
+            open: String(price + 1),
+            close: String(price + 1),
+            low: String(price),
+          };
+  }
+  assert.equal(observeAutoFamily(data, data[37].date).lowerPlatforms.length, 0);
+  const result = observeAutoFamily(data, data[38].date);
+  assert.equal(result.lowerPlatforms.length, 1);
+  assert.equal(result.lowerPlatforms[0].triggerDate, data[20].date);
+  assert.equal(result.lowerPlatforms[0].confirmationDate, data[37].date);
+  assert.equal(result.lowerPlatforms[0].activationDate, data[38].date);
+  const changed = data.map((b, i) =>
+    i >= 38 ? { ...b, high: '1000', low: '1', open: '500', close: '500' } : b,
+  );
+  assert.deepEqual(observeAutoFamily(changed, data[38].date), result);
+  data[36] = { ...data[36], high: '103', open: '102', close: '102' };
+  data[37] = { ...data[37], high: '104', open: '103', close: '103' };
+  assert.equal(observeAutoFamily(data, data[38].date).lowerPlatforms.length, 0);
+});
