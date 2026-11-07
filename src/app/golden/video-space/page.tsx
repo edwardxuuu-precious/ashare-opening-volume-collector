@@ -23,7 +23,11 @@ import {
   type VideoCode,
   type VideoObservation,
 } from '@/lib/video-space';
-import type { WaveCandidate, WavePivot } from '@/lib/video-space-auto';
+import type {
+  WaveCandidate,
+  WavePivot,
+  WaveRejection,
+} from '@/lib/video-space-auto';
 import '../../chips/chips.css';
 import './video-space.css';
 
@@ -95,9 +99,64 @@ function LineTable({
     </div>
   );
 }
+const wavePointText = (p: WavePivot) =>
+  `${p.date} ${p.field} ${p.price}（确认 ${p.confirmationDate}）`;
+function waveStopText(code: string) {
+  switch (code) {
+    case 'OLDER_LOW_NOT_STRICTLY_LOWER':
+      return '较早谷底不比当前谷底低';
+    case 'NO_INTERVENING_STRICT_HIGH':
+      return '两谷之间没有已确认高点';
+    case 'INTERVENING_PEAK_NOT_STRICTLY_LOWER':
+      return '中间最高峰不比右侧对应峰低';
+    case 'NO_EARLIER_CONFIRMED_LOW':
+      return '没有更早的已确认低点';
+    default:
+      return '上升结构关系不满足';
+  }
+}
+const waveRejectionText: Record<WaveRejection['code'], string> = {
+  no_prior_confirmed_high_at_or_above_H: '缺少较早的等高或更高峰作为边界',
+  no_confirmed_low_strictly_between_boundary_and_H: '两峰之间没有已确认谷底',
+  selected_low_not_below_H: '区间最低谷仍不低于当前高点',
+  NO_PRIOR_CONFIRMED_LOW: '高点之前没有已确认谷底',
+  RESULTING_LOW_NOT_BELOW_HIGH: '结构起点的谷底不低于当前高点',
+};
+function WaveRejectionEvidence({ item }: { item: WaveRejection }) {
+  return (
+    <details>
+      <summary>
+        {item.method} · H {item.H.date} high {item.H.price} ·{' '}
+        {waveRejectionText[item.code]}
+      </summary>
+      <p>已确认高点：{wavePointText(item.H)}。</p>
+      {item.method === 'A' && 'reason' in item && (
+        <p>
+          边界高点：{wavePointText(item.reason.boundaryH)}；区间内已确认谷底：
+          {item.reason.consideredL.length
+            ? item.reason.consideredL.map(wavePointText).join('；')
+            : '无'}
+          。
+        </p>
+      )}
+      {item.code === 'selected_low_not_below_H' && (
+        <p>区间最低谷：{wavePointText(item.selectedL)}。</p>
+      )}
+      {item.code === 'RESULTING_LOW_NOT_BELOW_HIGH' && (
+        <p>
+          结构起点：{wavePointText(item.L)}；向左扩展{' '}
+          {item.reason.acceptedExtensions} 次。停止追溯：
+          {item.reason.stop.code === 'RELATION_FAILED'
+            ? item.reason.stop.stopCodes.map(waveStopText).join('；')
+            : waveStopText(item.reason.stop.code)}
+          。
+        </p>
+      )}
+      <p>本项只说明该方法所需结构不足，不代表没有其他参考尺或观察空间。</p>
+    </details>
+  );
+}
 function WaveEvidence({ wave }: { wave: WaveCandidate }) {
-  const point = (p: WavePivot) =>
-    `${p.date} ${p.field} ${p.price}（确认 ${p.confirmationDate}）`;
   const event = (e: WaveCandidate['firstHighBreak']) =>
     e
       ? `${e.date} ${e.field} ${e.price}，次日可用 ${e.usableFrom ?? '待核'}`
@@ -118,30 +177,32 @@ function WaveEvidence({ wave }: { wave: WaveCandidate }) {
           reason.method === 'A' ? (
             <div key="A">
               <p>
-                A 较早等高或更高边界：{point(reason.boundaryH)}。区间候选低点：
-                {reason.consideredL.map(point).join('；')}
+                A 较早等高或更高边界：{wavePointText(reason.boundaryH)}
+                。区间候选低点：
+                {reason.consideredL.map(wavePointText).join('；')}
                 。取最低，同价取最早；理由冻结 {reason.frozenOn}。
               </p>
             </div>
           ) : (
             <div key="B">
               <p>
-                B 初始谷：{point(reason.initialTrough)}；此前低点{' '}
+                B 初始谷：{wavePointText(reason.initialTrough)}；此前低点{' '}
                 {reason.priorLowCount} 个，向左扩展 {reason.acceptedExtensions}{' '}
-                次，最终谷 {point(reason.finalTrough)}，对应峰{' '}
-                {point(reason.finalRightwardPeak)}。
+                次，最终谷 {wavePointText(reason.finalTrough)}，对应峰{' '}
+                {wavePointText(reason.finalRightwardPeak)}。
               </p>
               <ol>
                 {reason.attempts.map((a) => (
                   <li key={`${a.olderLow.date}:${a.currentTrough.date}`}>
-                    较早谷 {point(a.olderLow)}；当前谷 {point(a.currentTrough)}
-                    ；右峰 {point(a.rightwardPeak)}；中间峰{' '}
+                    较早谷 {wavePointText(a.olderLow)}；当前谷{' '}
+                    {wavePointText(a.currentTrough)}
+                    ；右峰 {wavePointText(a.rightwardPeak)}；中间峰{' '}
                     {a.interveningHighs.length
-                      ? a.interveningHighs.map(point).join('；')
+                      ? a.interveningHighs.map(wavePointText).join('；')
                       : '无'}
                     ；最高峰（同价取最近）
                     {a.selectedHighestInterveningHigh
-                      ? point(a.selectedHighestInterveningHigh)
+                      ? wavePointText(a.selectedHighestInterveningHigh)
                       : '无'}
                     ；低谷严格更低{' '}
                     {a.checks.olderLowStrictlyLower ? '是' : '否'}，中间峰存在{' '}
@@ -150,16 +211,16 @@ function WaveEvidence({ wave }: { wave: WaveCandidate }) {
                     {a.checks.interveningPeakStrictlyLower ? '是' : '否'}；
                     {a.action === 'EXTEND'
                       ? '继续'
-                      : `停止 ${a.stopCodes.join('、')}`}
+                      : `停止：${a.stopCodes.map(waveStopText).join('；')}`}
                     。
                   </li>
                 ))}
               </ol>
               <p>
-                停止原因：{reason.stop.code}
+                停止原因：
                 {reason.stop.code === 'RELATION_FAILED'
-                  ? ` ${reason.stop.stopCodes.join('、')}，未访问更早低点 ${reason.stop.unvisitedEarlierLowCount} 个`
-                  : ''}
+                  ? `${reason.stop.stopCodes.map(waveStopText).join('；')}，更早还有 ${reason.stop.unvisitedEarlierLowCount} 个低点未继续追溯`
+                  : waveStopText(reason.stop.code)}
                 ；理由冻结 {reason.endpointFrozenBy}。
               </p>
             </div>
@@ -1168,18 +1229,13 @@ export default function VideoSpacePage() {
                     项）
                   </summary>
                   <p>
-                    每项按已确认高点和假设记录；缺少结构时不补选。展开可查看真实点位、确认时间与各步理由。
+                    每项按已确认高点和假设记录；缺少结构时不补选。展开可查看真实点位、确认时间与排除依据。
                   </p>
                   {layers.waveCatalog.rejections.map((item) => (
-                    <details key={`${item.method}:${item.H.date}:${item.code}`}>
-                      <summary>
-                        {item.method} · H {item.H.date} high {item.H.price} ·{' '}
-                        {item.code}
-                      </summary>
-                      <pre className="vs-rejection-evidence">
-                        {JSON.stringify(item, null, 2)}
-                      </pre>
-                    </details>
+                    <WaveRejectionEvidence
+                      key={`${item.method}:${item.H.date}:${item.code}`}
+                      item={item}
+                    />
                   ))}
                 </details>
               )}

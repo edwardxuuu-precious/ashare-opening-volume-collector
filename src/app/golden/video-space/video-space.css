@@ -474,8 +474,3 @@
     transparent 12px 17px
   );
 }
-
-.vs-rejection-evidence {
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-}
