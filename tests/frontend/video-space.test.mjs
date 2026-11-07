@@ -332,3 +332,65 @@ test('half ruler inherits parent boundaries after a completed break and keeps on
     parent.ruler,
   );
 });
+
+test('an archived selected V1 ruler remains its own root context', async () => {
+  const { observeVideoLayers } = await import('../../src/lib/video-space.ts');
+  const history = Array.from({ length: 55 }, (_, i) => {
+    const date = new Date(Date.UTC(2025, 0, i + 1)).toISOString().slice(0, 10);
+    const base = i < 22 ? 95 : 120;
+    return {
+      date,
+      open: String(base),
+      high: String(base + 1),
+      low: String(base - 1),
+      close: String(base),
+      volume_shares: '1',
+    };
+  });
+  for (const [i, kind, price] of [
+    [3, 'H', 100],
+    [7, 'L', 90],
+    [11, 'H', 100],
+    [15, 'L', 90],
+    [25, 'H', 130],
+    [29, 'L', 110],
+    [33, 'H', 130],
+    [37, 'L', 110],
+  ]) {
+    history[i] =
+      kind === 'H'
+        ? {
+            ...history[i],
+            open: String(price - 1),
+            close: String(price - 1),
+            high: String(price),
+          }
+        : {
+            ...history[i],
+            open: String(price + 1),
+            close: String(price + 1),
+            low: String(price),
+          };
+  }
+  for (const i of [20, 21])
+    history[i] = { ...history[i], open: '102', close: '102', high: '103' };
+  const s = {
+    ...stock(),
+    history,
+    autoHistory: { kind: 'ready', history, historyStartDate: history[0].date },
+  };
+  const date = history.at(-1).date;
+  const current = observeVideoLayers(s, date, auto, {
+    parentId: 'CURRENT_ROOT',
+    scale: 'PARENT',
+  });
+  assert.equal(current.family.root.versions.length, 2);
+  const archived = current.family.root.versions[0];
+  const selected = observeVideoLayers(s, date, auto, {
+    parentId: archived.id,
+    scale: 'PARENT',
+  });
+  assert.equal(ready(selected.parent).source.version.id, archived.id);
+  assert.equal(ready(selected.rootContext).source.version.id, archived.id);
+  assert.notEqual(archived.id, current.family.root.version.id);
+});

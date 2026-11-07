@@ -27,6 +27,7 @@ export function VideoSpaceChart({
   overlays: readonly {
     id: string;
     label: string;
+    style: 'comparison' | 'parent' | 'root';
     observation: Extract<VideoObservation, { kind: 'ready' }>;
   }[];
 }) {
@@ -196,9 +197,15 @@ export function VideoSpaceChart({
               x2={right}
               y1={scale.y(g.price)}
               y2={scale.y(g.price)}
-              stroke="#a352a8"
+              stroke={overlay.style === 'root' ? '#a4611a' : '#a352a8'}
               strokeWidth={g.k === overlay.observation.reference.k ? 2 : 1}
-              strokeDasharray={Number.isInteger(g.k) ? '2 3' : '7 3'}
+              strokeDasharray={
+                overlay.style === 'root'
+                  ? '10 3 2 3'
+                  : overlay.style === 'parent'
+                    ? '2 4'
+                    : '7 3'
+              }
             />
           ));
         })}
@@ -272,14 +279,30 @@ export function VideoSpaceChart({
           })}
         <text x={left} y={height - 10} fontSize="10" fill="var(--ui-muted)">
           主尺：实线整格、虚线半格 · 蓝线为共同参考
-          {overlays.length > 0 &&
-            ` · 紫线为 ${overlays.map((o) => o.label).join('、')}`}
         </text>
       </svg>
+      {overlays.length > 0 && (
+        <ul className="vs-overlay-legend" aria-label="图表对照尺图例">
+          {overlays.map((overlay) => (
+            <li key={overlay.id}>
+              <span
+                aria-hidden="true"
+                className={`vs-overlay-swatch vs-overlay-${overlay.style}`}
+              />
+              {overlay.label} ·{' '}
+              {overlay.style === 'root'
+                ? '长短线'
+                : overlay.style === 'parent'
+                  ? '点线'
+                  : '虚线'}
+            </li>
+          ))}
+        </ul>
+      )}
       <p>
         水平线从 {observation.startDate} 开始。
         {overlays.length > 0 &&
-          `紫线为 ${overlays.map((o) => o.label).join('、')}，共用同一 LOG 价格轴。`}
+          `${overlays.map((o) => o.label).join('、')}与主尺共用同一 LOG 价格轴。`}
         日线不推断盘中路径。
       </p>
     </figure>

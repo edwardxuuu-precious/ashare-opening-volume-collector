@@ -253,7 +253,6 @@ export type VideoObservation =
           }
         | {
             readonly kind: 'HALF';
-            readonly parentId: string;
             readonly activationDate: string;
             readonly endpoints: Extract<
               RulerEndpoints,
@@ -739,7 +738,6 @@ export function observeVideoDay(
         low: { ...scenario.low, price: l.low },
       },
     },
-    { H: Number(h.high), L: Number(l.low) },
     startDate,
     selectedDate,
     selection,
@@ -760,26 +758,34 @@ export function observeAutomaticVideoDay(
   const v = result.version;
   return observeResolved(
     stock.autoHistory.history,
-    {
-      kind: 'AUTO',
-      version: v,
-      versions: result.versions,
-      endpoints: {
-        kind: 'REAL',
-        high: { ...v.H, price: String(v.H.price) },
-        low: { ...v.L, price: String(v.L.price) },
-      },
-    },
-    { H: v.H.price, L: v.L.price },
+    automaticSource(v, result.versions),
     v.activationDate ?? selectedDate,
     selectedDate,
     selection,
   );
 }
+function automaticSource(
+  version: Extract<AutoResult, { kind: 'ready' }>['version'],
+  versions: Extract<AutoResult, { kind: 'ready' }>['versions'],
+): Extract<
+  Extract<VideoObservation, { kind: 'ready' }>['source'],
+  { kind: 'AUTO' }
+> {
+  return {
+    kind: 'AUTO',
+    version,
+    versions,
+    endpoints: {
+      kind: 'REAL',
+      high: { ...version.H, price: String(version.H.price) },
+      low: { ...version.L, price: String(version.L.price) },
+    },
+  };
+}
+
 function observeResolved(
   history: readonly VideoBar[],
   source: Extract<VideoObservation, { kind: 'ready' }>['source'],
-  ruler: SpaceRuler,
   startDate: string,
   selectedDate: string,
   selection: ReferenceSelection,
@@ -799,6 +805,11 @@ function observeResolved(
     (!Number.isFinite(selection.k) || !Number.isInteger(selection.k * 2))
   )
     return { kind: 'pending', reason: '固定k须为有限整数或半整数。' };
+  const endpoints = source.endpoints;
+  const ruler =
+    endpoints.kind === 'REAL'
+      ? { H: Number(endpoints.high.price), L: Number(endpoints.low.price) }
+      : { H: endpoints.high, L: endpoints.low };
   const location = locateSpace(ruler, Number(bar.close));
   const reference =
     selection.kind === 'FIXED'
@@ -887,17 +898,7 @@ export function observeVideoLayers(
   if (history && version && version.activationDate) {
     parent = observeResolved(
       history,
-      {
-        kind: 'AUTO',
-        version,
-        versions,
-        endpoints: {
-          kind: 'REAL',
-          high: { ...version.H, price: String(version.H.price) },
-          low: { ...version.L, price: String(version.L.price) },
-        },
-      },
-      { H: version.H.price, L: version.L.price },
+      automaticSource(version, versions),
       version.activationDate,
       date,
       selection,
@@ -914,7 +915,6 @@ export function observeVideoLayers(
           low: { ...node.realL, price: String(node.realL.price) },
         },
       },
-      { H: node.realH.price, L: node.realL.price },
       node.activationDate,
       date,
       selection,
@@ -927,22 +927,12 @@ export function observeVideoLayers(
   }
   const rootVersion = node
     ? versions.find((v) => v.id === node.rootId)
-    : current;
+    : (version ?? current);
   const rootContext =
     history && rootVersion?.activationDate
       ? observeResolved(
           history,
-          {
-            kind: 'AUTO',
-            version: rootVersion,
-            versions,
-            endpoints: {
-              kind: 'REAL',
-              high: { ...rootVersion.H, price: String(rootVersion.H.price) },
-              low: { ...rootVersion.L, price: String(rootVersion.L.price) },
-            },
-          },
-          { H: rootVersion.H.price, L: rootVersion.L.price },
+          automaticSource(rootVersion, versions),
           rootVersion.activationDate,
           date,
           selection,
@@ -972,11 +962,9 @@ export function observeVideoLayers(
           sourceHistory,
           {
             kind: 'HALF',
-            parentId: id,
             activationDate,
             endpoints: { kind: 'PARENT_BOUNDARY', parentId: id, high, low },
           },
-          { H: high, L: low },
           activationDate,
           date,
           selection,
