@@ -188,7 +188,7 @@ function WaveEvidence({ wave }: { wave: WaveCandidate }) {
               <p>
                 B 初始谷：{wavePointText(reason.initialTrough)}；此前低点{' '}
                 {reason.priorLowCount} 个，向左扩展 {reason.acceptedExtensions}{' '}
-                次，最终谷 {wavePointText(reason.finalTrough)}，对应峰{' '}
+                次，最终谷 {wavePointText(reason.finalTrough)}，回溯比较用峰{' '}
                 {wavePointText(reason.finalRightwardPeak)}。
               </p>
               <ol>
