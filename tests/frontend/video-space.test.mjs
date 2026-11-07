@@ -291,3 +291,106 @@ test('frozen history cannot claim the registered source fingerprint with changed
     /指纹/,
   );
 });
+
+test('half ruler inherits parent boundaries after a completed break and keeps one reference for O and C', async () => {
+  const { observeVideoLayers } = await import('../../src/lib/video-space.ts');
+  const s = stock();
+  const before = observeVideoLayers(s, '2026-11-02', auto, {
+    parentId: primary,
+    scale: 'HALF',
+  });
+  assert.equal(before.observation.kind, 'pending');
+  const result = observeVideoLayers(s, '2026-11-03', auto, {
+    parentId: primary,
+    scale: 'HALF',
+  });
+  assert.equal(result.half.kind, 'available');
+  const half = ready(result.observation),
+    parent = ready(result.parent);
+  assert.equal(half.source.kind, 'HALF');
+  assert.equal(half.source.endpoints.kind, 'PARENT_BOUNDARY');
+  for (const j of [-1, 0, 0.5, 1, 2])
+    assert.ok(
+      Math.abs(boundaryAt(half.ruler, j) - boundaryAt(parent.ruler, j / 2)) <
+        1e-8,
+    );
+  assert.deepEqual(
+    half.reference.open,
+    relate(+half.bar.open, half.reference.price),
+  );
+  assert.deepEqual(
+    half.reference.close,
+    relate(+half.bar.close, half.reference.price),
+  );
+  assert.deepEqual(
+    ready(
+      observeVideoLayers(s, '2026-11-03', auto, {
+        parentId: primary,
+        scale: 'PARENT',
+      }).observation,
+    ).ruler,
+    parent.ruler,
+  );
+});
+
+test('an archived selected V1 ruler remains its own root context', async () => {
+  const { observeVideoLayers } = await import('../../src/lib/video-space.ts');
+  const history = Array.from({ length: 55 }, (_, i) => {
+    const date = new Date(Date.UTC(2025, 0, i + 1)).toISOString().slice(0, 10);
+    const base = i < 22 ? 95 : 120;
+    return {
+      date,
+      open: String(base),
+      high: String(base + 1),
+      low: String(base - 1),
+      close: String(base),
+      volume_shares: '1',
+    };
+  });
+  for (const [i, kind, price] of [
+    [3, 'H', 100],
+    [7, 'L', 90],
+    [11, 'H', 100],
+    [15, 'L', 90],
+    [25, 'H', 130],
+    [29, 'L', 110],
+    [33, 'H', 130],
+    [37, 'L', 110],
+  ]) {
+    history[i] =
+      kind === 'H'
+        ? {
+            ...history[i],
+            open: String(price - 1),
+            close: String(price - 1),
+            high: String(price),
+          }
+        : {
+            ...history[i],
+            open: String(price + 1),
+            close: String(price + 1),
+            low: String(price),
+          };
+  }
+  for (const i of [20, 21])
+    history[i] = { ...history[i], open: '102', close: '102', high: '103' };
+  const s = {
+    ...stock(),
+    history,
+    autoHistory: { kind: 'ready', history, historyStartDate: history[0].date },
+  };
+  const date = history.at(-1).date;
+  const current = observeVideoLayers(s, date, auto, {
+    parentId: 'CURRENT_ROOT',
+    scale: 'PARENT',
+  });
+  assert.equal(current.family.root.versions.length, 2);
+  const archived = current.family.root.versions[0];
+  const selected = observeVideoLayers(s, date, auto, {
+    parentId: archived.id,
+    scale: 'PARENT',
+  });
+  assert.equal(ready(selected.parent).source.version.id, archived.id);
+  assert.equal(ready(selected.rootContext).source.version.id, archived.id);
+  assert.notEqual(archived.id, current.family.root.version.id);
+});

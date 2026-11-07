@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { Fragment, useEffect, useState } from 'react';
 import { SiteHeader } from '@/components/site-header';
 import { SiteLink } from '@/components/site-router';
 import { WorkbenchPageBar } from '@/components/workbench';
@@ -12,6 +12,7 @@ import {
   reconcileVideoRefresh,
   observeVideoDay,
   observeAutomaticVideoDay,
+  observeVideoLayers,
   boundaryAt,
   videoScenarios,
   videoStocks,
@@ -54,7 +55,9 @@ function Relation({ value }: { value: PriceRelation }) {
 function LineTable({
   lines,
   referenceK,
+  half = false,
 }: {
+  half?: boolean;
   lines: readonly LineObservation[];
   referenceK: number;
 }) {
@@ -73,7 +76,8 @@ function LineTable({
           {lines.map((l) => (
             <tr key={l.k} data-reference={l.k === referenceK}>
               <th>
-                B({l.k}) · {money(l.price)}
+                {half ? 'S' : 'B'}({l.k}) · {money(l.price)}
+                {half && <small>父尺 B({l.k / 2})</small>}
                 {l.k === referenceK && <small>本日共同参考</small>}
               </th>
               <td>
@@ -95,13 +99,22 @@ function Observation({
   observation,
   expanded,
   onExpand,
-  comparison,
+  overlays,
+  parent,
+  rootContext,
 }: {
+  parent: VideoObservation | null;
+  rootContext: VideoObservation | null;
   stock: VerifiedVideoStock;
   observation: Extract<VideoObservation, { kind: 'ready' }>;
   expanded: boolean;
   onExpand: () => void;
-  comparison: Extract<VideoObservation, { kind: 'ready' }> | null;
+  overlays: readonly {
+    id: string;
+    label: string;
+    style: 'comparison' | 'parent' | 'root';
+    observation: Extract<VideoObservation, { kind: 'ready' }>;
+  }[];
 }) {
   const o = observation,
     lines = o.spaceLines.some((l) => l.k === o.reference.k)
@@ -135,7 +148,8 @@ function Observation({
         data-date={o.date}
       >
         <h3>
-          开盘与收盘共用 B({o.reference.k}) · {money(o.reference.price)}
+          开盘与收盘共用 {o.source.kind === 'HALF' ? 'S' : 'B'}({o.reference.k})
+          · {money(o.reference.price)}
         </h3>
         <p>
           {o.referenceSelection.kind === 'AUTO_PREVIOUS_CLOSE'
@@ -168,7 +182,7 @@ function Observation({
           ].map(({ label, item }) => (
             <div key={label}>
               <dt>
-                {label} B({item.k})
+                {label} {o.source.kind === 'HALF' ? 'S' : 'B'}({item.k})
               </dt>
               <dd>{money(item.price)}</dd>
             </div>
@@ -194,29 +208,117 @@ function Observation({
         stock={stock}
         observation={o}
         expanded={expanded}
-        comparison={comparison}
+        overlays={overlays}
       />
       <h3>同线开收核对</h3>
-      <LineTable lines={lines} referenceK={o.reference.k} />
+      <LineTable
+        lines={lines}
+        referenceK={o.reference.k}
+        half={o.source.kind === 'HALF'}
+      />
       <section className="vs-ruler">
         <h3>
-          {o.source.kind === 'AUTO' ? '自动平台原尺' : '固定原尺与候选依据'}
+          {o.source.kind === 'AUTO'
+            ? '自动平台原尺'
+            : o.source.kind === 'LOWER'
+              ? '下降平台'
+              : o.source.kind === 'HALF'
+                ? '继承半格'
+                : '固定原尺与候选依据'}
         </h3>
-        <dl>
-          <div>
-            <dt>H · {o.high.date} · high</dt>
-            <dd>{o.high.price}</dd>
-          </div>
-          <div>
-            <dt>L · {o.low.date} · low</dt>
-            <dd>{o.low.price}</dd>
-          </div>
-        </dl>
-        <p>
-          {o.source.kind === 'FIXED'
-            ? o.source.scenario.reason
-            : '重复上下影线形成平台；旧平台仅在连续两日上破后退役。'}
-        </p>
+        {o.source.endpoints.kind === 'REAL' ? (
+          <dl>
+            <div>
+              <dt>H · {o.source.endpoints.high.date} · high</dt>
+              <dd>{o.source.endpoints.high.price}</dd>
+            </div>
+            <div>
+              <dt>L · {o.source.endpoints.low.date} · low</dt>
+              <dd>{o.source.endpoints.low.price}</dd>
+            </div>
+          </dl>
+        ) : (
+          <p>
+            继承父尺 {o.source.endpoints.parentId} 的 B(0){' '}
+            {money(o.source.endpoints.high)} 与 B(0.5){' '}
+            {money(o.source.endpoints.low)}。无新增 OHLC 端点。
+          </p>
+        )}
+        {o.source.kind === 'FIXED' && <p>{o.source.scenario.reason}</p>}
+        {o.source.kind === 'LOWER' && (
+          <>
+            <p>
+              前驱 {o.source.platform.predecessorId} · 跌破{' '}
+              {o.source.platform.triggerDate} · 确认{' '}
+              {o.source.platform.confirmationDate} · 启用{' '}
+              {o.source.platform.activationDate} ·{' '}
+              {o.source.platform.relationToRoot.kind === 'CONTAINED_CELL'
+                ? `原尺第 ${o.source.platform.relationToRoot.cell} 格内嵌`
+                : '跨格独立平台'}{' '}
+              ·{' '}
+              {o.source.platform.rootLifetime === 'active' ? '当前根' : '归档'}
+            </p>
+            <p>
+              {o.source.platform.fourConfirmedPoints
+                .map(
+                  (p) =>
+                    `${p.kind} ${p.date} ${money(p.price)}（确认 ${p.confirmed}）`,
+                )
+                .join('；')}
+            </p>
+          </>
+        )}
+        {o.source.kind === 'HALF' &&
+          parent?.kind === 'ready' &&
+          parent.source.endpoints.kind === 'REAL' && (
+            <div aria-label="所选父尺真实端点">
+              <h4>所选父尺真实端点</h4>
+              <p>
+                H · {parent.source.endpoints.high.date} ·{' '}
+                {parent.source.endpoints.high.field} ·{' '}
+                {money(parent.source.endpoints.high.price)}；L ·{' '}
+                {parent.source.endpoints.low.date} ·{' '}
+                {parent.source.endpoints.low.field} ·{' '}
+                {money(parent.source.endpoints.low.price)}
+              </p>
+              <p>
+                {parent.source.kind === 'AUTO'
+                  ? `确认 ${parent.source.version.confirmationDate} · 启用 ${parent.startDate}`
+                  : parent.source.kind === 'LOWER'
+                    ? `确认 ${parent.source.platform.confirmationDate} · 启用 ${parent.startDate}`
+                    : `启用 ${parent.startDate} · 原片锁线时间未知`}
+              </p>
+            </div>
+          )}
+        {o.source.kind === 'HALF' &&
+          rootContext?.kind === 'ready' &&
+          rootContext.source.kind === 'AUTO' &&
+          parent?.kind === 'ready' &&
+          (parent.source.kind !== 'AUTO' ||
+            parent.source.version.id !== rootContext.source.version.id) && (
+            <p>
+              {parent.source.kind === 'FIXED'
+                ? '当前 V1 对照尺'
+                : '所属 V1 原尺'}
+              ：H · {rootContext.source.endpoints.high.date} ·{' '}
+              {rootContext.source.endpoints.high.field} ·{' '}
+              {money(rootContext.source.endpoints.high.price)}；L ·{' '}
+              {rootContext.source.endpoints.low.date} ·{' '}
+              {rootContext.source.endpoints.low.field} ·{' '}
+              {money(rootContext.source.endpoints.low.price)}；确认{' '}
+              {rootContext.source.version.confirmationDate} · 启用{' '}
+              {rootContext.startDate}。
+            </p>
+          )}
+        {o.source.kind === 'HALF' && (
+          <p>
+            启用 {o.source.activationDate}。S(j)=父尺 B(j/2)，当前参考 S(
+            {o.reference.k}) = 父尺 B({o.reference.k / 2}) ·{' '}
+            {money(o.reference.price)}
+            。精确一半和启用时间为工程约定。切换尺度增加父尺四分之一格参考候选，因此自动参考实际价格可能变化；手动
+            k 属于当前尺度。
+          </p>
+        )}
         {o.source.kind === 'AUTO' && (
           <details>
             <summary>平台确认与版本记录</summary>
@@ -247,9 +349,9 @@ function Observation({
           </details>
         )}
         <p>
-          {o.source.kind === 'AUTO'
-            ? '当前快照历史模拟，原作者自动算法未知。旧平台可能保留较久，推广尚未开放。'
-            : '候选为视频波段人工固定，原作者当时锁线时间未知。历史日为描述性回看。'}
+          {o.source.kind === 'FIXED'
+            ? '候选为视频波段人工固定，原作者当时锁线时间未知。历史日为描述性回看。'
+            : '当前快照历史模拟，自动平台和精确半格是工程补充，原作者公式未知，推广尚未开放。'}
         </p>
       </section>
     </>
@@ -262,7 +364,9 @@ function Comparison({
   fixed,
   automatic,
   scenarioId,
+  layer,
 }: {
+  layer: { parentId: string; scale: 'PARENT' | 'HALF' } | null;
   stock: VerifiedVideoStock;
   date: string;
   selection: ReferenceSelection;
@@ -274,7 +378,55 @@ function Comparison({
     .filter((b) => b.date <= date)
     .slice(-5)
     .reverse();
-  if (fixed?.kind !== 'ready' || automatic?.kind !== 'ready')
+  const selected = layer
+    ? observeVideoLayers(stock, date, selection, layer)
+    : null;
+  const identity = (value: Extract<VideoObservation, { kind: 'ready' }>) =>
+    value.source.kind === 'FIXED'
+      ? value.source.scenario.id
+      : value.source.kind === 'AUTO'
+        ? value.source.version.id
+        : value.source.kind === 'LOWER'
+          ? value.source.platform.id
+          : `half:${value.source.endpoints.parentId}`;
+  const historyLayer =
+    layer && selected?.parent.kind === 'ready'
+      ? { ...layer, parentId: identity(selected.parent) }
+      : layer;
+  if (fixed?.kind !== 'ready' || automatic?.kind !== 'ready') {
+    const entries: { label: string; value: VideoObservation | null }[] = [
+      { label: '固定', value: fixed },
+      { label: '自动', value: automatic },
+    ];
+    const seen = new Set(
+      entries.flatMap(({ value }) =>
+        value?.kind === 'ready' ? [identity(value)] : [],
+      ),
+    );
+    for (const [label, value] of [
+      ['所选父尺', selected?.parent],
+      ['继承半格', selected?.observation],
+    ] as const) {
+      if (value?.kind === 'ready' && !seen.has(identity(value))) {
+        entries.push({
+          label: value.source.kind === 'HALF' ? label : '所选父尺',
+          value,
+        });
+        seen.add(identity(value));
+      }
+    }
+    const cell = (o: VideoObservation | null | undefined) =>
+      o?.kind === 'ready' ? (
+        <>
+          {o.source.kind === 'HALF' ? 'S' : 'B'}({o.reference.k}){' '}
+          {money(o.reference.price)}
+          {o.source.kind === 'HALF' && <> · 父 B({o.reference.k / 2})</>}
+          <br />开 <Relation value={o.reference.open} /> 收{' '}
+          <Relation value={o.reference.close} />
+        </>
+      ) : (
+        '待核'
+      );
     return (
       <section className="vs-ruler">
         <h3>固定与自动对照</h3>
@@ -282,15 +434,107 @@ function Comparison({
           固定：{fixed?.kind === 'pending' ? fixed.reason : '可用'}；自动：
           {automatic?.kind === 'pending' ? automatic.reason : '可用'}。
         </p>
+        <div className="vs-table-wrap vs-endpoint-comparison">
+          <table>
+            <thead>
+              <tr>
+                <th>尺</th>
+                <th>端点 / 来源</th>
+                <th>参考 / 开收</th>
+              </tr>
+            </thead>
+            <tbody>
+              {entries.map(({ label, value }) => (
+                <tr key={label}>
+                  <th>{label}</th>
+                  <td>
+                    {value?.kind !== 'ready'
+                      ? '待核'
+                      : value.source.endpoints.kind === 'REAL'
+                        ? `${value.source.endpoints.high.date} high ${value.source.endpoints.high.price} / ${value.source.endpoints.low.date} low ${value.source.endpoints.low.price}`
+                        : '继承父边界'}
+                  </td>
+                  <td>{cell(value)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        <h4>最近五个实际交易日</h4>
+        <div className="vs-table-wrap vs-endpoint-comparison">
+          <table>
+            <thead>
+              <tr>
+                <th>日期</th>
+                {entries.map(({ label }) => (
+                  <th key={label}>{label}参考 / 开收</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {recent.map((b) => {
+                const day = historyLayer
+                  ? observeVideoLayers(stock, b.date, selection, historyLayer)
+                  : null;
+                return (
+                  <tr key={b.date}>
+                    <th>{b.date}</th>
+                    {entries.map(({ label }) => (
+                      <td key={label}>
+                        {cell(
+                          label === '固定'
+                            ? observeVideoDay(
+                                stock,
+                                scenarioId,
+                                b.date,
+                                selection,
+                              )
+                            : label === '自动'
+                              ? observeAutomaticVideoDay(
+                                  stock,
+                                  b.date,
+                                  selection,
+                                )
+                              : label === '所选父尺'
+                                ? day?.parent
+                                : day?.observation,
+                        )}
+                      </td>
+                    ))}
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
       </section>
     );
+  }
   const a = automatic,
     f = fixed;
+  const extra: {
+    label: string;
+    value: Extract<VideoObservation, { kind: 'ready' }>;
+  }[] = [];
+  const seen = new Set([identity(f), identity(a)]);
+  for (const [label, value] of [
+    ['所选父尺', selected?.parent],
+    ['继承半格', selected?.observation],
+  ] as const) {
+    if (value?.kind === 'ready' && !seen.has(identity(value))) {
+      extra.push({
+        label: value.source.kind === 'HALF' ? label : '所选父尺',
+        value,
+      });
+      seen.add(identity(value));
+    }
+  }
   const matching = videoScenarios.some(
     (s) =>
       s.code === stock.code &&
-      s.high.date === a.high.date &&
-      s.low.date === a.low.date,
+      a.source.endpoints.kind === 'REAL' &&
+      s.high.date === a.source.endpoints.high.date &&
+      s.low.date === a.source.endpoints.low.date,
   );
   const ks = [
     ...new Set([
@@ -311,13 +555,23 @@ function Comparison({
     <tr>
       <th>{label}</th>
       <td>
-        {value.high.date} high {money(value.high.price)}
-        <br />
-        {value.low.date} low {money(value.low.price)}
+        {value.source.endpoints.kind === 'REAL' ? (
+          <>
+            {value.source.endpoints.high.date} high{' '}
+            {money(value.source.endpoints.high.price)}
+            <br />
+            {value.source.endpoints.low.date} low{' '}
+            {money(value.source.endpoints.low.price)}
+          </>
+        ) : (
+          '继承父边界'
+        )}
       </td>
       <td>{Math.log(value.ruler.H / value.ruler.L).toFixed(4)}</td>
       <td>
-        B({value.reference.k}) {money(value.reference.price)}
+        {value.source.kind === 'HALF' ? 'S' : 'B'}({value.reference.k}){' '}
+        {money(value.reference.price)}
+        {value.source.kind === 'HALF' && <> · 父 B({value.reference.k / 2})</>}
       </td>
       <td>
         <Relation value={value.reference.open} />
@@ -355,6 +609,9 @@ function Comparison({
           <tbody>
             {line('固定', f)}
             {line('自动', a)}
+            {extra.map(({ label, value }) => (
+              <Fragment key={identity(value)}>{line(label, value)}</Fragment>
+            ))}
           </tbody>
         </table>
       </div>
@@ -418,18 +675,28 @@ function Comparison({
               <th>日期</th>
               <th>固定参考 / 开收</th>
               <th>自动参考 / 开收</th>
+              {extra.map(({ label, value }) => (
+                <th key={identity(value)}>{label}参考 / 开收</th>
+              ))}
             </tr>
           </thead>
           <tbody>
             {recent.map((b) => {
               const x = observeVideoDay(stock, scenarioId, b.date, selection),
                 y = observeAutomaticVideoDay(stock, b.date, selection);
+              const layerDay = historyLayer
+                ? observeVideoLayers(stock, b.date, selection, historyLayer)
+                : null;
               const cell = (o: VideoObservation) =>
                 o.kind === 'pending' ? (
                   '待核'
                 ) : (
                   <span>
-                    B({o.reference.k}) {money(o.reference.price)}
+                    {o.source.kind === 'HALF' ? 'S' : 'B'}({o.reference.k}){' '}
+                    {money(o.reference.price)}
+                    {o.source.kind === 'HALF' && (
+                      <> · 父 B({o.reference.k / 2})</>
+                    )}
                     <br />开 <Relation value={o.reference.open} /> 收{' '}
                     <Relation value={o.reference.close} />
                   </span>
@@ -439,6 +706,18 @@ function Comparison({
                   <th>{b.date}</th>
                   <td>{cell(x)}</td>
                   <td>{cell(y)}</td>
+                  {extra.map(({ label, value }) => (
+                    <td key={identity(value)}>
+                      {cell(
+                        (label === '所选父尺'
+                          ? layerDay?.parent
+                          : layerDay?.observation) ?? {
+                          kind: 'pending',
+                          reason: '待核',
+                        },
+                      )}
+                    </td>
+                  ))}
                 </tr>
               );
             })}
@@ -464,7 +743,9 @@ export default function VideoSpacePage() {
     ),
     [fixedK, setFixedK] = useState('1'),
     [expanded, setExpanded] = useState(false),
-    [rulerMode, setRulerMode] = useState<'fixed' | 'auto'>('fixed');
+    [rulerMode, setRulerMode] = useState<'fixed' | 'auto' | 'layers'>('fixed'),
+    [parentId, setParentId] = useState('CURRENT_ROOT'),
+    [scale, setScale] = useState<'PARENT' | 'HALF'>('PARENT');
   useEffect(() => {
     const controller = new AbortController();
     void loadVideoSpace(code, { signal: controller.signal })
@@ -502,9 +783,54 @@ export default function VideoSpacePage() {
   const autoObservation = stock
     ? observeAutomaticVideoDay(stock, date, selection)
     : null;
+  const layers = stock
+    ? observeVideoLayers(stock, date, selection, { parentId, scale })
+    : null;
   const observation =
-    rulerMode === 'fixed' ? fixedObservation : autoObservation;
+    rulerMode === 'fixed'
+      ? fixedObservation
+      : rulerMode === 'auto'
+        ? autoObservation
+        : layers?.observation;
   const other = rulerMode === 'fixed' ? autoObservation : fixedObservation;
+  const overlays: {
+    id: string;
+    label: string;
+    style: 'comparison' | 'parent' | 'root';
+    observation: Extract<VideoObservation, { kind: 'ready' }>;
+  }[] = [];
+  if (rulerMode === 'layers') {
+    if (layers?.parent.kind === 'ready' && layers.parent !== observation)
+      overlays.push({
+        id: 'parent',
+        style: 'parent',
+        label: '所选父尺',
+        observation: layers.parent,
+      });
+    if (
+      layers?.rootContext.kind === 'ready' &&
+      layers.rootContext.source.kind === 'AUTO' &&
+      layers.parent.kind === 'ready' &&
+      (layers.parent.source.kind !== 'AUTO' ||
+        layers.parent.source.version.id !==
+          layers.rootContext.source.version.id)
+    )
+      overlays.push({
+        id: 'root',
+        style: 'root',
+        label:
+          layers.parent.source.kind === 'FIXED'
+            ? '当前 V1 对照尺'
+            : '所属 V1 原尺',
+        observation: layers.rootContext,
+      });
+  } else if (other?.kind === 'ready')
+    overlays.push({
+      id: 'comparison',
+      style: 'comparison',
+      label: rulerMode === 'fixed' ? '自动对照尺' : '固定对照尺',
+      observation: other,
+    });
   const scenario = videoScenarios.find((s) => s.id === scenarioId),
     name = videoStocks.find((s) => s.code === code)?.name;
   function beginLoading(next: VideoCode) {
@@ -521,6 +847,8 @@ export default function VideoSpacePage() {
       videoScenarios.find((s) => s.code === next && s.primary)?.id ?? '',
     );
     setDate('');
+    setParentId('CURRENT_ROOT');
+    setScale('PARENT');
     setExpanded(false);
   }
   return (
@@ -561,7 +889,11 @@ export default function VideoSpacePage() {
                 {name} <small>{code}</small>
               </h2>
               <p>
-                {rulerMode === 'auto' ? '自动平台空间（试验）' : '固定视频空间'}{' '}
+                {rulerMode === 'layers'
+                  ? '分层观察（试验）'
+                  : rulerMode === 'auto'
+                    ? '自动平台空间（试验）'
+                    : '固定视频空间'}{' '}
                 · 不复权 · LOG
               </p>
             </div>
@@ -582,13 +914,57 @@ export default function VideoSpacePage() {
                 aria-label="原尺模式"
                 value={rulerMode}
                 onChange={(e) =>
-                  setRulerMode(e.target.value === 'auto' ? 'auto' : 'fixed')
+                  setRulerMode(
+                    e.target.value === 'layers'
+                      ? 'layers'
+                      : e.target.value === 'auto'
+                        ? 'auto'
+                        : 'fixed',
+                  )
                 }
               >
                 <option value="fixed">固定候选</option>
                 <option value="auto">自动平台（试验）</option>
+                <option value="layers">分层观察（试验）</option>
               </select>
             </label>
+            {rulerMode === 'layers' && (
+              <>
+                <label>
+                  查看父尺
+                  <select
+                    aria-label="查看父尺"
+                    value={parentId}
+                    onChange={(e) => {
+                      setParentId(e.target.value);
+                      setScale('PARENT');
+                    }}
+                  >
+                    <option value="CURRENT_ROOT">当前 V1 原尺</option>
+                    {layers?.options
+                      .filter((o) => o.label !== '当前 V1 原尺')
+                      .map((o) => (
+                        <option key={o.id} value={o.id}>
+                          {o.label}
+                        </option>
+                      ))}
+                  </select>
+                </label>
+                <label>
+                  查看尺度
+                  <select
+                    aria-label="查看尺度"
+                    value={scale}
+                    onChange={(e) =>
+                      setScale(e.target.value === 'HALF' ? 'HALF' : 'PARENT')
+                    }
+                  >
+                    <option value="PARENT">父尺</option>
+                    <option value="HALF">继承半格</option>
+                  </select>
+                </label>
+              </>
+            )}
             <label>
               固定对照基线
               <select
@@ -671,6 +1047,29 @@ export default function VideoSpacePage() {
                 : ' 本股暂停判读，可切换其他股票。'}
             </p>
           )}
+          {rulerMode === 'layers' && layers && (
+            <section className="vs-ruler">
+              <h3>分层观察</h3>
+              <p>
+                切换尺度会改变自动参考候选及其实际价格；手动 k
+                以当前尺度计。切换日期时，固定 k 保持当前尺度坐标。
+              </p>
+              <p>
+                {layers.family?.lowerPlatforms.some(
+                  (p) => p.rootLifetime === 'active',
+                )
+                  ? '当前根已形成下降平台，可在父尺中选择。'
+                  : '当前根尚未形成下降平台。'}{' '}
+                {layers.half.kind === 'available'
+                  ? `半格自 ${layers.half.activationDate} 起可查看。`
+                  : layers.half.reason}
+              </p>
+              <p>
+                原片 F1 支持原尺向下延伸，F2 支持保留大格增细。精确
+                1/2、自动下降平台与启用时点为工程约定；作者完整公式未知。
+              </p>
+            </section>
+          )}
           {observation?.kind === 'pending' && (
             <output className="vs-error">{observation.reason}</output>
           )}
@@ -680,7 +1079,11 @@ export default function VideoSpacePage() {
               observation={observation}
               expanded={expanded}
               onExpand={() => setExpanded((v) => !v)}
-              comparison={other?.kind === 'ready' ? other : null}
+              overlays={overlays}
+              parent={rulerMode === 'layers' ? (layers?.parent ?? null) : null}
+              rootContext={
+                rulerMode === 'layers' ? (layers?.rootContext ?? null) : null
+              }
             />
           )}
           {stock && (
@@ -691,6 +1094,7 @@ export default function VideoSpacePage() {
               fixed={fixedObservation}
               automatic={autoObservation}
               scenarioId={scenarioId}
+              layer={rulerMode === 'layers' ? { parentId, scale } : null}
             />
           )}
           <details className="vs-rules">

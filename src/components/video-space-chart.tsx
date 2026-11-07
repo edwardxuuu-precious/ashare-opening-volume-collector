@@ -19,12 +19,17 @@ export function VideoSpaceChart({
   stock,
   observation,
   expanded,
-  comparison,
+  overlays,
 }: {
   stock: VerifiedVideoStock;
   observation: Extract<VideoObservation, { kind: 'ready' }>;
   expanded: boolean;
-  comparison: Extract<VideoObservation, { kind: 'ready' }> | null;
+  overlays: readonly {
+    id: string;
+    label: string;
+    style: 'comparison' | 'parent' | 'root';
+    observation: Extract<VideoObservation, { kind: 'ready' }>;
+  }[];
 }) {
   const ref = useRef<SVGSVGElement>(null),
     [width, setWidth] = useState(900);
@@ -49,14 +54,15 @@ export function VideoSpaceChart({
     : [...observation.spaceLines];
   if (!guides.some((g) => g.k === observation.reference.k))
     guides.push(observation.reference);
-  const comparisonLines = comparison
-    ? [
-        comparison.location.upper,
-        comparison.location.middle,
-        comparison.location.lower,
-        comparison.reference,
-      ].filter((g, i, all) => all.findIndex((x) => x.k === g.k) === i)
-    : [];
+  const overlayLines = overlays.map((overlay) => ({
+    ...overlay,
+    lines: [
+      overlay.observation.location.upper,
+      overlay.observation.location.middle,
+      overlay.observation.location.lower,
+      overlay.observation.reference,
+    ].filter((g, i, all) => all.findIndex((x) => x.k === g.k) === i),
+  }));
   const height = 340,
     left = 12,
     right = width - 104,
@@ -67,7 +73,7 @@ export function VideoSpaceChart({
       .flatMap((b) => [Number(b.low), Number(b.high)])
       .concat(
         guides.map((g) => g.price),
-        comparisonLines.map((g) => g.price),
+        overlayLines.flatMap((o) => o.lines.map((g) => g.price)),
       ),
     top,
     bottom,
@@ -77,10 +83,6 @@ export function VideoSpaceChart({
     x = (i: number) => left + (i + 0.5) * step;
   const firstLine = bars.findIndex((b) => b.date >= observation.startDate);
   const startX = firstLine < 0 ? right : x(firstLine);
-  const comparisonIndex = comparison
-    ? bars.findIndex((b) => b.date >= comparison.startDate)
-    : -1;
-  const comparisonStart = comparisonIndex < 0 ? right : x(comparisonIndex);
   const labels = guides
     .map((g) => ({ ...g, y: scale.y(g.price) }))
     .sort((a, b) => a.y - b.y);
@@ -102,7 +104,7 @@ export function VideoSpaceChart({
         viewBox={`0 0 ${width} ${height}`}
         role="img"
         data-price-geometry="log-price.v1"
-        aria-label={`${stock.code} ${observation.date} ${observation.source.kind === 'AUTO' ? '自动平台（试验）' : '固定视频空间'}与真实日K线`}
+        aria-label={`${stock.code} ${observation.date} ${observation.source.kind === 'HALF' ? '继承半格' : observation.source.kind === 'LOWER' ? '下降平台' : observation.source.kind === 'AUTO' ? '自动平台（试验）' : '固定视频空间'}与真实日K线`}
       >
         {scale.ticks(5).map((p, i) => (
           <g key={i}>
@@ -180,20 +182,33 @@ export function VideoSpaceChart({
             </g>
           );
         })}
-        {comparisonLines.map((g) => (
-          <line
-            key={`comparison-${g.k}`}
-            data-comparison-k={g.k}
-            data-price={g.price}
-            x1={comparisonStart}
-            x2={right}
-            y1={scale.y(g.price)}
-            y2={scale.y(g.price)}
-            stroke="#a352a8"
-            strokeWidth={g.k === comparison?.reference.k ? 2 : 1}
-            strokeDasharray={Number.isInteger(g.k) ? '2 3' : '7 3'}
-          />
-        ))}
+        {overlayLines.flatMap((overlay) => {
+          const index = bars.findIndex(
+            (b) => b.date >= overlay.observation.startDate,
+          );
+          const start = index < 0 ? right : x(index);
+          return overlay.lines.map((g) => (
+            <line
+              key={`${overlay.id}-${g.k}`}
+              data-comparison-k={g.k}
+              data-overlay-id={overlay.id}
+              data-price={g.price}
+              x1={start}
+              x2={right}
+              y1={scale.y(g.price)}
+              y2={scale.y(g.price)}
+              stroke={overlay.style === 'root' ? '#a4611a' : '#a352a8'}
+              strokeWidth={g.k === overlay.observation.reference.k ? 2 : 1}
+              strokeDasharray={
+                overlay.style === 'root'
+                  ? '10 3 2 3'
+                  : overlay.style === 'parent'
+                    ? '2 4'
+                    : '7 3'
+              }
+            />
+          ));
+        })}
         {guides.map((g) => {
           const label = labels.find((l) => l.k === g.k),
             y = scale.y(g.price),
@@ -227,15 +242,17 @@ export function VideoSpaceChart({
                 fontSize="11"
                 fill={reference ? 'var(--ui-accent)' : 'var(--ui-muted)'}
               >
-                B({g.k}) {price(g.price)}
+                {observation.source.kind === 'HALF' ? 'S' : 'B'}({g.k}){' '}
+                {price(g.price)}
               </text>
             </g>
           );
         })}
         {expanded &&
+          observation.source.endpoints.kind === 'REAL' &&
           [
-            { ...observation.high, label: 'H' },
-            { ...observation.low, label: 'L' },
+            { ...observation.source.endpoints.high, label: 'H' },
+            { ...observation.source.endpoints.low, label: 'L' },
           ].map((point) => {
             const i = bars.findIndex((b) => b.date === point.date);
             if (i < 0) return null;
@@ -261,16 +278,31 @@ export function VideoSpaceChart({
             );
           })}
         <text x={left} y={height - 10} fontSize="10" fill="var(--ui-muted)">
-          {observation.source.kind === 'AUTO' ? '自动' : '固定'}
           主尺：实线整格、虚线半格 · 蓝线为共同参考
-          {comparison &&
-            ` · 紫线为${observation.source.kind === 'AUTO' ? '固定' : '自动'}对照尺`}
         </text>
       </svg>
+      {overlays.length > 0 && (
+        <ul className="vs-overlay-legend" aria-label="图表对照尺图例">
+          {overlays.map((overlay) => (
+            <li key={overlay.id}>
+              <span
+                aria-hidden="true"
+                className={`vs-overlay-swatch vs-overlay-${overlay.style}`}
+              />
+              {overlay.label} ·{' '}
+              {overlay.style === 'root'
+                ? '长短线'
+                : overlay.style === 'parent'
+                  ? '点线'
+                  : '虚线'}
+            </li>
+          ))}
+        </ul>
+      )}
       <p>
         水平线从 {observation.startDate} 开始。
-        {comparison &&
-          `紫线是${observation.source.kind === 'AUTO' ? '固定' : '自动'}对照尺的所在空间和参考线，价格见下方表格；两尺共用同一 LOG 价格轴。`}
+        {overlays.length > 0 &&
+          `${overlays.map((o) => o.label).join('、')}与主尺共用同一 LOG 价格轴。`}
         日线不推断盘中路径。
       </p>
     </figure>

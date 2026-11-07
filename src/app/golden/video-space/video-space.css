@@ -425,3 +425,41 @@
   color: var(--ui-muted);
   font-size: 11px;
 }
+
+.video-space .vs-endpoint-comparison th,
+.video-space .vs-endpoint-comparison td {
+  white-space: nowrap;
+  overflow-wrap: normal;
+}
+
+.vs-overlay-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 18px;
+  margin: 8px 0;
+  padding: 0;
+  list-style: none;
+  color: var(--ui-muted);
+  font-size: 12px;
+}
+.vs-overlay-swatch {
+  display: inline-block;
+  width: 28px;
+  margin-right: 6px;
+  vertical-align: middle;
+  border-top: 2px dashed #a352a8;
+}
+.vs-overlay-parent {
+  border-top-style: dotted;
+}
+.vs-overlay-root {
+  border: 0;
+  height: 2px;
+  background: repeating-linear-gradient(
+    to right,
+    #a4611a 0 10px,
+    transparent 10px 13px,
+    #a4611a 13px 15px,
+    transparent 15px 18px
+  );
+}
