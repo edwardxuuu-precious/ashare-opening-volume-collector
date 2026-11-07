@@ -266,9 +266,10 @@ async function bounds(page) {
         assert.equal(await page.locator('.chip-candle-readout').count(), 0);
         assert.equal(
           state.authReads,
-          2,
-          'Successful sign-in must validate the current static route',
+          1,
+          'Successful sign-in must reuse the current route without another session read',
         );
+        assert.equal(state.documents, 1, 'Relogin must retain the document');
       },
     );
 

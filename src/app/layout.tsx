@@ -2,7 +2,6 @@ import type { Metadata } from 'next';
 import './globals.css';
 import { AuthGate } from '@/components/auth-gate';
 import { BRAND_NAME } from '@/components/brand';
-import { SiteRouter } from '@/components/site-router';
 import { siteHistoryBootstrap } from '@/lib/site-routes';
 
 export const metadata: Metadata = {
@@ -17,11 +16,29 @@ export default function RootLayout({
 }: Readonly<{
   children: React.ReactNode;
 }>) {
+  let authOrigin: string | undefined;
+  try {
+    const url = new URL(process.env.NEXT_PUBLIC_AUTH_API || '');
+    if (url.protocol === 'http:' || url.protocol === 'https:')
+      authOrigin = url.origin;
+  } catch {}
   return (
     <html lang="zh-CN">
-      <head><script dangerouslySetInnerHTML={{ __html: siteHistoryBootstrap }} /></head>
+      <head>
+        {authOrigin && (
+          <>
+            <link
+              rel="preconnect"
+              href={authOrigin}
+              crossOrigin="use-credentials"
+            />
+            <link rel="dns-prefetch" href={authOrigin} />
+          </>
+        )}
+        <script dangerouslySetInnerHTML={{ __html: siteHistoryBootstrap }} />
+      </head>
       <body className="antialiased">
-        <AuthGate><SiteRouter>{children}</SiteRouter></AuthGate>
+        <AuthGate>{children}</AuthGate>
       </body>
     </html>
   );

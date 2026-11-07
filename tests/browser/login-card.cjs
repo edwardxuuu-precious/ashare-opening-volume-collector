@@ -18,9 +18,13 @@ const ERROR_TEXT = '账号或密码错误，请重试。';
 const checks = [];
 const errors = [];
 const blocked = [];
+const fontRequests = [];
 const fontResponses = [];
-let fontLoads = [];
+const fontStacks = [];
 let brandMetadata;
+let documentRequests = 0;
+let routeRelogin;
+let obsoleteSessionCheck;
 const counts = { me: 0, login: 0, logout: 0 };
 const rows = [
   {
@@ -50,6 +54,337 @@ async function assertOnScreen(locator, viewport) {
   );
 }
 
+async function assertSystemFonts(page, phase, selectors) {
+  for (const selector of selectors) {
+    const family = await page
+      .locator(selector)
+      .first()
+      .evaluate((element) => getComputedStyle(element).fontFamily);
+    assert.match(family, /system-ui/, 'the UI must use the system font stack');
+    assert.doesNotMatch(family, /Inter|Noto Sans SC/);
+    fontStacks.push({ phase, selector, family });
+  }
+  assert.deepEqual(fontRequests, [], 'natural UI use must request no webfonts');
+}
+
+async function verifyRouteRelogin(browser) {
+  const context = await browser.newContext({
+    viewport: { width: 1440, height: 960 },
+    serviceWorkers: 'block',
+  });
+  const state = {
+    user: 'route-account-a',
+    documents: 0,
+    me: 0,
+    login: 0,
+    logout: 0,
+    anonymousReads: 0,
+    triangleReads: 0,
+  };
+  const page = await context.newPage();
+  page.on('pageerror', (error) => errors.push(error.message));
+  page.on('request', (request) => {
+    if (request.isNavigationRequest() && request.frame() === page.mainFrame())
+      state.documents++;
+    const url = new URL(request.url());
+    if (/\.(woff2?|ttf|otf)$/.test(url.pathname))
+      fontRequests.push({ origin: url.origin, path: url.pathname });
+  });
+  await context.route('**/*', async (route) => {
+    const request = route.request();
+    const url = new URL(request.url());
+    const local = url.origin === origin;
+    if (!local && url.origin !== API_ORIGIN) {
+      blocked.push(request.method() + ' ' + url.origin + url.pathname);
+      return route.abort();
+    }
+    const headers = {
+      'access-control-allow-origin': origin,
+      'access-control-allow-credentials': 'true',
+      'access-control-allow-methods': 'GET, POST, OPTIONS',
+      'access-control-allow-headers': 'content-type',
+      'cache-control': 'no-store',
+    };
+    const json = (value, status = 200) =>
+      route.fulfill({ status, json: value, headers });
+    if (request.method() === 'OPTIONS')
+      return route.fulfill({ status: 204, headers });
+    if (url.pathname === '/auth/me' && request.method() === 'GET') {
+      state.me++;
+      return json(
+        state.user ? { username: state.user } : {},
+        state.user ? 200 : 401,
+      );
+    }
+    if (url.pathname === '/auth/logout' && request.method() === 'POST') {
+      state.logout++;
+      if (state.logout === 1)
+        return json({ error: 'isolated logout failure' }, 500);
+      state.user = '';
+      return json({ ok: true });
+    }
+    if (url.pathname === '/auth/login' && request.method() === 'POST') {
+      state.login++;
+      assert.equal(request.postDataJSON().username, 'route-account-b');
+      state.user = 'route-account-b';
+      return json({ username: state.user });
+    }
+    if (request.method() === 'GET' && url.pathname.startsWith('/data/')) {
+      if (!state.user) {
+        state.anonymousReads++;
+        return json({ error: 'fixture session is anonymous' }, 401);
+      }
+      if (url.pathname === '/data/stocks.json')
+        return json({ rows: rows.map(({ code, name }) => ({ code, name })) });
+      if (url.pathname === '/data/manifest.json')
+        return json({
+          generatedAt: 'fixture',
+          source: 'fixture',
+          methodology: 'fixture',
+          universeTotal: 1,
+          tradingDates: [DATE],
+          retentionStart: DATE,
+          dates: [{ date: DATE, file: DATE + '.json', status: 'full' }],
+        });
+      if (url.pathname === '/data/' + DATE + '.json')
+        return json({
+          date: DATE,
+          generatedAt: 'fixture',
+          scope: 'full',
+          total: 1,
+          rows,
+        });
+      if (url.pathname.startsWith('/data/triangles/')) state.triangleReads++;
+      return json(
+        { error: 'No publication in this isolated route fixture' },
+        404,
+      );
+    }
+    if (local && request.method() === 'GET') return route.continue();
+    blocked.push(request.method() + ' ' + url.origin + url.pathname);
+    return route.abort();
+  });
+  try {
+    await page.goto(SITE + '/?date=' + DATE + '&scope=all');
+    await page.locator('.results tbody tr').first().waitFor();
+    assert.match(
+      await page.locator('.results').innerText(),
+      new RegExp(FIXTURE_STOCK),
+    );
+    await page.locator('nav a[href="/triangles"]').click();
+    await page
+      .getByRole('heading', { name: '趋势三角与关键点位', exact: true })
+      .waitFor();
+    await page.locator('.triangle-error').waitFor();
+    await page.evaluate((date) => {
+      history.replaceState(
+        null,
+        '',
+        '/triangles?scope=single&symbols=600000&asOf=' + date,
+      );
+      window.__loginRouteDocument = 'route-login-fixture';
+    }, DATE);
+    const targetUrl = page.url();
+    const readsBeforeLogout = state.triangleReads;
+    assert.ok(
+      readsBeforeLogout > 0,
+      'the first account must mount the selected private page',
+    );
+    await page.getByRole('button', { name: '账户菜单', exact: true }).click();
+    await page.getByRole('menuitem', { name: '退出登录', exact: true }).click();
+    const logoutError = page.locator('.account-controls').getByRole('alert');
+    await logoutError.waitFor();
+    assert.match(await logoutError.innerText(), /退出失败/);
+    assert.equal(state.logout, 1, 'a failed logout must not retry itself');
+    assert.equal(await page.locator('.auth-form-panel form').count(), 0);
+    assert.ok(await page.locator('.triangle-site').isVisible());
+    assert.equal(page.url(), targetUrl);
+    assert.ok(
+      await page
+        .getByRole('button', { name: '账户菜单', exact: true })
+        .isEnabled(),
+    );
+    await page.getByRole('button', { name: '账户菜单', exact: true }).click();
+    await page.getByRole('menuitem', { name: '退出登录', exact: true }).click();
+    await page.locator('.auth-form-panel form').waitFor();
+    assert.equal(await page.locator('.triangle-site').count(), 0);
+    assert.equal(await page.locator('.results').count(), 0);
+    assert.doesNotMatch(
+      await page.locator('body').innerText(),
+      new RegExp(FIXTURE_STOCK),
+    );
+    await page.getByLabel('账号', { exact: true }).fill('route-account-b');
+    await page
+      .getByLabel('密码', { exact: true })
+      .fill('route-fixture-password');
+    await page.getByRole('button', { name: '登录', exact: true }).click();
+    await page
+      .getByRole('heading', { name: '趋势三角与关键点位', exact: true })
+      .waitFor();
+    await page.locator('.triangle-error').waitFor();
+    assert.equal(page.url(), targetUrl);
+    assert.equal(
+      await page.evaluate(() => window.__loginRouteDocument),
+      'route-login-fixture',
+    );
+    assert.ok(
+      state.triangleReads > readsBeforeLogout,
+      'the second account mounts a fresh private page',
+    );
+    assert.equal(await page.locator('.results').count(), 0);
+    assert.doesNotMatch(
+      await page.locator('body').innerText(),
+      new RegExp(FIXTURE_STOCK),
+    );
+    await page.getByRole('button', { name: '账户菜单', exact: true }).click();
+    assert.match(await page.getByRole('menu').innerText(), /route-account-b/);
+    assert.doesNotMatch(
+      await page.getByRole('menu').innerText(),
+      /route-account-a/,
+    );
+    await page.keyboard.press('Escape');
+    await assertSystemFonts(page, 'relogin-subroute', ['.triangle-site h1']);
+    assert.equal(state.documents, 1);
+    assert.equal(state.me, 1);
+    assert.equal(state.login, 1);
+    assert.equal(state.logout, 2);
+    assert.equal(state.anonymousReads, 0);
+    return {
+      ...state,
+      logoutFailurePreservedPage: true,
+      route: new URL(targetUrl).pathname + new URL(targetUrl).search,
+    };
+  } finally {
+    await context.close();
+  }
+}
+
+async function verifyObsoleteSessionCheck(browser) {
+  const context = await browser.newContext({ serviceWorkers: 'block' });
+  const page = await context.newPage();
+  const state = { me: 0, login: 0, privateReads: 0, anonymousReads: 0 };
+  let signedIn = false;
+  let releaseMe;
+  let markReleased;
+  const released = new Promise((resolve) => {
+    markReleased = resolve;
+  });
+  page.on('pageerror', (error) => errors.push(error.message));
+  const isMe = (request) => new URL(request.url()).pathname === '/auth/me';
+  const started = page.waitForRequest(isMe, { timeout: 12000 });
+  const outcome = Promise.any([
+    page.waitForEvent('requestfailed', { predicate: isMe }).then((request) => ({
+      kind: 'cancelled',
+      error: request.failure()?.errorText,
+    })),
+    page
+      .waitForResponse((response) => isMe(response.request()))
+      .then((response) => ({
+        kind: 'response-received',
+        status: response.status(),
+      })),
+  ]);
+  void outcome.catch(() => {});
+  await context.route('**/*', async (route) => {
+    const request = route.request();
+    const url = new URL(request.url());
+    if (url.origin !== origin && url.origin !== API_ORIGIN) {
+      blocked.push(request.method() + ' ' + url.origin + url.pathname);
+      return route.abort();
+    }
+    const headers = {
+      'access-control-allow-origin': origin,
+      'access-control-allow-credentials': 'true',
+      'access-control-allow-methods': 'GET, POST, OPTIONS',
+      'access-control-allow-headers': 'content-type',
+      'cache-control': 'no-store',
+    };
+    const json = (value, status = 200) =>
+      route.fulfill({ status, json: value, headers });
+    if (request.method() === 'OPTIONS')
+      return route.fulfill({ status: 204, headers });
+    if (url.pathname === '/auth/me' && request.method() === 'GET') {
+      state.me++;
+      await new Promise((resolve) => {
+        releaseMe = resolve;
+      });
+      try {
+        await json({ username: 'obsolete-check-account' });
+      } catch (error) {
+        if (!request.failure()) throw error;
+      } finally {
+        markReleased();
+      }
+      return;
+    }
+    if (url.pathname === '/auth/login' && request.method() === 'POST') {
+      state.login++;
+      signedIn = true;
+      return json({ username: 'new-session-account' });
+    }
+    if (request.method() === 'GET' && url.pathname.startsWith('/data/')) {
+      state.privateReads++;
+      if (!signedIn) state.anonymousReads++;
+      return json(
+        { error: 'No publication in this isolated session fixture' },
+        404,
+      );
+    }
+    if (url.origin === origin && request.method() === 'GET')
+      return route.continue();
+    blocked.push(request.method() + ' ' + url.origin + url.pathname);
+    return route.abort();
+  });
+  try {
+    await page.goto(SITE + '/triangles?scope=single&symbols=600000', {
+      waitUntil: 'domcontentloaded',
+    });
+    await started;
+    assert.equal(
+      state.privateReads,
+      0,
+      'a held session check cannot mount private pages',
+    );
+    await page.evaluate(() =>
+      window.dispatchEvent(new Event('stock-session-expired')),
+    );
+    await page.locator('.auth-form-panel form').waitFor();
+    assert.equal(state.privateReads, 0);
+    await page.getByLabel('账号', { exact: true }).fill('new-session-account');
+    await page
+      .getByLabel('密码', { exact: true })
+      .fill('obsolete-check-fixture');
+    await page.getByRole('button', { name: '登录', exact: true }).click();
+    await page
+      .getByRole('heading', { name: '趋势三角与关键点位', exact: true })
+      .waitFor();
+    await page.locator('.triangle-error').waitFor();
+    releaseMe();
+    releaseMe = undefined;
+    await released;
+    const oldCheckOutcome = await outcome;
+    await page.getByRole('button', { name: '账户菜单', exact: true }).click();
+    assert.match(
+      await page.getByRole('menu').innerText(),
+      /new-session-account/,
+    );
+    assert.doesNotMatch(
+      await page.getByRole('menu').innerText(),
+      /obsolete-check-account/,
+    );
+    assert.equal(await page.locator('.auth-form-panel form').count(), 0);
+    assert.ok(await page.locator('.triangle-site').isVisible());
+    assert.equal(state.me, 1);
+    assert.equal(state.login, 1);
+    assert.equal(state.anonymousReads, 0);
+    return { ...state, oldCheckOutcome };
+  } finally {
+    if (releaseMe) releaseMe();
+    await context.close();
+    await outcome.catch(() => {});
+  }
+}
+
 (async () => {
   if (OUT) fs.mkdirSync(OUT, { recursive: true });
   const browser = await chromium.launch({ headless: true, channel: 'chrome' });
@@ -63,6 +398,13 @@ async function assertOnScreen(locator, viewport) {
     });
     const page = await context.newPage();
     page.on('pageerror', (error) => errors.push(error.message));
+    page.on('request', (request) => {
+      if (request.isNavigationRequest() && request.frame() === page.mainFrame())
+        documentRequests++;
+      const url = new URL(request.url());
+      if (/\.(woff2?|ttf|otf)$/.test(url.pathname))
+        fontRequests.push({ origin: url.origin, path: url.pathname });
+    });
     page.on('response', (response) => {
       const url = new URL(response.url());
       if (/\.(woff2?|ttf|otf)$/.test(url.pathname))
@@ -209,50 +551,13 @@ async function assertOnScreen(locator, viewport) {
     checks.push(
       'login brand, browser title and self-hosted SVG favicon use Liangxu',
     );
-    fontLoads = await page.evaluate(async () => {
-      const probes = [
-        { family: 'Inter', text: '123ABC ¥1,234.56 +16.49% ￥100' },
-        { family: '"Noto Sans SC"', text: '量序登录账号密码锂铝鑫甬稀' },
-      ];
-      return Promise.all(
-        probes.map(async ({ family, text }) => {
-          const faces = await document.fonts.load('16px ' + family, text);
-          return {
-            family,
-            text,
-            count: faces.length,
-            statuses: faces.map((face) => face.status),
-          };
-        }),
-      );
-    });
-    for (const font of fontLoads) {
-      assert.ok(
-        font.count > 0,
-        font.family + ' must have a registered font face',
-      );
-      assert.ok(
-        font.statuses.every((status) => status === 'loaded'),
-        font.family + ' must finish loading',
-      );
-    }
-    assert.ok(
-      new Set(
-        fontResponses
-          .filter((response) => response.path.startsWith('/fonts/'))
-          .map((response) => response.path),
-      ).size >= 2,
-      'at least two distinct self-hosted brand font requests must complete',
-    );
-    assert.ok(
-      fontResponses.every(
-        (response) => response.origin === origin && response.status === 200,
-      ),
-      'all font responses must be local and return HTTP 200',
-    );
-    checks.push(
-      'Inter financial figures and Noto Sans SC Chinese probes load locally',
-    );
+    await assertSystemFonts(page, 'login', [
+      '.auth-form-panel h1',
+      'input[name="username"]',
+      'input[name="password"]',
+      '.auth-form-panel button[type="submit"]',
+    ]);
+    checks.push('natural login uses system fonts without webfont downloads');
     assert.equal(await username.getAttribute('autocomplete'), 'username');
     assert.equal(
       await password.getAttribute('autocomplete'),
@@ -339,10 +644,7 @@ async function assertOnScreen(locator, viewport) {
     await submit.click();
     await page.locator('.account-controls').waitFor();
     await page.getByRole('button', { name: '账户菜单', exact: true }).click();
-    assert.match(
-      await page.getByRole('menu').innerText(),
-      /登录界面验收/,
-    );
+    assert.match(await page.getByRole('menu').innerText(), /登录界面验收/);
     await page.keyboard.press('Escape');
     await page.locator('.results tbody tr').first().waitFor();
     assert.ok(
@@ -351,9 +653,11 @@ async function assertOnScreen(locator, viewport) {
       ),
     );
     assert.ok(
-      (await page.getByRole('link', { name: '量序首页', exact: true }).innerText()).includes(
-        BRAND,
-      ),
+      (
+        await page
+          .getByRole('link', { name: '量序首页', exact: true })
+          .innerText()
+      ).includes(BRAND),
     );
     assert.match(await page.title(), /^量序(?:[\s·—|]|$)/);
     if (OUT) await page.screenshot({ path: path.join(OUT, 'brand-app.png') });
@@ -362,8 +666,18 @@ async function assertOnScreen(locator, viewport) {
     );
     assert.equal(await page.locator('.auth-page').count(), 0);
     assert.equal(counts.login, 3);
+    assert.equal(counts.me, 1, 'successful login must not recheck the session');
+    assert.equal(
+      documentRequests,
+      1,
+      'successful login must retain the document',
+    );
+    await assertSystemFonts(page, 'first-query', [
+      '.account-controls',
+      '.results tbody tr',
+    ]);
     checks.push(
-      'mocked successful login reveals the protected query interface',
+      'mocked login reveals the first query in the same document without webfonts',
     );
     await page.reload();
     await page.locator('.account-controls').waitFor();
@@ -378,20 +692,36 @@ async function assertOnScreen(locator, viewport) {
       'mocked logout restores the login form and clears the password',
     );
 
+    routeRelogin = await verifyRouteRelogin(browser);
+    checks.push(
+      'another account reopens the selected subroute and query in the same document without old private content',
+    );
+    checks.push(
+      'failed logout preserves the private page, exposes its error, and permits one explicit retry',
+    );
+    obsoleteSessionCheck = await verifyObsoleteSessionCheck(browser);
+    checks.push(
+      'an expired held session check cannot overwrite a newer login; its actual cancellation or response is recorded',
+    );
+
     assert.deepEqual(errors, []);
     assert.deepEqual(blocked, []);
-    assert.ok(
-      fontResponses.every(
-        (response) => response.origin === origin && response.status === 200,
-      ),
-      'font requests during authenticated reload must also remain local and successful',
+    assert.deepEqual(
+      fontRequests,
+      [],
+      'authenticated reload must request no webfonts',
     );
+    assert.deepEqual(fontResponses, []);
     const result = {
       checks,
       errors,
       blocked,
       counts,
-      fontLoads,
+      routeRelogin,
+      obsoleteSessionCheck,
+      documentRequests,
+      fontStacks,
+      fontRequests,
       fontResponses,
       brandMetadata,
       data: 'isolated fixtures; no production requests or real credentials',
@@ -417,7 +747,11 @@ async function assertOnScreen(locator, viewport) {
           errors,
           blocked,
           counts,
-          fontLoads,
+          routeRelogin,
+          obsoleteSessionCheck,
+          documentRequests,
+          fontStacks,
+          fontRequests,
           fontResponses,
           brandMetadata,
         },
