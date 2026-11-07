@@ -394,3 +394,46 @@ test('an archived selected V1 ruler remains its own root context', async () => {
   assert.equal(ready(selected.rootContext).source.version.id, archived.id);
   assert.notEqual(archived.id, current.family.root.version.id);
 });
+
+test('selecting a structural wave retains fixed rulers and never backfills its formation', async () => {
+  const { observeVideoLayers } = await import('../../src/lib/video-space.ts');
+  const history = Array.from({ length: 24 }, (_, i) => ({
+    date: new Date(Date.UTC(2025, 2, i + 1)).toISOString().slice(0, 10),
+    open: '60',
+    high: '61',
+    low: '59',
+    close: '60',
+    volume_shares: '1',
+  }));
+  history[3] = { ...history[3], high: '100', open: '99', close: '99' };
+  history[7] = { ...history[7], low: '40', open: '41', close: '41' };
+  history[11] = { ...history[11], high: '90', open: '89', close: '89' };
+  const original = stock();
+  const s = {
+    ...original,
+    history,
+    autoHistory: { kind: 'ready', history, historyStartDate: history[0].date },
+  };
+  const date = history[14].date;
+  const catalog = observeVideoLayers(s, date, auto, {
+    parentId: 'CURRENT_ROOT',
+    scale: 'PARENT',
+  });
+  const wave = catalog.options.find((item) => item.id.startsWith('wave:'));
+  assert.ok(wave);
+  const selected = observeVideoLayers(s, date, auto, {
+    parentId: wave.id,
+    scale: 'PARENT',
+  });
+  assert.equal(ready(selected.observation).source.kind, 'WAVE');
+  assert.equal(ready(selected.observation).source.wave.reasons.length, 2);
+  assert.equal(
+    observeVideoLayers(s, history[13].date, auto, {
+      parentId: wave.id,
+      scale: 'PARENT',
+    }).observation.kind,
+    'pending',
+  );
+  assert.deepEqual(s.frozen, original.frozen);
+  assert.equal(videoScenarios.length, 11);
+});

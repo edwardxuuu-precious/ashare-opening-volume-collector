@@ -23,6 +23,7 @@ import {
   type VideoCode,
   type VideoObservation,
 } from '@/lib/video-space';
+import type { WaveCandidate, WavePivot } from '@/lib/video-space-auto';
 import '../../chips/chips.css';
 import './video-space.css';
 
@@ -94,6 +95,81 @@ function LineTable({
     </div>
   );
 }
+function WaveEvidence({ wave }: { wave: WaveCandidate }) {
+  const point = (p: WavePivot) =>
+    `${p.date} ${p.field} ${p.price}（确认 ${p.confirmationDate}）`;
+  const event = (e: WaveCandidate['firstHighBreak']) =>
+    e
+      ? `${e.date} ${e.field} ${e.price}，次日可用 ${e.usableFrom ?? '待核'}`
+      : '尚未观察到';
+  return (
+    <section aria-label="结构波段形成依据">
+      <h4>结构波段形成依据</h4>
+      <p>
+        H 确认 {wave.confirmationDate} · 启用 {wave.activationDate}
+        ；日高首次突破：{event(wave.firstHighBreak)}；收盘首次突破：
+        {event(wave.firstCloseBreak)}。
+      </p>
+      <details>
+        <summary>
+          为什么选择此波段（{wave.reasons.map((r) => r.method).join('、')}）
+        </summary>
+        {wave.reasons.map((reason) =>
+          reason.method === 'A' ? (
+            <div key="A">
+              <p>
+                A 较早等高或更高边界：{point(reason.boundaryH)}。区间候选低点：
+                {reason.consideredL.map(point).join('；')}
+                。取最低，同价取最早；理由冻结 {reason.frozenOn}。
+              </p>
+            </div>
+          ) : (
+            <div key="B">
+              <p>
+                B 初始谷：{point(reason.initialTrough)}；此前低点{' '}
+                {reason.priorLowCount} 个，向左扩展 {reason.acceptedExtensions}{' '}
+                次，最终谷 {point(reason.finalTrough)}，对应峰{' '}
+                {point(reason.finalRightwardPeak)}。
+              </p>
+              <ol>
+                {reason.attempts.map((a) => (
+                  <li key={`${a.olderLow.date}:${a.currentTrough.date}`}>
+                    较早谷 {point(a.olderLow)}；当前谷 {point(a.currentTrough)}
+                    ；右峰 {point(a.rightwardPeak)}；中间峰{' '}
+                    {a.interveningHighs.length
+                      ? a.interveningHighs.map(point).join('；')
+                      : '无'}
+                    ；最高峰（同价取最近）
+                    {a.selectedHighestInterveningHigh
+                      ? point(a.selectedHighestInterveningHigh)
+                      : '无'}
+                    ；低谷严格更低{' '}
+                    {a.checks.olderLowStrictlyLower ? '是' : '否'}，中间峰存在{' '}
+                    {a.checks.hasInterveningStrictHigh ? '是' : '否'}
+                    ，峰严格更低{' '}
+                    {a.checks.interveningPeakStrictlyLower ? '是' : '否'}；
+                    {a.action === 'EXTEND'
+                      ? '继续'
+                      : `停止 ${a.stopCodes.join('、')}`}
+                    。
+                  </li>
+                ))}
+              </ol>
+              <p>
+                停止原因：{reason.stop.code}
+                {reason.stop.code === 'RELATION_FAILED'
+                  ? ` ${reason.stop.stopCodes.join('、')}，未访问更早低点 ${reason.stop.unvisitedEarlierLowCount} 个`
+                  : ''}
+                ；理由冻结 {reason.endpointFrozenBy}。
+              </p>
+            </div>
+          ),
+        )}
+      </details>
+      <p>结构候选为工程假设，不是作者公式；不自动选主尺，突破不代表站稳。</p>
+    </section>
+  );
+}
 function Observation({
   stock,
   observation,
@@ -112,7 +188,7 @@ function Observation({
   overlays: readonly {
     id: string;
     label: string;
-    style: 'comparison' | 'parent' | 'root';
+    style: 'comparison' | 'parent' | 'root' | 'fixed';
     observation: Extract<VideoObservation, { kind: 'ready' }>;
   }[];
 }) {
@@ -143,6 +219,7 @@ function Observation({
       <section
         className="vs-reference"
         aria-label="共同参考线"
+        data-source-kind={o.source.kind}
         data-reference-k={o.reference.k}
         data-reference-price={o.reference.price}
         data-date={o.date}
@@ -222,9 +299,11 @@ function Observation({
             ? '自动平台原尺'
             : o.source.kind === 'LOWER'
               ? '下降平台'
-              : o.source.kind === 'HALF'
-                ? '继承半格'
-                : '固定原尺与候选依据'}
+              : o.source.kind === 'WAVE'
+                ? '结构波段候选'
+                : o.source.kind === 'HALF'
+                  ? '继承半格'
+                  : '固定原尺与候选依据'}
         </h3>
         {o.source.endpoints.kind === 'REAL' ? (
           <dl>
@@ -245,6 +324,12 @@ function Observation({
           </p>
         )}
         {o.source.kind === 'FIXED' && <p>{o.source.scenario.reason}</p>}
+        {o.source.kind === 'WAVE' && <WaveEvidence wave={o.source.wave} />}
+        {o.source.kind === 'HALF' &&
+          parent?.kind === 'ready' &&
+          parent.source.kind === 'WAVE' && (
+            <WaveEvidence wave={parent.source.wave} />
+          )}
         {o.source.kind === 'LOWER' && (
           <>
             <p>
@@ -286,7 +371,9 @@ function Observation({
                   ? `确认 ${parent.source.version.confirmationDate} · 启用 ${parent.startDate}`
                   : parent.source.kind === 'LOWER'
                     ? `确认 ${parent.source.platform.confirmationDate} · 启用 ${parent.startDate}`
-                    : `启用 ${parent.startDate} · 原片锁线时间未知`}
+                    : parent.source.kind === 'WAVE'
+                      ? `确认 ${parent.source.wave.confirmationDate} · 启用 ${parent.startDate}`
+                      : `启用 ${parent.startDate} · 原片锁线时间未知`}
               </p>
             </div>
           )}
@@ -297,7 +384,7 @@ function Observation({
           (parent.source.kind !== 'AUTO' ||
             parent.source.version.id !== rootContext.source.version.id) && (
             <p>
-              {parent.source.kind === 'FIXED'
+              {parent.source.kind === 'FIXED' || parent.source.kind === 'WAVE'
                 ? '当前 V1 对照尺'
                 : '所属 V1 原尺'}
               ：H · {rootContext.source.endpoints.high.date} ·{' '}
@@ -388,7 +475,9 @@ function Comparison({
         ? value.source.version.id
         : value.source.kind === 'LOWER'
           ? value.source.platform.id
-          : `half:${value.source.endpoints.parentId}`;
+          : value.source.kind === 'WAVE'
+            ? value.source.wave.id
+            : `half:${value.source.endpoints.parentId}`;
   const historyLayer =
     layer && selected?.parent.kind === 'ready'
       ? { ...layer, parentId: identity(selected.parent) }
@@ -396,7 +485,7 @@ function Comparison({
   if (fixed?.kind !== 'ready' || automatic?.kind !== 'ready') {
     const entries: { label: string; value: VideoObservation | null }[] = [
       { label: '固定', value: fixed },
-      { label: '自动', value: automatic },
+      { label: '自动（V1）', value: automatic },
     ];
     const seen = new Set(
       entries.flatMap(({ value }) =>
@@ -489,7 +578,7 @@ function Comparison({
                                 b.date,
                                 selection,
                               )
-                            : label === '自动'
+                            : label === '自动（V1）'
                               ? observeAutomaticVideoDay(
                                   stock,
                                   b.date,
@@ -608,7 +697,7 @@ function Comparison({
           </thead>
           <tbody>
             {line('固定', f)}
-            {line('自动', a)}
+            {line('自动（V1）', a)}
             {extra.map(({ label, value }) => (
               <Fragment key={identity(value)}>{line(label, value)}</Fragment>
             ))}
@@ -674,7 +763,7 @@ function Comparison({
             <tr>
               <th>日期</th>
               <th>固定参考 / 开收</th>
-              <th>自动参考 / 开收</th>
+              <th>自动（V1）参考 / 开收</th>
               {extra.map(({ label, value }) => (
                 <th key={identity(value)}>{label}参考 / 开收</th>
               ))}
@@ -796,7 +885,7 @@ export default function VideoSpacePage() {
   const overlays: {
     id: string;
     label: string;
-    style: 'comparison' | 'parent' | 'root';
+    style: 'comparison' | 'parent' | 'root' | 'fixed';
     observation: Extract<VideoObservation, { kind: 'ready' }>;
   }[] = [];
   if (rulerMode === 'layers') {
@@ -819,10 +908,26 @@ export default function VideoSpacePage() {
         id: 'root',
         style: 'root',
         label:
-          layers.parent.source.kind === 'FIXED'
+          layers.parent.source.kind === 'FIXED' ||
+          layers.parent.source.kind === 'WAVE'
             ? '当前 V1 对照尺'
             : '所属 V1 原尺',
         observation: layers.rootContext,
+      });
+    if (
+      fixedObservation?.kind === 'ready' &&
+      fixedObservation.source.kind === 'FIXED' &&
+      !(
+        layers?.parent.kind === 'ready' &&
+        layers.parent.source.kind === 'FIXED' &&
+        layers.parent.source.scenario.id === fixedObservation.source.scenario.id
+      )
+    )
+      overlays.push({
+        id: 'fixed',
+        style: 'fixed',
+        label: '固定视频对照尺',
+        observation: fixedObservation,
       });
   } else if (other?.kind === 'ready')
     overlays.push({
@@ -941,6 +1046,12 @@ export default function VideoSpacePage() {
                     }}
                   >
                     <option value="CURRENT_ROOT">当前 V1 原尺</option>
+                    {parentId !== 'CURRENT_ROOT' &&
+                      !layers?.options.some((o) => o.id === parentId) && (
+                        <option value={parentId} disabled>
+                          当前所选候选在该日尚未启用
+                        </option>
+                      )}
                     {layers?.options
                       .filter((o) => o.label !== '当前 V1 原尺')
                       .map((o) => (
@@ -1133,7 +1244,7 @@ export default function VideoSpacePage() {
               。未把客户端日期当行情日期。
             </p>
             <p>
-              本页只描述已保存日线与固定候选的关系，不提供盘中顺序、预测或买卖指令。线上可用不代表选点普适性或策略有效性已验证。
+              本页只描述已保存日线与固定、平台及结构候选的关系，不提供盘中顺序、预测或买卖指令。线上可用不代表选点普适性或策略有效性已验证。
             </p>
           </details>
         </main>

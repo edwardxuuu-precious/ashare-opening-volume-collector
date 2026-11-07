@@ -290,3 +290,259 @@ export function observeAutoFamily(
   }
   return { root, lowerPlatforms, events };
 }
+
+export type WavePivot = {
+  index: number;
+  date: string;
+  kind: 'H' | 'L';
+  field: 'high' | 'low';
+  price: string;
+  confirmationDate: string;
+};
+type WaveAttempt = {
+  olderLow: WavePivot;
+  currentTrough: WavePivot;
+  rightwardPeak: WavePivot;
+  interveningHighs: WavePivot[];
+  selectedHighestInterveningHigh: WavePivot | null;
+  highestPeakTieBreak: 'LATEST_DATE';
+  checks: {
+    olderLowStrictlyLower: boolean;
+    hasInterveningStrictHigh: boolean;
+    interveningPeakStrictlyLower: boolean;
+  };
+  action: 'EXTEND' | 'STOP';
+  stopCodes: string[];
+};
+export type WaveReason =
+  | {
+      method: 'A';
+      boundaryH: WavePivot;
+      consideredL: WavePivot[];
+      selection: string;
+      tieBreak: string;
+      frozenOn: string;
+    }
+  | {
+      method: 'B';
+      rule: 'B_hh_hl_chain_origin';
+      originalHigh: WavePivot;
+      initialTroughSelection: 'LATEST_CONFIRMED_STRICT_L_BEFORE_H';
+      priorLowCount: number;
+      initialTrough: WavePivot;
+      attempts: WaveAttempt[];
+      acceptedExtensions: number;
+      stop:
+        | {
+            code: 'RELATION_FAILED';
+            stopCodes: string[];
+            atOlderLow: WavePivot;
+            unvisitedEarlierLowCount: number;
+          }
+        | { code: 'NO_EARLIER_CONFIRMED_LOW' };
+      finalTrough: WavePivot;
+      finalRightwardPeak: WavePivot;
+      endpointFrozenBy: string;
+      authorRuleClaimed: false;
+    };
+export type WaveBreak = {
+  date: string;
+  field: 'high' | 'close';
+  price: string;
+  knownAtClose: string;
+  usableFrom: string | null;
+};
+export type WaveCandidate = {
+  id: string;
+  H: WavePivot;
+  L: WavePivot;
+  confirmationDate: string;
+  activationDate: string;
+  reasons: WaveReason[];
+  firstHighBreak: WaveBreak | null;
+  firstCloseBreak: WaveBreak | null;
+  evidence: 'ENGINEERING_HYPOTHESIS';
+};
+
+export function observeStructuralWaves(
+  bars: readonly VideoBar[],
+  date: string,
+):
+  | { kind: 'pending'; reason: string }
+  | { kind: 'ready'; candidates: WaveCandidate[] } {
+  if (!bars.some((bar) => bar.date === date))
+    return { kind: 'pending', reason: '所选交易日没有已保存行情，待核。' };
+  const prefix = bars.filter((bar) => bar.date < date);
+  const pivots: WavePivot[] = [];
+  for (let t = 0; t < prefix.length; t++) {
+    const pivot = pivotAt(prefix, t);
+    if (!pivot) continue;
+    const field = pivot.kind === 'H' ? 'high' : 'low';
+    pivots.push({
+      index: pivot.index,
+      date: pivot.date,
+      kind: pivot.kind,
+      field,
+      price: prefix[pivot.index][field],
+      confirmationDate: pivot.confirmed,
+    });
+  }
+  const highs = pivots.filter((p) => p.kind === 'H');
+  const lows = pivots.filter((p) => p.kind === 'L');
+  const result = new Map<string, WaveCandidate>();
+  const add = (H: WavePivot, L: WavePivot, reason: WaveReason) => {
+    if (Number(L.price) >= Number(H.price)) return;
+    const confirmationDate = H.confirmationDate;
+    const confirmationIndex = bars.findIndex(
+      (bar) => bar.date === confirmationDate,
+    );
+    const activationDate = bars[confirmationIndex + 1]?.date;
+    if (!activationDate || activationDate > date) return;
+    const id = `wave:${H.field}:${H.date}:${Number(H.price)}:${L.field}:${L.date}:${Number(L.price)}`;
+    const existing = result.get(id);
+    if (existing) {
+      existing.reasons.push(reason);
+      return;
+    }
+    const event = (field: 'high' | 'close'): WaveBreak | null => {
+      const index = prefix.findIndex(
+        (bar) =>
+          bar.date > confirmationDate && Number(bar[field]) > Number(H.price),
+      );
+      if (index < 0) return null;
+      const bar = prefix[index];
+      return {
+        date: bar.date,
+        field,
+        price: bar[field],
+        knownAtClose: bar.date,
+        usableFrom: bars[index + 1]?.date ?? null,
+      };
+    };
+    result.set(id, {
+      id,
+      H,
+      L,
+      confirmationDate,
+      activationDate,
+      reasons: [reason],
+      firstHighBreak: event('high'),
+      firstCloseBreak: event('close'),
+      evidence: 'ENGINEERING_HYPOTHESIS',
+    });
+  };
+  for (const H of highs) {
+    const known = pivots.filter(
+      (p) => p.confirmationDate <= H.confirmationDate,
+    );
+    const boundary = known
+      .filter(
+        (p) =>
+          p.kind === 'H' &&
+          p.date < H.date &&
+          Number(p.price) >= Number(H.price),
+      )
+      .at(-1);
+    if (boundary) {
+      const consideredL = known.filter(
+        (p) => p.kind === 'L' && boundary.date < p.date && p.date < H.date,
+      );
+      const low = consideredL.reduce<WavePivot | null>(
+        (best, p) => (!best || Number(p.price) < Number(best.price) ? p : best),
+        null,
+      );
+      if (low)
+        add(H, low, {
+          method: 'A',
+          boundaryH: boundary,
+          consideredL,
+          selection:
+            'minimum Decimal low price strictly between boundary H and H',
+          tieBreak: 'earliest occurrence date',
+          frozenOn: H.confirmationDate,
+        });
+    }
+    const priorLows = lows.filter(
+      (p) => p.date < H.date && p.confirmationDate <= H.confirmationDate,
+    );
+    const initial = priorLows.at(-1);
+    if (!initial) continue;
+    let trough = initial,
+      peak = H;
+    const attempts: WaveAttempt[] = [];
+    let stop: Extract<WaveReason, { method: 'B' }>['stop'] = {
+      code: 'NO_EARLIER_CONFIRMED_LOW',
+    };
+    let acceptedExtensions = 0;
+    for (let i = priorLows.length - 2; i >= 0; i--) {
+      const olderLow = priorLows[i];
+      const interveningHighs = highs.filter(
+        (p) =>
+          olderLow.date < p.date &&
+          p.date < trough.date &&
+          p.confirmationDate <= H.confirmationDate,
+      );
+      const selected = interveningHighs.reduce<WavePivot | null>(
+        (best, p) =>
+          !best || Number(p.price) >= Number(best.price) ? p : best,
+        null,
+      );
+      const olderLowStrictlyLower =
+        Number(olderLow.price) < Number(trough.price);
+      const hasInterveningStrictHigh = interveningHighs.length > 0;
+      const interveningPeakStrictlyLower =
+        selected !== null && Number(selected.price) < Number(peak.price);
+      const stopCodes = [
+        !olderLowStrictlyLower ? 'OLDER_LOW_NOT_STRICTLY_LOWER' : null,
+        !hasInterveningStrictHigh
+          ? 'NO_INTERVENING_STRICT_HIGH'
+          : !interveningPeakStrictlyLower
+            ? 'INTERVENING_PEAK_NOT_STRICTLY_LOWER'
+            : null,
+      ].filter((code): code is string => code !== null);
+      attempts.push({
+        olderLow,
+        currentTrough: trough,
+        rightwardPeak: peak,
+        interveningHighs,
+        selectedHighestInterveningHigh: selected,
+        highestPeakTieBreak: 'LATEST_DATE',
+        checks: {
+          olderLowStrictlyLower,
+          hasInterveningStrictHigh,
+          interveningPeakStrictlyLower,
+        },
+        action: stopCodes.length ? 'STOP' : 'EXTEND',
+        stopCodes,
+      });
+      if (stopCodes.length || !selected) {
+        stop = {
+          code: 'RELATION_FAILED',
+          stopCodes,
+          atOlderLow: olderLow,
+          unvisitedEarlierLowCount: i,
+        };
+        break;
+      }
+      trough = olderLow;
+      peak = selected;
+      acceptedExtensions++;
+    }
+    add(H, trough, {
+      method: 'B',
+      rule: 'B_hh_hl_chain_origin',
+      originalHigh: H,
+      initialTroughSelection: 'LATEST_CONFIRMED_STRICT_L_BEFORE_H',
+      priorLowCount: priorLows.length,
+      initialTrough: initial,
+      attempts,
+      acceptedExtensions,
+      stop,
+      finalTrough: trough,
+      finalRightwardPeak: peak,
+      endpointFrozenBy: H.confirmationDate,
+      authorRuleClaimed: false,
+    });
+  }
+  return { kind: 'ready', candidates: [...result.values()] };
+}

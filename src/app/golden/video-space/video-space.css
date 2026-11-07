@@ -463,3 +463,13 @@
     transparent 15px 18px
   );
 }
+
+.vs-overlay-fixed {
+  border: 0;
+  height: 2px;
+  background: repeating-linear-gradient(
+    to right,
+    #3b7a78 0 12px,
+    transparent 12px 17px
+  );
+}

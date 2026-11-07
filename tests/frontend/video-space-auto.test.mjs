@@ -153,3 +153,53 @@ test('lower platforms lock after a completed break and stop at root retirement',
   data[37] = { ...data[37], high: '104', open: '103', close: '103' };
   assert.equal(observeAutoFamily(data, data[38].date).lowerPlatforms.length, 0);
 });
+
+test('structural candidates merge causal reasons and separately time high and close breaks', async () => {
+  const { observeStructuralWaves } =
+    await import('../../src/lib/video-space-auto.ts');
+  const history = Array.from({ length: 22 }, (_, i) => ({
+    date: new Date(Date.UTC(2025, 1, i + 1)).toISOString().slice(0, 10),
+    open: '60',
+    high: '61',
+    low: '59',
+    close: '60',
+    volume_shares: '1',
+  }));
+  history[3] = { ...history[3], high: '100', open: '99', close: '99' };
+  history[7] = { ...history[7], low: '40', open: '41', close: '41' };
+  history[11] = { ...history[11], high: '90', open: '89', close: '89' };
+  history[15] = { ...history[15], high: '91' };
+  history[16] = { ...history[16], high: '93', open: '92', close: '92' };
+  const get = (date) => {
+    const r = observeStructuralWaves(history, date);
+    assert.equal(r.kind, 'ready');
+    return r.candidates;
+  };
+  assert.equal(observeStructuralWaves(history, '2099-01-01').kind, 'pending');
+  assert.equal(get(history[13].date).length, 0);
+  const active = get(history[14].date);
+  assert.equal(active.length, 1);
+  assert.deepEqual(
+    active[0].reasons.map((r) => r.method),
+    ['A', 'B'],
+  );
+  assert.equal(active[0].confirmationDate, history[13].date);
+  assert.equal(active[0].activationDate, history[14].date);
+  assert.equal(active[0].firstHighBreak, null);
+  const beforeClose = get(history[16].date)[0];
+  assert.equal(beforeClose.firstHighBreak.date, history[15].date);
+  assert.equal(beforeClose.firstHighBreak.usableFrom, history[16].date);
+  assert.equal(beforeClose.firstCloseBreak, null);
+  const afterClose = get(history[17].date)[0];
+  assert.equal(afterClose.firstCloseBreak.date, history[16].date);
+  assert.equal(afterClose.firstCloseBreak.usableFrom, history[17].date);
+  const mutated = history.map((b, i) =>
+    i >= 16 ? { ...b, open: '500', high: '1000', low: '1', close: '500' } : b,
+  );
+  assert.deepEqual(
+    observeStructuralWaves(mutated, history[16].date),
+    observeStructuralWaves(history, history[16].date),
+  );
+  assert.deepEqual(afterClose.reasons, active[0].reasons);
+  assert.equal(afterClose.id, active[0].id);
+});
