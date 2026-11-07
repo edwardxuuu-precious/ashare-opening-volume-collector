@@ -297,7 +297,10 @@ function Observation({
           (parent.source.kind !== 'AUTO' ||
             parent.source.version.id !== rootContext.source.version.id) && (
             <p>
-              所属 V1 原尺：H · {rootContext.source.endpoints.high.date} ·{' '}
+              {parent.source.kind === 'FIXED'
+                ? '当前 V1 对照尺'
+                : '所属 V1 原尺'}
+              ：H · {rootContext.source.endpoints.high.date} ·{' '}
               {rootContext.source.endpoints.high.field} ·{' '}
               {money(rootContext.source.endpoints.high.price)}；L ·{' '}
               {rootContext.source.endpoints.low.date} ·{' '}
@@ -815,7 +818,10 @@ export default function VideoSpacePage() {
       overlays.push({
         id: 'root',
         style: 'root',
-        label: '所属 V1 原尺',
+        label:
+          layers.parent.source.kind === 'FIXED'
+            ? '当前 V1 对照尺'
+            : '所属 V1 原尺',
         observation: layers.rootContext,
       });
   } else if (other?.kind === 'ready')
