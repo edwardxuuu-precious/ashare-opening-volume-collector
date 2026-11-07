@@ -23,6 +23,11 @@ import {
   type VideoCode,
   type VideoObservation,
 } from '@/lib/video-space';
+import type {
+  WaveCandidate,
+  WavePivot,
+  WaveRejection,
+} from '@/lib/video-space-auto';
 import '../../chips/chips.css';
 import './video-space.css';
 
@@ -94,6 +99,138 @@ function LineTable({
     </div>
   );
 }
+const wavePointText = (p: WavePivot) =>
+  `${p.date} ${p.field} ${p.price}（确认 ${p.confirmationDate}）`;
+function waveStopText(code: string) {
+  switch (code) {
+    case 'OLDER_LOW_NOT_STRICTLY_LOWER':
+      return '较早谷底不比当前谷底低';
+    case 'NO_INTERVENING_STRICT_HIGH':
+      return '两谷之间没有已确认高点';
+    case 'INTERVENING_PEAK_NOT_STRICTLY_LOWER':
+      return '中间最高峰不比右侧对应峰低';
+    case 'NO_EARLIER_CONFIRMED_LOW':
+      return '没有更早的已确认低点';
+    default:
+      return '上升结构关系不满足';
+  }
+}
+const waveRejectionText: Record<WaveRejection['code'], string> = {
+  no_prior_confirmed_high_at_or_above_H: '缺少较早的等高或更高峰作为边界',
+  no_confirmed_low_strictly_between_boundary_and_H: '两峰之间没有已确认谷底',
+  selected_low_not_below_H: '区间最低谷仍不低于当前高点',
+  NO_PRIOR_CONFIRMED_LOW: '高点之前没有已确认谷底',
+  RESULTING_LOW_NOT_BELOW_HIGH: '结构起点的谷底不低于当前高点',
+};
+function WaveRejectionEvidence({ item }: { item: WaveRejection }) {
+  return (
+    <details>
+      <summary>
+        {item.method} · H {item.H.date} high {item.H.price} ·{' '}
+        {waveRejectionText[item.code]}
+      </summary>
+      <p>已确认高点：{wavePointText(item.H)}。</p>
+      {item.method === 'A' && 'reason' in item && (
+        <p>
+          边界高点：{wavePointText(item.reason.boundaryH)}；区间内已确认谷底：
+          {item.reason.consideredL.length
+            ? item.reason.consideredL.map(wavePointText).join('；')
+            : '无'}
+          。
+        </p>
+      )}
+      {item.code === 'selected_low_not_below_H' && (
+        <p>区间最低谷：{wavePointText(item.selectedL)}。</p>
+      )}
+      {item.code === 'RESULTING_LOW_NOT_BELOW_HIGH' && (
+        <p>
+          结构起点：{wavePointText(item.L)}；向左扩展{' '}
+          {item.reason.acceptedExtensions} 次。停止追溯：
+          {item.reason.stop.code === 'RELATION_FAILED'
+            ? item.reason.stop.stopCodes.map(waveStopText).join('；')
+            : waveStopText(item.reason.stop.code)}
+          。
+        </p>
+      )}
+      <p>本项只说明该方法所需结构不足，不代表没有其他参考尺或观察空间。</p>
+    </details>
+  );
+}
+function WaveEvidence({ wave }: { wave: WaveCandidate }) {
+  const event = (e: WaveCandidate['firstHighBreak']) =>
+    e
+      ? `${e.date} ${e.field} ${e.price}，次日可用 ${e.usableFrom ?? '待核'}`
+      : '尚未观察到';
+  return (
+    <section aria-label="结构波段形成依据">
+      <h4>结构波段形成依据</h4>
+      <p>
+        H 确认 {wave.confirmationDate} · 启用 {wave.activationDate}
+        ；日高首次突破：{event(wave.firstHighBreak)}；收盘首次突破：
+        {event(wave.firstCloseBreak)}。
+      </p>
+      <details>
+        <summary>
+          为什么选择此波段（{wave.reasons.map((r) => r.method).join('、')}）
+        </summary>
+        {wave.reasons.map((reason) =>
+          reason.method === 'A' ? (
+            <div key="A">
+              <p>
+                A 较早等高或更高边界：{wavePointText(reason.boundaryH)}
+                。区间候选低点：
+                {reason.consideredL.map(wavePointText).join('；')}
+                。取最低，同价取最早；理由冻结 {reason.frozenOn}。
+              </p>
+            </div>
+          ) : (
+            <div key="B">
+              <p>
+                B 初始谷：{wavePointText(reason.initialTrough)}；此前低点{' '}
+                {reason.priorLowCount} 个，向左扩展 {reason.acceptedExtensions}{' '}
+                次，最终谷 {wavePointText(reason.finalTrough)}，回溯比较用峰{' '}
+                {wavePointText(reason.finalRightwardPeak)}。
+              </p>
+              <ol>
+                {reason.attempts.map((a) => (
+                  <li key={`${a.olderLow.date}:${a.currentTrough.date}`}>
+                    较早谷 {wavePointText(a.olderLow)}；当前谷{' '}
+                    {wavePointText(a.currentTrough)}
+                    ；右峰 {wavePointText(a.rightwardPeak)}；中间峰{' '}
+                    {a.interveningHighs.length
+                      ? a.interveningHighs.map(wavePointText).join('；')
+                      : '无'}
+                    ；最高峰（同价取最近）
+                    {a.selectedHighestInterveningHigh
+                      ? wavePointText(a.selectedHighestInterveningHigh)
+                      : '无'}
+                    ；低谷严格更低{' '}
+                    {a.checks.olderLowStrictlyLower ? '是' : '否'}，中间峰存在{' '}
+                    {a.checks.hasInterveningStrictHigh ? '是' : '否'}
+                    ，峰严格更低{' '}
+                    {a.checks.interveningPeakStrictlyLower ? '是' : '否'}；
+                    {a.action === 'EXTEND'
+                      ? '继续'
+                      : `停止：${a.stopCodes.map(waveStopText).join('；')}`}
+                    。
+                  </li>
+                ))}
+              </ol>
+              <p>
+                停止原因：
+                {reason.stop.code === 'RELATION_FAILED'
+                  ? `${reason.stop.stopCodes.map(waveStopText).join('；')}，更早还有 ${reason.stop.unvisitedEarlierLowCount} 个低点未继续追溯`
+                  : waveStopText(reason.stop.code)}
+                ；理由冻结 {reason.endpointFrozenBy}。
+              </p>
+            </div>
+          ),
+        )}
+      </details>
+      <p>结构候选为工程假设，不是作者公式；不自动选主尺，突破不代表站稳。</p>
+    </section>
+  );
+}
 function Observation({
   stock,
   observation,
@@ -112,7 +249,7 @@ function Observation({
   overlays: readonly {
     id: string;
     label: string;
-    style: 'comparison' | 'parent' | 'root';
+    style: 'comparison' | 'parent' | 'root' | 'fixed';
     observation: Extract<VideoObservation, { kind: 'ready' }>;
   }[];
 }) {
@@ -143,6 +280,7 @@ function Observation({
       <section
         className="vs-reference"
         aria-label="共同参考线"
+        data-source-kind={o.source.kind}
         data-reference-k={o.reference.k}
         data-reference-price={o.reference.price}
         data-date={o.date}
@@ -222,9 +360,11 @@ function Observation({
             ? '自动平台原尺'
             : o.source.kind === 'LOWER'
               ? '下降平台'
-              : o.source.kind === 'HALF'
-                ? '继承半格'
-                : '固定原尺与候选依据'}
+              : o.source.kind === 'WAVE'
+                ? '结构波段候选'
+                : o.source.kind === 'HALF'
+                  ? '继承半格'
+                  : '固定原尺与候选依据'}
         </h3>
         {o.source.endpoints.kind === 'REAL' ? (
           <dl>
@@ -245,6 +385,12 @@ function Observation({
           </p>
         )}
         {o.source.kind === 'FIXED' && <p>{o.source.scenario.reason}</p>}
+        {o.source.kind === 'WAVE' && <WaveEvidence wave={o.source.wave} />}
+        {o.source.kind === 'HALF' &&
+          parent?.kind === 'ready' &&
+          parent.source.kind === 'WAVE' && (
+            <WaveEvidence wave={parent.source.wave} />
+          )}
         {o.source.kind === 'LOWER' && (
           <>
             <p>
@@ -286,7 +432,9 @@ function Observation({
                   ? `确认 ${parent.source.version.confirmationDate} · 启用 ${parent.startDate}`
                   : parent.source.kind === 'LOWER'
                     ? `确认 ${parent.source.platform.confirmationDate} · 启用 ${parent.startDate}`
-                    : `启用 ${parent.startDate} · 原片锁线时间未知`}
+                    : parent.source.kind === 'WAVE'
+                      ? `确认 ${parent.source.wave.confirmationDate} · 启用 ${parent.startDate}`
+                      : `启用 ${parent.startDate} · 原片锁线时间未知`}
               </p>
             </div>
           )}
@@ -297,7 +445,7 @@ function Observation({
           (parent.source.kind !== 'AUTO' ||
             parent.source.version.id !== rootContext.source.version.id) && (
             <p>
-              {parent.source.kind === 'FIXED'
+              {parent.source.kind === 'FIXED' || parent.source.kind === 'WAVE'
                 ? '当前 V1 对照尺'
                 : '所属 V1 原尺'}
               ：H · {rootContext.source.endpoints.high.date} ·{' '}
@@ -388,7 +536,9 @@ function Comparison({
         ? value.source.version.id
         : value.source.kind === 'LOWER'
           ? value.source.platform.id
-          : `half:${value.source.endpoints.parentId}`;
+          : value.source.kind === 'WAVE'
+            ? value.source.wave.id
+            : `half:${value.source.endpoints.parentId}`;
   const historyLayer =
     layer && selected?.parent.kind === 'ready'
       ? { ...layer, parentId: identity(selected.parent) }
@@ -396,7 +546,7 @@ function Comparison({
   if (fixed?.kind !== 'ready' || automatic?.kind !== 'ready') {
     const entries: { label: string; value: VideoObservation | null }[] = [
       { label: '固定', value: fixed },
-      { label: '自动', value: automatic },
+      { label: '自动（V1）', value: automatic },
     ];
     const seen = new Set(
       entries.flatMap(({ value }) =>
@@ -489,7 +639,7 @@ function Comparison({
                                 b.date,
                                 selection,
                               )
-                            : label === '自动'
+                            : label === '自动（V1）'
                               ? observeAutomaticVideoDay(
                                   stock,
                                   b.date,
@@ -608,7 +758,7 @@ function Comparison({
           </thead>
           <tbody>
             {line('固定', f)}
-            {line('自动', a)}
+            {line('自动（V1）', a)}
             {extra.map(({ label, value }) => (
               <Fragment key={identity(value)}>{line(label, value)}</Fragment>
             ))}
@@ -674,7 +824,7 @@ function Comparison({
             <tr>
               <th>日期</th>
               <th>固定参考 / 开收</th>
-              <th>自动参考 / 开收</th>
+              <th>自动（V1）参考 / 开收</th>
               {extra.map(({ label, value }) => (
                 <th key={identity(value)}>{label}参考 / 开收</th>
               ))}
@@ -796,7 +946,7 @@ export default function VideoSpacePage() {
   const overlays: {
     id: string;
     label: string;
-    style: 'comparison' | 'parent' | 'root';
+    style: 'comparison' | 'parent' | 'root' | 'fixed';
     observation: Extract<VideoObservation, { kind: 'ready' }>;
   }[] = [];
   if (rulerMode === 'layers') {
@@ -819,10 +969,26 @@ export default function VideoSpacePage() {
         id: 'root',
         style: 'root',
         label:
-          layers.parent.source.kind === 'FIXED'
+          layers.parent.source.kind === 'FIXED' ||
+          layers.parent.source.kind === 'WAVE'
             ? '当前 V1 对照尺'
             : '所属 V1 原尺',
         observation: layers.rootContext,
+      });
+    if (
+      fixedObservation?.kind === 'ready' &&
+      fixedObservation.source.kind === 'FIXED' &&
+      !(
+        layers?.parent.kind === 'ready' &&
+        layers.parent.source.kind === 'FIXED' &&
+        layers.parent.source.scenario.id === fixedObservation.source.scenario.id
+      )
+    )
+      overlays.push({
+        id: 'fixed',
+        style: 'fixed',
+        label: '固定视频对照尺',
+        observation: fixedObservation,
       });
   } else if (other?.kind === 'ready')
     overlays.push({
@@ -941,6 +1107,12 @@ export default function VideoSpacePage() {
                     }}
                   >
                     <option value="CURRENT_ROOT">当前 V1 原尺</option>
+                    {parentId !== 'CURRENT_ROOT' &&
+                      !layers?.options.some((o) => o.id === parentId) && (
+                        <option value={parentId} disabled>
+                          当前所选候选在该日尚未启用
+                        </option>
+                      )}
                     {layers?.options
                       .filter((o) => o.label !== '当前 V1 原尺')
                       .map((o) => (
@@ -1050,6 +1222,27 @@ export default function VideoSpacePage() {
           {rulerMode === 'layers' && layers && (
             <section className="vs-ruler">
               <h3>分层观察</h3>
+              {layers.waveCatalog?.kind === 'ready' && (
+                <details>
+                  <summary>
+                    结构候选未形成的原因（{layers.waveCatalog.rejections.length}{' '}
+                    项）
+                  </summary>
+                  <p>
+                    每项按已确认高点和假设记录；缺少结构时不补选。展开可查看真实点位、确认时间与排除依据。
+                  </p>
+                  {layers.waveCatalog.rejections.map((item) => (
+                    <WaveRejectionEvidence
+                      key={`${item.method}:${item.H.date}:${item.code}`}
+                      item={item}
+                    />
+                  ))}
+                </details>
+              )}
+              {layers.waveCatalog?.kind === 'pending' && (
+                <p>{layers.waveCatalog.reason}</p>
+              )}
+
               <p>
                 切换尺度会改变自动参考候选及其实际价格；手动 k
                 以当前尺度计。切换日期时，固定 k 保持当前尺度坐标。
@@ -1133,7 +1326,7 @@ export default function VideoSpacePage() {
               。未把客户端日期当行情日期。
             </p>
             <p>
-              本页只描述已保存日线与固定候选的关系，不提供盘中顺序、预测或买卖指令。线上可用不代表选点普适性或策略有效性已验证。
+              本页只描述已保存日线与固定、平台及结构候选的关系，不提供盘中顺序、预测或买卖指令。线上可用不代表选点普适性或策略有效性已验证。
             </p>
           </details>
         </main>

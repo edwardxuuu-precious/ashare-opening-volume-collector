@@ -2,6 +2,8 @@ import { authRead } from './auth-fetch.ts';
 import {
   observeAutoPlatform,
   observeAutoFamily,
+  observeStructuralWaves,
+  type WaveCandidate,
   type AutoResult,
   type LowerPlatform,
 } from './video-space-auto.ts';
@@ -249,6 +251,11 @@ export type VideoObservation =
         | {
             readonly kind: 'LOWER';
             readonly platform: LowerPlatform;
+            readonly endpoints: Extract<RulerEndpoints, { kind: 'REAL' }>;
+          }
+        | {
+            readonly kind: 'WAVE';
+            readonly wave: WaveCandidate;
             readonly endpoints: Extract<RulerEndpoints, { kind: 'REAL' }>;
           }
         | {
@@ -846,6 +853,7 @@ export type LayerSelection = {
 };
 export type LayerResult = {
   readonly family: ReturnType<typeof observeAutoFamily> | null;
+  readonly waveCatalog: ReturnType<typeof observeStructuralWaves> | null;
   readonly options: readonly { id: string; label: string }[];
   readonly parent: VideoObservation;
   readonly rootContext: VideoObservation;
@@ -862,7 +870,9 @@ export function observeVideoLayers(
 ): LayerResult {
   const unavailable: VideoObservation = {
     kind: 'pending',
-    reason: '所选父尺尚未启用。',
+    reason: stock.history.some((bar) => bar.date === date)
+      ? '所选父尺尚未启用。'
+      : '所选交易日没有已保存行情，待核。',
   };
   const history =
     stock.autoHistory?.kind === 'ready' ? stock.autoHistory.history : null;
@@ -873,6 +883,8 @@ export function observeVideoLayers(
     family?.lowerPlatforms.filter(
       (v) => v.activationDate && v.activationDate <= date,
     ) ?? [];
+  const waveResult = history ? observeStructuralWaves(history, date) : null;
+  const waves = waveResult?.kind === 'ready' ? waveResult.candidates : [];
   const options = [
     ...(current ? [{ id: current.id, label: '当前 V1 原尺' }] : []),
     ...versions
@@ -885,6 +897,13 @@ export function observeVideoLayers(
       id: v.id,
       label: `下降平台 · ${v.confirmationDate}${v.rootLifetime === 'archived' ? ' · 归档' : ''}`,
     })),
+    ...waves
+      .slice()
+      .reverse()
+      .map((v) => ({
+        id: v.id,
+        label: `结构波段 · H ${v.H.date} / L ${v.L.date}`,
+      })),
     ...videoScenarios
       .filter((v) => v.code === stock.code)
       .map((v) => ({ id: v.id, label: `固定 · ${v.label}` })),
@@ -894,6 +913,7 @@ export function observeVideoLayers(
     (v) => v.id === id && v.activationDate && v.activationDate <= date,
   );
   const node = nodes.find((v) => v.id === id);
+  const wave = waves.find((v) => v.id === id);
   let parent: VideoObservation = unavailable;
   if (history && version && version.activationDate) {
     parent = observeResolved(
@@ -916,6 +936,22 @@ export function observeVideoLayers(
         },
       },
       node.activationDate,
+      date,
+      selection,
+    );
+  } else if (history && wave) {
+    parent = observeResolved(
+      history,
+      {
+        kind: 'WAVE',
+        wave,
+        endpoints: {
+          kind: 'REAL',
+          high: { date: wave.H.date, field: 'high', price: wave.H.price },
+          low: { date: wave.L.date, field: 'low', price: wave.L.price },
+        },
+      },
+      wave.activationDate,
       date,
       selection,
     );
@@ -973,5 +1009,13 @@ export function observeVideoLayers(
     } else if (layer.scale === 'HALF')
       observation = { kind: 'pending', reason: half.reason };
   }
-  return { family, options, parent, rootContext, observation, half };
+  return {
+    family,
+    waveCatalog: waveResult,
+    options,
+    parent,
+    rootContext,
+    observation,
+    half,
+  };
 }

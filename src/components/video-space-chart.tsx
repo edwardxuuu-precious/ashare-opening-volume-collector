@@ -27,7 +27,7 @@ export function VideoSpaceChart({
   overlays: readonly {
     id: string;
     label: string;
-    style: 'comparison' | 'parent' | 'root';
+    style: 'comparison' | 'parent' | 'root' | 'fixed';
     observation: Extract<VideoObservation, { kind: 'ready' }>;
   }[];
 }) {
@@ -104,7 +104,7 @@ export function VideoSpaceChart({
         viewBox={`0 0 ${width} ${height}`}
         role="img"
         data-price-geometry="log-price.v1"
-        aria-label={`${stock.code} ${observation.date} ${observation.source.kind === 'HALF' ? '继承半格' : observation.source.kind === 'LOWER' ? '下降平台' : observation.source.kind === 'AUTO' ? '自动平台（试验）' : '固定视频空间'}与真实日K线`}
+        aria-label={`${stock.code} ${observation.date} ${observation.source.kind === 'HALF' ? '继承半格' : observation.source.kind === 'WAVE' ? '结构波段' : observation.source.kind === 'LOWER' ? '下降平台' : observation.source.kind === 'AUTO' ? '自动平台（试验）' : '固定视频空间'}与真实日K线`}
       >
         {scale.ticks(5).map((p, i) => (
           <g key={i}>
@@ -197,14 +197,22 @@ export function VideoSpaceChart({
               x2={right}
               y1={scale.y(g.price)}
               y2={scale.y(g.price)}
-              stroke={overlay.style === 'root' ? '#a4611a' : '#a352a8'}
+              stroke={
+                overlay.style === 'root'
+                  ? '#a4611a'
+                  : overlay.style === 'fixed'
+                    ? 'var(--vs-fixed-overlay)'
+                    : '#a352a8'
+              }
               strokeWidth={g.k === overlay.observation.reference.k ? 2 : 1}
               strokeDasharray={
                 overlay.style === 'root'
                   ? '10 3 2 3'
-                  : overlay.style === 'parent'
-                    ? '2 4'
-                    : '7 3'
+                  : overlay.style === 'fixed'
+                    ? '12 5'
+                    : overlay.style === 'parent'
+                      ? '2 4'
+                      : '7 3'
               }
             />
           ));
@@ -292,9 +300,11 @@ export function VideoSpaceChart({
               {overlay.label} ·{' '}
               {overlay.style === 'root'
                 ? '长短线'
-                : overlay.style === 'parent'
-                  ? '点线'
-                  : '虚线'}
+                : overlay.style === 'fixed'
+                  ? '长虚线'
+                  : overlay.style === 'parent'
+                    ? '点线'
+                    : '虚线'}
             </li>
           ))}
         </ul>

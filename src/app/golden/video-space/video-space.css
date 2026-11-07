@@ -1,4 +1,5 @@
 .video-space {
+  --vs-fixed-overlay: #3b7a78;
   min-height: 100dvh;
   background: var(--ui-background);
   color: var(--ui-text);
@@ -461,5 +462,15 @@
     transparent 10px 13px,
     #a4611a 13px 15px,
     transparent 15px 18px
+  );
+}
+
+.vs-overlay-fixed {
+  border: 0;
+  height: 2px;
+  background: repeating-linear-gradient(
+    to right,
+    var(--vs-fixed-overlay) 0 12px,
+    transparent 12px 17px
   );
 }
