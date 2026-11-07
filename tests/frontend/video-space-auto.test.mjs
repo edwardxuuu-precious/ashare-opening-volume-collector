@@ -203,3 +203,39 @@ test('structural candidates merge causal reasons and separately time high and cl
   assert.deepEqual(afterClose.reasons, active[0].reasons);
   assert.equal(afterClose.id, active[0].id);
 });
+
+test('structural catalog explains a confirmed high rejected by both hypotheses', async () => {
+  const { observeStructuralWaves } =
+    await import('../../src/lib/video-space-auto.ts');
+  const history = Array.from({ length: 9 }, (_, i) => ({
+    date: new Date(Date.UTC(2025, 3, i + 1)).toISOString().slice(0, 10),
+    open: '60',
+    high: '61',
+    low: '59',
+    close: '60',
+    volume_shares: '1',
+  }));
+  history[3] = { ...history[3], high: '80', open: '79', close: '79' };
+  const result = observeStructuralWaves(history, history[6].date);
+  assert.equal(result.kind, 'ready');
+  assert.equal(result.candidates.length, 0);
+  assert.deepEqual(
+    result.rejections.map(({ method, code }) => [method, code]),
+    [
+      ['A', 'no_prior_confirmed_high_at_or_above_H'],
+      ['B', 'NO_PRIOR_CONFIRMED_LOW'],
+    ],
+  );
+  for (const rejected of result.rejections) {
+    assert.equal(rejected.H.date, history[3].date);
+    assert.equal(rejected.H.field, 'high');
+    assert.equal(rejected.H.confirmationDate, history[5].date);
+  }
+  assert.deepEqual(result.rejections[1].reason.stop, {
+    code: 'NO_PRIOR_CONFIRMED_LOW',
+  });
+  assert.equal(
+    observeStructuralWaves(history, history[5].date).rejections.length,
+    0,
+  );
+});

@@ -853,6 +853,7 @@ export type LayerSelection = {
 };
 export type LayerResult = {
   readonly family: ReturnType<typeof observeAutoFamily> | null;
+  readonly waveCatalog: ReturnType<typeof observeStructuralWaves> | null;
   readonly options: readonly { id: string; label: string }[];
   readonly parent: VideoObservation;
   readonly rootContext: VideoObservation;
@@ -1008,5 +1009,13 @@ export function observeVideoLayers(
     } else if (layer.scale === 'HALF')
       observation = { kind: 'pending', reason: half.reason };
   }
-  return { family, options, parent, rootContext, observation, half };
+  return {
+    family,
+    waveCatalog: waveResult,
+    options,
+    parent,
+    rootContext,
+    observation,
+    half,
+  };
 }

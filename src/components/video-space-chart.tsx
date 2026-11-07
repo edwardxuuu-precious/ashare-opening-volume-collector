@@ -201,7 +201,7 @@ export function VideoSpaceChart({
                 overlay.style === 'root'
                   ? '#a4611a'
                   : overlay.style === 'fixed'
-                    ? '#3b7a78'
+                    ? 'var(--vs-fixed-overlay)'
                     : '#a352a8'
               }
               strokeWidth={g.k === overlay.observation.reference.k ? 2 : 1}

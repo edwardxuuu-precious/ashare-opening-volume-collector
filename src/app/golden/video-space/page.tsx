@@ -1161,6 +1161,32 @@ export default function VideoSpacePage() {
           {rulerMode === 'layers' && layers && (
             <section className="vs-ruler">
               <h3>分层观察</h3>
+              {layers.waveCatalog?.kind === 'ready' && (
+                <details>
+                  <summary>
+                    结构候选未形成的原因（{layers.waveCatalog.rejections.length}{' '}
+                    项）
+                  </summary>
+                  <p>
+                    每项按已确认高点和假设记录；缺少结构时不补选。展开可查看真实点位、确认时间与各步理由。
+                  </p>
+                  {layers.waveCatalog.rejections.map((item) => (
+                    <details key={`${item.method}:${item.H.date}:${item.code}`}>
+                      <summary>
+                        {item.method} · H {item.H.date} high {item.H.price} ·{' '}
+                        {item.code}
+                      </summary>
+                      <pre className="vs-rejection-evidence">
+                        {JSON.stringify(item, null, 2)}
+                      </pre>
+                    </details>
+                  ))}
+                </details>
+              )}
+              {layers.waveCatalog?.kind === 'pending' && (
+                <p>{layers.waveCatalog.reason}</p>
+              )}
+
               <p>
                 切换尺度会改变自动参考候选及其实际价格；手动 k
                 以当前尺度计。切换日期时，固定 k 保持当前尺度坐标。
