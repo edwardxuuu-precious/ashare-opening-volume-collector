@@ -1,5 +1,10 @@
 import { authRead } from './auth-fetch.ts';
-import { observeAutoPlatform, type AutoResult } from './video-space-auto.ts';
+import {
+  observeAutoPlatform,
+  observeAutoFamily,
+  type AutoResult,
+  type LowerPlatform,
+} from './video-space-auto.ts';
 
 export type VideoCode = '300502' | '300308' | '300394';
 type Endpoint = { readonly date: string; readonly field: 'high' | 'low' };
@@ -208,6 +213,18 @@ export type LineObservation = SpaceLine & {
   readonly close: PriceRelation;
   readonly rangeIncludes: boolean;
 };
+export type RulerEndpoints =
+  | {
+      readonly kind: 'REAL';
+      readonly high: Endpoint & { readonly price: string };
+      readonly low: Endpoint & { readonly price: string };
+    }
+  | {
+      readonly kind: 'PARENT_BOUNDARY';
+      readonly parentId: string;
+      readonly high: number;
+      readonly low: number;
+    };
 export type VideoObservation =
   | { readonly kind: 'pending'; readonly reason: string }
   | {
@@ -215,7 +232,11 @@ export type VideoObservation =
       readonly date: string;
       readonly bar: VideoBar;
       readonly source:
-        | { readonly kind: 'FIXED'; readonly scenario: VideoScenario }
+        | {
+            readonly kind: 'FIXED';
+            readonly scenario: VideoScenario;
+            readonly endpoints: Extract<RulerEndpoints, { kind: 'REAL' }>;
+          }
         | {
             readonly kind: 'AUTO';
             readonly version: Extract<AutoResult, { kind: 'ready' }>['version'];
@@ -223,11 +244,24 @@ export type VideoObservation =
               AutoResult,
               { kind: 'ready' }
             >['versions'];
+            readonly endpoints: Extract<RulerEndpoints, { kind: 'REAL' }>;
+          }
+        | {
+            readonly kind: 'LOWER';
+            readonly platform: LowerPlatform;
+            readonly endpoints: Extract<RulerEndpoints, { kind: 'REAL' }>;
+          }
+        | {
+            readonly kind: 'HALF';
+            readonly parentId: string;
+            readonly activationDate: string;
+            readonly endpoints: Extract<
+              RulerEndpoints,
+              { kind: 'PARENT_BOUNDARY' }
+            >;
           };
       readonly ruler: SpaceRuler;
       readonly startDate: string;
-      readonly high: Endpoint & { readonly price: string };
-      readonly low: Endpoint & { readonly price: string };
       readonly location: SpaceLocation;
       readonly reference: LineObservation;
       readonly referenceSelection: ReferenceSelection;
@@ -696,9 +730,16 @@ export function observeVideoDay(
     };
   return observeResolved(
     stock.history,
-    { kind: 'FIXED', scenario },
-    { ...scenario.high, price: h.high },
-    { ...scenario.low, price: l.low },
+    {
+      kind: 'FIXED',
+      scenario,
+      endpoints: {
+        kind: 'REAL',
+        high: { ...scenario.high, price: h.high },
+        low: { ...scenario.low, price: l.low },
+      },
+    },
+    { H: Number(h.high), L: Number(l.low) },
     startDate,
     selectedDate,
     selection,
@@ -719,9 +760,17 @@ export function observeAutomaticVideoDay(
   const v = result.version;
   return observeResolved(
     stock.autoHistory.history,
-    { kind: 'AUTO', version: v, versions: result.versions },
-    { date: v.H.date, field: 'high', price: String(v.H.price) },
-    { date: v.L.date, field: 'low', price: String(v.L.price) },
+    {
+      kind: 'AUTO',
+      version: v,
+      versions: result.versions,
+      endpoints: {
+        kind: 'REAL',
+        high: { ...v.H, price: String(v.H.price) },
+        low: { ...v.L, price: String(v.L.price) },
+      },
+    },
+    { H: v.H.price, L: v.L.price },
     v.activationDate ?? selectedDate,
     selectedDate,
     selection,
@@ -730,8 +779,7 @@ export function observeAutomaticVideoDay(
 function observeResolved(
   history: readonly VideoBar[],
   source: Extract<VideoObservation, { kind: 'ready' }>['source'],
-  high: Endpoint & { price: string },
-  low: Endpoint & { price: string },
+  ruler: SpaceRuler,
   startDate: string,
   selectedDate: string,
   selection: ReferenceSelection,
@@ -751,8 +799,7 @@ function observeResolved(
     (!Number.isFinite(selection.k) || !Number.isInteger(selection.k * 2))
   )
     return { kind: 'pending', reason: '固定k须为有限整数或半整数。' };
-  const ruler = { H: Number(high.price), L: Number(low.price) },
-    location = locateSpace(ruler, Number(bar.close));
+  const location = locateSpace(ruler, Number(bar.close));
   const reference =
     selection.kind === 'FIXED'
       ? line(ruler, selection.k)
@@ -774,12 +821,169 @@ function observeResolved(
     source,
     ruler,
     startDate,
-    high,
-    low,
     location,
     reference: observe(reference),
     referenceSelection: selection,
     previous: previous ? { date: previous.date, close: previous.close } : null,
     spaceLines: [location.upper, location.middle, location.lower].map(observe),
   };
+}
+
+export type LayerSelection = {
+  readonly parentId: string;
+  readonly scale: 'PARENT' | 'HALF';
+};
+export type LayerResult = {
+  readonly family: ReturnType<typeof observeAutoFamily> | null;
+  readonly options: readonly { id: string; label: string }[];
+  readonly parent: VideoObservation;
+  readonly rootContext: VideoObservation;
+  readonly observation: VideoObservation;
+  readonly half:
+    | { kind: 'available'; activationDate: string }
+    | { kind: 'pending'; reason: string };
+};
+export function observeVideoLayers(
+  stock: VerifiedVideoStock,
+  date: string,
+  selection: ReferenceSelection,
+  layer: LayerSelection,
+): LayerResult {
+  const unavailable: VideoObservation = {
+    kind: 'pending',
+    reason: '所选父尺尚未启用。',
+  };
+  const history =
+    stock.autoHistory?.kind === 'ready' ? stock.autoHistory.history : null;
+  const family = history ? observeAutoFamily(history, date) : null;
+  const current = family?.root.kind === 'ready' ? family.root.version : null;
+  const versions = family?.root.versions ?? [];
+  const nodes =
+    family?.lowerPlatforms.filter(
+      (v) => v.activationDate && v.activationDate <= date,
+    ) ?? [];
+  const options = [
+    ...(current ? [{ id: current.id, label: '当前 V1 原尺' }] : []),
+    ...versions
+      .filter(
+        (v) =>
+          v.id !== current?.id && v.activationDate && v.activationDate <= date,
+      )
+      .map((v) => ({ id: v.id, label: `归档 V1 · ${v.confirmationDate}` })),
+    ...nodes.map((v) => ({
+      id: v.id,
+      label: `下降平台 · ${v.confirmationDate}${v.rootLifetime === 'archived' ? ' · 归档' : ''}`,
+    })),
+    ...videoScenarios
+      .filter((v) => v.code === stock.code)
+      .map((v) => ({ id: v.id, label: `固定 · ${v.label}` })),
+  ];
+  const id = layer.parentId === 'CURRENT_ROOT' ? current?.id : layer.parentId;
+  const version = versions.find(
+    (v) => v.id === id && v.activationDate && v.activationDate <= date,
+  );
+  const node = nodes.find((v) => v.id === id);
+  let parent: VideoObservation = unavailable;
+  if (history && version && version.activationDate) {
+    parent = observeResolved(
+      history,
+      {
+        kind: 'AUTO',
+        version,
+        versions,
+        endpoints: {
+          kind: 'REAL',
+          high: { ...version.H, price: String(version.H.price) },
+          low: { ...version.L, price: String(version.L.price) },
+        },
+      },
+      { H: version.H.price, L: version.L.price },
+      version.activationDate,
+      date,
+      selection,
+    );
+  } else if (history && node && node.activationDate) {
+    parent = observeResolved(
+      history,
+      {
+        kind: 'LOWER',
+        platform: node,
+        endpoints: {
+          kind: 'REAL',
+          high: { ...node.realH, price: String(node.realH.price) },
+          low: { ...node.realL, price: String(node.realL.price) },
+        },
+      },
+      { H: node.realH.price, L: node.realL.price },
+      node.activationDate,
+      date,
+      selection,
+    );
+  } else if (
+    id &&
+    videoScenarios.some((v) => v.id === id && v.code === stock.code)
+  ) {
+    parent = observeVideoDay(stock, id, date, selection);
+  }
+  const rootVersion = node
+    ? versions.find((v) => v.id === node.rootId)
+    : current;
+  const rootContext =
+    history && rootVersion?.activationDate
+      ? observeResolved(
+          history,
+          {
+            kind: 'AUTO',
+            version: rootVersion,
+            versions,
+            endpoints: {
+              kind: 'REAL',
+              high: { ...rootVersion.H, price: String(rootVersion.H.price) },
+              low: { ...rootVersion.L, price: String(rootVersion.L.price) },
+            },
+          },
+          { H: rootVersion.H.price, L: rootVersion.L.price },
+          rootVersion.activationDate,
+          date,
+          selection,
+        )
+      : unavailable;
+  let half: LayerResult['half'] = {
+    kind: 'pending',
+    reason: '父尺启用后尚无完成收盘跌破 L，或下一交易日尚未到达。',
+  };
+  let observation = parent;
+  if (parent.kind === 'ready' && id) {
+    const sourceHistory = history ?? stock.history;
+    const breaking = sourceHistory.findIndex(
+      (b) =>
+        b.date >= parent.startDate &&
+        b.date < date &&
+        Number(b.close) < parent.ruler.L,
+    );
+    const activationDate =
+      breaking >= 0 ? sourceHistory[breaking + 1]?.date : undefined;
+    if (activationDate && activationDate <= date) {
+      half = { kind: 'available', activationDate };
+      if (layer.scale === 'HALF') {
+        const high = boundaryAt(parent.ruler, 0),
+          low = boundaryAt(parent.ruler, 0.5);
+        observation = observeResolved(
+          sourceHistory,
+          {
+            kind: 'HALF',
+            parentId: id,
+            activationDate,
+            endpoints: { kind: 'PARENT_BOUNDARY', parentId: id, high, low },
+          },
+          { H: high, L: low },
+          activationDate,
+          date,
+          selection,
+        );
+      }
+    } else if (layer.scale === 'HALF')
+      observation = { kind: 'pending', reason: half.reason };
+  }
+  return { family, options, parent, rootContext, observation, half };
 }

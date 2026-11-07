@@ -75,4 +75,4 @@ GitHub Actions 直接检出本仓库。需要独立运行包时，使用 `deploy
 
 来源探针不需要 AWS 权限，只输出汇总诊断。生产任务通过仓库限定的 OIDC 角色写私有 S3，使用标准 GitHub 托管运行器。`STOCK_BUCKET`、`AWS_ROLE_ARN` 与停用变量单独配置。维护时须按[调度手册](deploy/actions/SCHEDULER.md)和[日更说明](docs/deployment/daily-update.md)关闭对应触发器、等待原写入者释放租约；单独设置 `DISABLE_DAILY_UPDATE` 不能替代全局停机。定时投递与免费源都可能延迟，不保证固定时刻行情齐全。
 
-视频空间观察的固定候选及三股自动平台试验说明见 [docs/video-space-rules.md](docs/video-space-rules.md)。
+视频空间观察的固定候选、三股自动平台及分层观察试验说明见 [docs/video-space-rules.md](docs/video-space-rules.md)。

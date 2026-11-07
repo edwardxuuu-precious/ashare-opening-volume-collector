@@ -291,3 +291,44 @@ test('frozen history cannot claim the registered source fingerprint with changed
     /指纹/,
   );
 });
+
+test('half ruler inherits parent boundaries after a completed break and keeps one reference for O and C', async () => {
+  const { observeVideoLayers } = await import('../../src/lib/video-space.ts');
+  const s = stock();
+  const before = observeVideoLayers(s, '2026-11-02', auto, {
+    parentId: primary,
+    scale: 'HALF',
+  });
+  assert.equal(before.observation.kind, 'pending');
+  const result = observeVideoLayers(s, '2026-11-03', auto, {
+    parentId: primary,
+    scale: 'HALF',
+  });
+  assert.equal(result.half.kind, 'available');
+  const half = ready(result.observation),
+    parent = ready(result.parent);
+  assert.equal(half.source.kind, 'HALF');
+  assert.equal(half.source.endpoints.kind, 'PARENT_BOUNDARY');
+  for (const j of [-1, 0, 0.5, 1, 2])
+    assert.ok(
+      Math.abs(boundaryAt(half.ruler, j) - boundaryAt(parent.ruler, j / 2)) <
+        1e-8,
+    );
+  assert.deepEqual(
+    half.reference.open,
+    relate(+half.bar.open, half.reference.price),
+  );
+  assert.deepEqual(
+    half.reference.close,
+    relate(+half.bar.close, half.reference.price),
+  );
+  assert.deepEqual(
+    ready(
+      observeVideoLayers(s, '2026-11-03', auto, {
+        parentId: primary,
+        scale: 'PARENT',
+      }).observation,
+    ).ruler,
+    parent.ruler,
+  );
+});

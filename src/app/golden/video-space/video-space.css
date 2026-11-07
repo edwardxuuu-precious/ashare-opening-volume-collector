@@ -425,3 +425,9 @@
   color: var(--ui-muted);
   font-size: 11px;
 }
+
+.video-space .vs-endpoint-comparison th,
+.video-space .vs-endpoint-comparison td {
+  white-space: nowrap;
+  overflow-wrap: normal;
+}
