@@ -124,6 +124,45 @@ test('price-only CSI300 cannot masquerade as the total-return source', () => {
   value.sources[0].code = '000300';
   assert.throws(() => parseCycleSnapshot(value), /身份/);
 });
+test('official secondary-bond comparison keeps its identity separate from the unavailable Wind index', () => {
+  const value = inventedSnapshot();
+  const name = '中证报二级债券型基金指数';
+  value.sources[1] = {
+    ...value.sources[1],
+    id: 'secondary',
+    code: '900330.CSJ',
+    name,
+  };
+  value.comparisons[0] = {
+    ...value.comparisons[0],
+    id: 'secondary',
+    code: '900330.CSJ',
+    name,
+  };
+  const result = parseCycleSnapshot(value);
+  assert.equal(result.comparisons[0].id, 'secondary');
+  assert.equal(result.comparisons[0].code, '900330.CSJ');
+  assert.equal(result.unavailable[0].code, '885007.WI');
+
+  value.comparisons[0].code = '885007.WI';
+  assert.throws(() => parseCycleSnapshot(value), /身份/);
+});
+test('official secondary-bond data cannot be relabeled as Wind even when its code is retained', () => {
+  const value = inventedSnapshot();
+  value.sources[1] = {
+    ...value.sources[1],
+    id: 'secondary',
+    code: '900330.CSJ',
+    name: '中证报二级债券型基金指数',
+  };
+  value.comparisons[0] = {
+    ...value.comparisons[0],
+    id: 'secondary',
+    code: '900330.CSJ',
+    name: '万得混合债券型二级基金指数',
+  };
+  assert.throws(() => parseCycleSnapshot(value), /不能标作其他指数/);
+});
 test('displayed distance must agree with the actual same-date lines', () => {
   const value = inventedSnapshot();
   value.comparisons[0].points[50].gapPct = -50;

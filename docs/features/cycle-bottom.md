@@ -8,6 +8,7 @@
 - 000012上证国债：中证公开历史，2003-01-02起；指数包含全价、利息及再投资，不是到期收益率。
 - 000001上证月K：新浪不复权日线合成每月首开、最高、最低、末收；实有日线自1990-12-19起，本月未完成明确标记。
 - 原885007.WI：待Wind授权接口或合法导出。[分发平台官方协议](https://app.jiucaishuo.com/html/user_server.html)§6.2.2.1(7)明确禁止机器人抓取，§13.1—13.2要求复制/转载许可。已有探针只留本地取证，未进入生产数据或无人更新任务。
+- 可选900330.CSJ「中证报二级债券型基金指数」：正式二级债基类别参照，与原Wind指数不同；基日2007-12-28，2022-04-01发布，此前历史为回溯。份额对数加权、半年调样，选取契约可投二级市场股票的开放式债基，排除定开及指数/增强指数债基。已完成真实历史拟合预览与接入，默认关闭；本次未启用生产采集或发布。
 - 可选930897「中证非纯债债券型基金指数」不是原Wind指数，仅在显式设置 `CYCLE_INCLUDE_NONPURE=true` 时以准确名称启用，默认关闭。其基日2007-12-31、2016-08-31发布；基日前孤点排除，发布前属回溯数据。
 
 只用真实日期交集，不补零、不向前填充。CSI实测有起点锚点及2018-06-18休市记录，原件保留、计算前剔除。2026用既有交易所日历核对，早年按新浪实有上证日期，未宣称所有历史交易日均逐日获官方认证。超出已验证日历年度仍按来源实有数据更新，但状态明确报日历待核对，不声称最新完整交易日已确认。
@@ -32,6 +33,10 @@
 
 `.github/workflows/cycle-bottom.yml` 计划每日北京时间08:40、16:40、22:40核对，包括周末补发。仅main、公有仓库、未设置 `DISABLE_CYCLE_BOTTOM_UPDATE=true` 时自动执行，保留免费runner门；单轮10分钟、采集计算预算240秒、每源单次25秒网络界限，不自动重试限流/拒绝访问，不调用付费API。
 
+二级债基接入采用显式 `--include-secondary`，工作流仅在 `CYCLE_INCLUDE_SECONDARY=true` 时传入该参数。启用前核实数据方条件适用于云端定时读取、私有缓存和当前页面受众。本次读取的[中证报产品服务](https://jnindex.com.cn/Services/index.html)明确对外发布/转发行情需授权、使用相关数据产品服务需协议；没有找到自动访问禁令，私有研究派生图用途也未被明确允许或禁止，不将其声明为无条件开放数据。原Wind与中证报授权都未由本次研究取得。
+
+900330读取官方站点清单、基金目录和该指数历史三个原件，校验同源固定路径、代码、正式名称、基日、发布日期、末值与日期一致性、正值和严格日期顺序，再与实有交易日交集。原件分别保留SHA，不用其他指数补缺。目录移除、身份改变、拒绝访问或数据不一致时停止该次发布，保留旧成功版本；不得绕过限制。来源只支持类别参照，不证明原885007的具体触线日期。
+
 `python -m backend.cycle_bottom.daily` 每轮取真序列重算固定模型与观察；16:30前不把当日记录当最终收盘。来源滞后按实际共同日计算并标partial；失败保留上一成功manifest，单独记录失败。相同数据只更新核对时间，不把重新检查说成行情更新。
 
 页面可见时每60秒查已发布版本，重新聚焦也检查，支持手动刷新。失败保留旧有效数据，明确失败和最后成功时间。数据更新时间、后台核对时间、浏览器读取时间分开。观察由实际数值生成，不调用定时LLM。
@@ -48,6 +53,8 @@
 .venv/bin/python -m backend.cycle_bottom.daily --out public/data/cycle-bottom --raw-dir var/data/cycle-bottom/raw
 ```
 
+已确认数据使用条件后，为该命令增加 `--include-secondary` 可重算中证报二级债基与国债两条参照。默认国债分支保持原行为。
+
 public/data仅本地开发、Git忽略且保护构建剥离；生产经私有桶发布。快照附来源URL、SHA、实有区间、剔除和缺口数量。测试通过不代替真实数据和线上运行验收。
 
 - [沪深300编制方案§4.6](https://oss-ch.csindex.com.cn/static/html/csindex/public/uploads/indices/detail/files/zh_CN/000300_Index_Methodology_cn.pdf)：读取2023-09版本，支持分红再投资口径，未审计全部后续修订。
@@ -55,3 +62,4 @@ public/data仅本地开发、Git忽略且保护构建剥离；生产经私有桶
 - [AKShare官方指数文档](https://akshare.akfamily.xyz/data/index/index.html)：公开历史端点及日频字段，运行用1.18.88新浪解码器。
 - [SciPy linprog](https://docs.scipy.org/doc/scipy/reference/generated/scipy.optimize.linprog.html)：稀疏线性规划、自由参数与最优状态。研究模型和阈值属于本项目，非该文档认证的投资规律。
 - [930897指数单张](https://oss-ch.csindex.com.cn/static/html/csindex/public/uploads/indices/detail/files/zh_CN/930897factsheet.pdf)、[系列方案](https://oss-ch.csindex.com.cn/static/html/csindex/public/uploads/indices/detail/files/zh_CN/930889_Index_Methodology_cn.pdf)：可选参照的名称、基日、发布及选样边界，不证明原Wind规律。
+- [900330.CSJ官方详情](https://jnindex.com.cn/FundIndex/detail.html?indexCode=900330.CSJ)、[编制方案V1.2/2022-03](https://jnindex.com.cn/upload/2022/03-23/16-57-2500501895923099.pdf)：本轮读取完整八页，公式提取有缺字；目录、真实历史及正文确认身份、样本、基日、发布及分红修正。公开历史2007-12-28至2026-11-06共4580点，日期与保存的新浪交易日完全一致；接口可读不证明用途授权。

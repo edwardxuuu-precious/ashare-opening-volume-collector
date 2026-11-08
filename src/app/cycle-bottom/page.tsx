@@ -372,6 +372,7 @@ export default function CycleBottomPage() {
   const snapshot = bundle?.snapshot;
   const comparison =
     snapshot?.comparisons.find((item) => item.id === referenceId) ??
+    snapshot?.comparisons.find((item) => item.id === 'secondary') ??
     snapshot?.comparisons[0];
   const currentCase =
     comparison?.cases.find((item) => item.year === year) ??
@@ -555,6 +556,29 @@ export default function CycleBottomPage() {
                   </button>
                 ))}
               </div>
+              {comparison.id === 'secondary' && (
+                <>
+                  <p className="cl-muted-note">
+                    中证报二级债券型基金指数 900330.CSJ
+                    是正式二级债基类别参照，与原图的 Wind 885007.WI 是不同指数。
+                  </p>
+                  <details className="cl-fit-details">
+                    <summary>
+                      二级债基口径与原图差异{' '}
+                      <ChevronDown size={14} aria-hidden="true" />
+                    </summary>
+                    <div>
+                      <p>
+                        本指数采用份额对数加权、半年调样，使用自身的样本与编制规则。它于2022-04-01发布，之前的历史属于回溯数据。
+                      </p>
+                      <p>
+                        这些真实序列用于检查“股债靠近是否对应阶段低位”的假说，不能视为原图
+                        885007.WI 的精确复现；发布前的拟合与历史核对也不代表当时可实际使用的信号。
+                      </p>
+                    </div>
+                  </details>
+                </>
+              )}
               <div className="cl-chart-toolbar">
                 <div
                   className="cl-mode-buttons"
