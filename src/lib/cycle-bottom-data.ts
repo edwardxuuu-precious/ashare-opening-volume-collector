@@ -34,7 +34,7 @@ export type CycleCase = {
   outcomes: ForwardOutcome[];
 };
 export type CycleComparison = {
-  id: 'government' | 'nonpure' | 'wind';
+  id: 'government' | 'nonpure' | 'wind' | 'secondary';
   name: string;
   code: string;
   asOf: string;
@@ -236,7 +236,7 @@ function comparison(value: unknown): CycleComparison {
   )
     throw Error('周期序列不足或日期未严格递增。');
   const result: CycleComparison = {
-    id: choice(v.id, ['government', 'nonpure', 'wind']),
+    id: choice(v.id, ['government', 'nonpure', 'wind', 'secondary']),
     name: str(v.name),
     code: str(v.code),
     asOf: day(v.asOf),
@@ -371,7 +371,12 @@ export function parseCycleSnapshot(value: unknown): CycleSnapshot {
     )
   )
     throw Error('全收益或月线指数身份不一致。');
-  const codes = { government: '000012', nonpure: '930897', wind: '885007.WI' };
+  const codes = {
+    government: '000012',
+    nonpure: '930897',
+    wind: '885007.WI',
+    secondary: '900330.CSJ',
+  };
   if (
     result.comparisons.some(
       (item) =>
@@ -382,6 +387,19 @@ export function parseCycleSnapshot(value: unknown): CycleSnapshot {
     )
   )
     throw Error('参照指数身份不一致。');
+  if (
+    result.comparisons.some(
+      (item) =>
+        item.id === 'secondary' &&
+        (item.name !== '中证报二级债券型基金指数' ||
+          !result.sources.some(
+            (source) =>
+              source.id === item.id &&
+              source.name === '中证报二级债券型基金指数',
+          )),
+    )
+  )
+    throw Error('中证报二级债基不能标作其他指数。');
   return result;
 }
 export function parseCycleStatus(value: unknown): CycleStatus {

@@ -24,6 +24,7 @@ jobs:
       AWS_DEFAULT_REGION: us-east-1
       STOCK_BUCKET: ${{ vars.STOCK_BUCKET }}
       CYCLE_INCLUDE_NONPURE: ${{ vars.CYCLE_INCLUDE_NONPURE }}
+      CYCLE_INCLUDE_SECONDARY: ${{ vars.CYCLE_INCLUDE_SECONDARY }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
@@ -44,4 +45,5 @@ jobs:
           set -euo pipefail
           args=()
           if [ "${CYCLE_INCLUDE_NONPURE:-}" = 'true' ]; then args+=(--include-nonpure); fi
+          if [ "${CYCLE_INCLUDE_SECONDARY:-}" = 'true' ]; then args+=(--include-secondary); fi
           python -m backend.cycle_bottom.daily --bucket "$STOCK_BUCKET" --max-seconds 240 --receipt "$RUNNER_TEMP/cycle-receipt.json" "${args[@]}"

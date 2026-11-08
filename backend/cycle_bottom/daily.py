@@ -127,6 +127,8 @@ def main(argv=None):
     parser.add_argument('--out', type=Path)
     parser.add_argument('--raw-dir', type=Path)
     parser.add_argument('--include-nonpure', action='store_true')
+    parser.add_argument('--include-secondary', action='store_true',
+                        help='Read the CSJ secondary-bond category after confirming applicable provider terms')
     parser.add_argument('--max-seconds', type=int, default=240)
     parser.add_argument('--receipt', type=Path)
     args = parser.parse_args(argv)
@@ -135,7 +137,8 @@ def main(argv=None):
     started = time.monotonic()
     storage = S3Storage(args.bucket, profile=args.profile, region=args.region) if args.bucket else None
     try:
-        data, sources, raw_files, expected = fetch_sources(include_nonpure=args.include_nonpure)
+        data, sources, raw_files, expected = fetch_sources(include_nonpure=args.include_nonpure,
+                                                          include_secondary=args.include_secondary)
         if time.monotonic() - started > args.max_seconds:
             raise TimeoutError('CYCLE_SOURCE_DEADLINE')
         snapshot = build_snapshot(data, sources, expected_as_of=expected,

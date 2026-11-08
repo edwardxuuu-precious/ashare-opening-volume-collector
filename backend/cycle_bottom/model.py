@@ -166,7 +166,7 @@ def build_snapshot(data, sources, *, expected_as_of, generated_at=None, today=No
     today = today or generated_at[:10]
     names = {source['id']: source for source in sources}
     comparisons = [build_comparison(data['equity'], data[key], identifier=key, name=names[key]['name'], code=names[key]['code'])
-                   for key in ('government', 'nonpure') if key in data]
+                   for key in ('secondary', 'government', 'nonpure') if key in data]
     monthly = build_monthly(data['shanghai'], today=today)
     observations = []
     for comparison in comparisons:
@@ -185,7 +185,7 @@ def build_snapshot(data, sources, *, expected_as_of, generated_at=None, today=No
     observations.append({'title': '上证月线结构',
                          'detail': f"实际行情截至{monthly['asOf']}，最新收盘{monthly['points'][-1]['close']:.2f}，距固定历史通道下沿{monthly['latestGapPct']:+.2f}%；当前月尚未收完时，月K随已收盘交易日变化。"})
     unavailable = [{'code': '885007.WI', 'name': '万得混合债券型二级基金指数',
-                    'reason': '待Wind授权接口或合法导出；已查到的分发平台明确禁止机器人抓取，未用于生产自动采集或本页数据。'}]
+                    'reason': '待Wind授权接口或合法导出；已查到的分发平台明确禁止机器人抓取，未用于生产自动采集或本页数据。中证报900330.CSJ属于不同编制的正式二级债基参照，不能当作原Wind指数。'}]
     core = {'schema': 'stock.cycle-bottom.v1', 'modelVersion': MODEL_VERSION, 'expectedAsOf': expected_as_of,
             'sources': sources, 'comparisons': comparisons, 'monthly': monthly,
             'observations': observations, 'unavailable': unavailable}
