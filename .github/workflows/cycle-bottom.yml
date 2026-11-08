@@ -1,0 +1,47 @@
+name: Daily long-cycle index observations
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '40 0,8,14 * * *'
+permissions:
+  contents: read
+concurrency:
+  group: stock-cycle-bottom-writer
+  cancel-in-progress: false
+jobs:
+  cycle:
+    if: >-
+      github.ref == 'refs/heads/main' &&
+      github.event.repository.private == false &&
+      (github.event_name == 'workflow_dispatch' || vars.DISABLE_CYCLE_BOTTOM_UPDATE != 'true')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      AWS_EC2_METADATA_DISABLED: 'true'
+      AWS_DEFAULT_REGION: us-east-1
+      STOCK_BUCKET: ${{ vars.STOCK_BUCKET }}
+      CYCLE_INCLUDE_NONPURE: ${{ vars.CYCLE_INCLUDE_NONPURE }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.12'
+      - run: pip install -r backend/cycle_bottom/requirements.txt
+      - uses: aws-actions/configure-aws-credentials@ff717079ee2060e4bcee96c4779b553acc87447c
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          role-duration-seconds: 900
+          role-session-name: cycle-${{ github.run_id }}
+          aws-region: us-east-1
+      - name: Recompute real index fits and publish the immutable analysis before its manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          args=()
+          if [ "${CYCLE_INCLUDE_NONPURE:-}" = 'true' ]; then args+=(--include-nonpure); fi
+          python -m backend.cycle_bottom.daily --bucket "$STOCK_BUCKET" --max-seconds 240 --receipt "$RUNNER_TEMP/cycle-receipt.json" "${args[@]}"

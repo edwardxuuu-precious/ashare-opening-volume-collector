@@ -1,108 +1,248 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
-import { ArrowDown, ArrowUpRight, Check, Copy, Expand, X } from 'lucide-react';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { ArrowUpRight, ChevronDown, Expand, RefreshCw, X } from 'lucide-react';
 import { SiteHeader } from '@/components/site-header';
+import {
+  CycleLineChart,
+  CycleMonthlyChart,
+  type CycleChartMode,
+  type CycleWindow,
+} from '@/components/cycle-bottom-charts';
+import {
+  loadCycleBundle,
+  type CycleBundle,
+  type CycleComparison,
+  type CycleEvent,
+  type ForwardOutcome,
+} from '@/lib/cycle-bottom-data';
 import './cycle-bottom.css';
 
 export const dynamic = 'force-static';
 
-const equityImage = {
-  src: '/research/cycle-bottom/equity-bond-comparison.png',
-  width: 1080,
-  height: 322,
-  title: '沪深300全收益与二级债基累计走势对照',
-  alt: '用户提供的历史叠加图：黑色沪深300全收益曲线与灰紫色万得混合债券型二级指数曲线，多处靠近位置被红圈标注。原图未提供完整日期轴和归一化参数。',
-};
-const monthlyImage = {
-  src: '/research/cycle-bottom/shanghai-monthly-channel.png',
-  width: 1080,
-  height: 1551,
-  title: '上证指数月线与国债指数参考图',
-  alt: '用户提供的上证指数月K线截图，叠加橙色长期通道与蓝色国债指数，标有6124.04及998.23。上方显示3658.03，截图未标明具体交易日。',
-};
-type ReferenceImage = typeof equityImage;
+type DataState =
+  | { kind: 'loading' }
+  | { kind: 'error'; message: string }
+  | {
+      kind: 'ready';
+      bundle: CycleBundle;
+      refreshing: boolean;
+      refreshError: string | null;
+      readAt: string;
+    };
 
-const history = [
-  {
-    year: '2012',
-    question: '靠近之后，是否还会反复探底？',
-    detail:
-      '核对该年第一次靠近参照线的日期，以及之后是否再次创出更低点。区分首次触线与事后挑出的最终低点。',
-  },
-  {
-    year: '2016',
-    question: '触线与止跌，谁先发生？',
-    detail:
-      '把触线日期与实际低点逐日对齐，记录领先或滞后的交易日数，再看触线后是否仍有明显回撤。',
-  },
-  {
-    year: '2018',
-    question: '观察窗口跨年，结论还成立吗？',
-    detail:
-      '将核对区间延伸至次年，统一使用相同的观察窗口，避免以自然年结束作为行情已经止跌的依据。',
-  },
-  {
-    year: '2022',
-    question: '一年内多次靠近，该如何计数？',
-    detail:
-      '列出全年每一次靠近和跌破，把持续靠近合并为一个观察区间，避免把同一轮行情重复算成多次成功。',
-  },
-  {
-    year: '2024',
-    question: '换一个基期，还会在这里相遇吗？',
-    detail:
-      '固定指数与数据区间后，更换归一化起点、替换纯债参照，检验所见关系是否高度依赖画图参数。',
-  },
-];
+function useCycleData() {
+  const [state, setState] = useState<DataState>({ kind: 'loading' });
+  const request = useRef<AbortController | null>(null);
+  const alive = useRef(false);
+  const refresh = useCallback(async () => {
+    if (request.current) return;
+    const controller = new AbortController();
+    request.current = controller;
+    setState((current) =>
+      current.kind === 'ready'
+        ? { ...current, refreshing: true, refreshError: null }
+        : { kind: 'loading' },
+    );
+    try {
+      const bundle = await loadCycleBundle(controller.signal);
+      if (alive.current && !controller.signal.aborted)
+        setState({
+          kind: 'ready',
+          bundle,
+          refreshing: false,
+          refreshError: null,
+          readAt: new Date().toISOString(),
+        });
+    } catch (error) {
+      if (controller.signal.aborted || !alive.current) return;
+      const message =
+        error instanceof Error ? error.message : '周期数据暂时无法读取。';
+      setState((current) =>
+        current.kind === 'ready'
+          ? { ...current, refreshing: false, refreshError: message }
+          : { kind: 'error', message },
+      );
+    } finally {
+      if (request.current === controller) request.current = null;
+    }
+  }, []);
+  useEffect(() => {
+    alive.current = true;
+    void refresh();
+    const ifVisible = () => {
+      if (document.visibilityState === 'visible') void refresh();
+    };
+    const timer = window.setInterval(ifVisible, 60_000);
+    window.addEventListener('focus', ifVisible);
+    document.addEventListener('visibilitychange', ifVisible);
+    return () => {
+      alive.current = false;
+      request.current?.abort();
+      request.current = null;
+      window.clearInterval(timer);
+      window.removeEventListener('focus', ifVisible);
+      document.removeEventListener('visibilitychange', ifVisible);
+    };
+  }, [refresh]);
+  return { state, refresh };
+}
 
-function ReferenceFigure({
-  image,
-  className = '',
-  onExpand,
+function pct(value: number | null, unit = '%') {
+  return value === null
+    ? '—'
+    : `${value > 0 ? '+' : ''}${value.toFixed(2)}${unit}`;
+}
+function number(value: number) {
+  return value.toLocaleString('zh-CN', {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  });
+}
+function time(value: string | null) {
+  if (!value || !Number.isFinite(Date.parse(value))) return '尚无记录';
+  return new Intl.DateTimeFormat('zh-CN', {
+    timeZone: 'Asia/Shanghai',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hourCycle: 'h23',
+  }).format(new Date(value));
+}
+function tone(value: number | null) {
+  return value === null ? '' : value > 0 ? 'cl-up' : value < 0 ? 'cl-down' : '';
+}
+function OutcomeCells({
+  outcomes,
+  sessions,
 }: {
-  image: ReferenceImage;
-  className?: string;
-  onExpand: (image: ReferenceImage) => void;
+  outcomes: ForwardOutcome[];
+  sessions: number;
 }) {
+  const item = outcomes.find((outcome) => outcome.sessions === sessions);
+  if (!item?.complete)
+    return (
+      <>
+        <td className="cl-unmatured">未满窗口</td>
+        <td className="cl-unmatured">未满窗口</td>
+      </>
+    );
   return (
-    <figure className={`cb-figure ${className}`}>
-      <button
-        className="cb-image-button"
-        onClick={() => onExpand(image)}
-        aria-label={`放大查看${image.title}`}
-      >
-        <img
-          src={image.src}
-          width={image.width}
-          height={image.height}
-          alt={image.alt}
-          loading={image === monthlyImage ? 'lazy' : 'eager'}
-        />
-        <span className="cb-expand">
-          <Expand size={14} aria-hidden="true" /> 放大原图
-        </span>
-      </button>
-      <figcaption>
-        用户提供原图 · 水印：公众号「交易趋势分析」· 截图交易日未注明
-      </figcaption>
-    </figure>
+    <>
+      <td className={tone(item.returnPct)}>{pct(item.returnPct)}</td>
+      <td>{pct(item.downsidePct)}</td>
+    </>
   );
 }
 
-function ImageViewer({
+function WindowButtons({
+  value,
+  onChange,
+  label,
+}: {
+  value: CycleWindow;
+  onChange: (value: CycleWindow) => void;
+  label: string;
+}) {
+  const items: { value: CycleWindow; label: string }[] = [
+    { value: 'all', label: '全部' },
+    { value: '10', label: '近10年' },
+    { value: '5', label: '近5年' },
+  ];
+  return (
+    <div className="cl-window-buttons" role="group" aria-label={label}>
+      {items.map((item) => (
+        <button
+          key={item.value}
+          aria-pressed={value === item.value}
+          onClick={() => onChange(item.value)}
+        >
+          {item.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function EventTable({ events }: { events: CycleEvent[] }) {
+  if (!events.length)
+    return (
+      <div className="cl-empty cl-events-empty">
+        所选口径与期间没有满足条件的收盘进入事件。没有触线，也属于本次数据结果。
+      </div>
+    );
+  return (
+    <div className="cl-table-scroll">
+      <table className="cl-table cl-events-table">
+        <thead>
+          <tr>
+            <th rowSpan={2}>进入日期</th>
+            <th rowSpan={2}>区间</th>
+            <th rowSpan={2}>当日差距</th>
+            <th colSpan={2}>之后126个交易日</th>
+            <th colSpan={2}>之后252个交易日</th>
+          </tr>
+          <tr>
+            <th>期末收益</th>
+            <th>最深下探</th>
+            <th>期末收益</th>
+            <th>最深下探</th>
+          </tr>
+        </thead>
+        <tbody>
+          {events.map((event) => (
+            <tr key={event.date}>
+              <td>{event.date}</td>
+              <td>
+                <span
+                  className={`cl-phase ${event.phase === 'holdout' ? 'cl-phase-holdout' : ''}`}
+                >
+                  {event.phase === 'holdout' ? '训练外' : '样本内回看'}
+                </span>
+              </td>
+              <td>{pct(event.gapPct)}</td>
+              <OutcomeCells outcomes={event.outcomes} sessions={126} />
+              <OutcomeCells outcomes={event.outcomes} sessions={252} />
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+const originalImages = [
+  {
+    src: '/research/cycle-bottom/equity-bond-comparison.png',
+    width: 1080,
+    height: 322,
+    title: '原文股债对照图',
+    alt: '用户提供的沪深300全收益指数与二级债基历史叠加图，含原作者红圈标记。',
+  },
+  {
+    src: '/research/cycle-bottom/shanghai-monthly-channel.png',
+    width: 1080,
+    height: 1551,
+    title: '原文上证月线图',
+    alt: '用户提供的上证指数月线截图，含原作者画出的长期通道和国债指数参考线。',
+  },
+];
+type OriginalImage = (typeof originalImages)[number];
+
+function OriginalViewer({
   image,
   onClose,
 }: {
-  image: ReferenceImage;
+  image: OriginalImage;
   onClose: () => void;
 }) {
   const dialog = useRef<HTMLDialogElement>(null);
   const [originalSize, setOriginalSize] = useState(false);
   useEffect(() => {
-    const node = dialog.current;
-    const focused = document.activeElement;
-    const overflow = document.body.style.overflow;
+    const node = dialog.current,
+      focused = document.activeElement,
+      overflow = document.body.style.overflow;
     node?.showModal();
     document.body.style.overflow = 'hidden';
     return () => {
@@ -114,8 +254,8 @@ function ImageViewer({
   return (
     <dialog
       ref={dialog}
-      className="cb-viewer"
-      aria-labelledby="cb-viewer-title"
+      className="cl-viewer"
+      aria-labelledby="cl-viewer-title"
       onCancel={(event) => {
         event.preventDefault();
         onClose();
@@ -124,20 +264,20 @@ function ImageViewer({
         if (event.target === event.currentTarget) onClose();
       }}
     >
-      <div className="cb-viewer-bar">
-        <h2 id="cb-viewer-title">{image.title}</h2>
+      <div className="cl-viewer-bar">
+        <h2 id="cl-viewer-title">{image.title}</h2>
         <button
-          onClick={() => setOriginalSize((value) => !value)}
+          onClick={() => setOriginalSize((current) => !current)}
           aria-pressed={originalSize}
         >
           {originalSize ? '适应屏幕' : '原始尺寸'}
         </button>
         <button onClick={onClose} aria-label="关闭原图">
-          <X size={20} aria-hidden="true" />
+          <X size={19} aria-hidden="true" />
         </button>
       </div>
       <div
-        className={`cb-viewer-scroll ${originalSize ? 'cb-original-size' : ''}`}
+        className={`cl-viewer-scroll ${originalSize ? 'cl-original-size' : ''}`}
       >
         <img
           src={image.src}
@@ -150,432 +290,738 @@ function ImageViewer({
   );
 }
 
-export default function CycleBottomPage() {
-  const [selectedYear, setSelectedYear] = useState(history[0]);
-  const [image, setImage] = useState<ReferenceImage | null>(null);
-  const [shareState, setShareState] = useState<'idle' | 'copied' | 'failed'>(
-    'idle',
-  );
-  useEffect(() => {
-    const previousTitle = document.title;
-    document.title = '大周期底部观察 · 量序';
-    return () => {
-      document.title = previousTitle;
-    };
-  }, []);
-  useEffect(() => {
-    if (shareState === 'idle') return;
-    const timer = window.setTimeout(() => setShareState('idle'), 3000);
-    return () => window.clearTimeout(timer);
-  }, [shareState]);
-  async function share() {
-    try {
-      await navigator.clipboard.writeText(`${location.origin}/cycle-bottom`);
-      setShareState('copied');
-    } catch {
-      setShareState('failed');
-    }
-  }
+function OriginalReference() {
+  const [image, setImage] = useState<OriginalImage | null>(null);
   return (
-    <div className="cb-site">
-      <SiteHeader active="cycle-bottom" />
-      <main className="cb-main">
-        <div className="cb-document-bar">
+    <>
+      <details className="cl-original-reference">
+        <summary>
+          <span>原文与截图参考</span>
           <span>
-            <span className="cb-status-dot" /> 长周期研究 / 观察笔记 01
+            查看原始假设 <ChevronDown size={15} aria-hidden="true" />
           </span>
-          <button className="cb-share" onClick={share}>
-            {shareState === 'copied' ? (
-              <Check size={14} aria-hidden="true" />
-            ) : (
-              <Copy size={14} aria-hidden="true" />
-            )}
-            <span aria-live="polite">
-              {shareState === 'copied'
-                ? '链接已复制'
-                : shareState === 'failed'
-                  ? '请复制地址栏链接'
-                  : '复制页面链接'}
-            </span>
-          </button>
-        </div>
-
-        <header className="cb-hero">
-          <div>
-            <p className="cb-eyebrow">THE LONG VIEW</p>
-            <h1>
-              沪深股指
-              <br />
-              <span>大周期底部观察</span>
-            </h1>
-            <p className="cb-lead">
-              当股票的长期回报，回到债券参照附近。
-              <br />
-              用股债相对位置与月线结构，观察大周期的底部区域。
-            </p>
-            <a className="cb-read-link" href="#equity-bond">
-              从两条曲线开始 <ArrowDown size={15} aria-hidden="true" />
-            </a>
-          </div>
-          <aside className="cb-current" aria-label="当前研判状态">
-            <span className="cb-small-label">当前研判</span>
-            <div className="cb-current-state">
-              <i /> 待同口径数据核对
-            </div>
+        </summary>
+        <div className="cl-original-content">
+          <blockquote>
             <p>
-              原文判断「离底部还有距离」。截图可用于理解方法，最新位置仍需用完整序列重新计算。
+              如果把“沪深300全收益指数”和“二级债基指数”放在一起，两线重合的时候就会止跌。
             </p>
-            <dl>
-              <div>
-                <dt>距参照线</dt>
-                <dd>待计算</dd>
-              </div>
-              <div>
-                <dt>底部是否确认</dt>
-                <dd>尚不能判定</dd>
-              </div>
-            </dl>
-            <span className="cb-asof">整理于 2026.11.08 · 非实时行情</span>
-          </aside>
-        </header>
-
-        <nav className="cb-section-nav" aria-label="本页目录">
-          <a href="#equity-bond">
-            <span>01</span> 股债相对位置
-          </a>
-          <a href="#monthly">
-            <span>02</span> 月线长期结构
-          </a>
-          <a href="#framework">
-            <span>03</span> 如何观察底部
-          </a>
-          <a href="#sources">
-            <span>04</span> 口径与来源
-          </a>
-        </nav>
-
-        <section
-          className="cb-section"
-          id="equity-bond"
-          aria-labelledby="cb-equity-title"
-        >
-          <div className="cb-section-heading">
-            <div>
-              <p className="cb-eyebrow">01 / RELATIVE RETURN</p>
-              <h2 id="cb-equity-title">两条曲线，相遇意味着什么？</h2>
-            </div>
-            <span className="cb-tag">历史图示 · 待复核假设</span>
-          </div>
-          <p className="cb-section-intro">
-            原文提出：沪深300全收益指数与二级债基指数靠近、重合时，可能对应股票市场的长期低位。先看相对位置，再检查止跌是否真正发生。
+            <p>2012、2016、2018、2022、2024年都是如此。</p>
+            <p>
+              基本上相当于股票市场的收益率达到了债券收益率水平的时候，就是估值见底了。
+            </p>
+            <p>如果拿国债指数基本也能得到同样的规律。</p>
+            <p>目前看离底部还有距离。</p>
+          </blockquote>
+          <p className="cl-muted-note">
+            这是用户提供的原始观点，原始发表日期未注明。「目前」保留为原文语境。下方截图用于对照思路，当前数值、拟合与观察来自本页实际数据。
           </p>
-          <div className="cb-chart-frame">
-            <div className="cb-chart-heading">
-              <span>股债长期累计走势</span>
-              <div className="cb-legend">
-                <span>
-                  <i className="cb-equity-line" /> 沪深300全收益
-                </span>
-                <span>
-                  <i className="cb-bond-line" /> 二级债基
-                </span>
-                <span>
-                  <i className="cb-circle" /> 原图圈注
-                </span>
-              </div>
-            </div>
-            <ReferenceFigure image={equityImage} onExpand={setImage} />
-          </div>
-          <div className="cb-reading-note">
-            <span>读图要点</span>
-            <p>
-              图中标识为 <b>H00300.CSI</b> 与 <b>885007.WI</b>
-              。红圈是原作者的历史标记；原图缺少完整日期轴、基期和叠加设置，尚不能逐点确认触线日期及之后的表现。
-            </p>
-          </div>
-
-          <div className="cb-history-heading">
-            <h3>原文提到的五个年份</h3>
-            <span>选择年份，查看复核重点</span>
-          </div>
-          <div className="cb-history" aria-label="历史年份">
-            {history.map((item) => (
-              <button
-                key={item.year}
-                onClick={() => setSelectedYear(item)}
-                aria-pressed={selectedYear.year === item.year}
-                aria-controls="cb-history-detail"
-              >
-                <span>{item.year}</span>
-                <small>原文观察节点</small>
-                <ArrowUpRight size={16} aria-hidden="true" />
-              </button>
+          <div className="cl-original-images">
+            {originalImages.map((item) => (
+              <figure key={item.src}>
+                <button
+                  onClick={() => setImage(item)}
+                  aria-label={`放大${item.title}`}
+                >
+                  <img
+                    src={item.src}
+                    width={item.width}
+                    height={item.height}
+                    alt={item.alt}
+                    loading="lazy"
+                  />
+                  <span>
+                    <Expand size={13} aria-hidden="true" />
+                    查看原图
+                  </span>
+                </button>
+                <figcaption>{item.title} · 水印完整保留</figcaption>
+              </figure>
             ))}
           </div>
-          <div
-            className="cb-history-detail"
-            id="cb-history-detail"
-            aria-live="polite"
-          >
-            <strong>
-              {selectedYear.year} <span>复核问题</span>
-            </strong>
-            <div>
-              <h4>{selectedYear.question}</h4>
-              <p>{selectedYear.detail}</p>
-            </div>
-            <span className="cb-pending">待原始序列复核</span>
-          </div>
+        </div>
+      </details>
+      {image && <OriginalViewer image={image} onClose={() => setImage(null)} />}
+    </>
+  );
+}
 
-          <details className="cb-original">
-            <summary>
-              查看完整原文观点 <span>保留原始表述</span>
-            </summary>
-            <blockquote>
-              <p>
-                如果把“沪深300全收益指数”和“二级债基指数”放在一起，两线重合的时候就会止跌。
-              </p>
-              <p>2012、2016、2018、2022、2024年都是如此。</p>
-              <p>
-                基本上相当于股票市场的收益率达到了债券收益率水平的时候，就是估值见底了。
-              </p>
-              <p>如果拿国债指数基本也能得到同样的规律。</p>
-              <p>目前看离底部还有距离。</p>
-            </blockquote>
-            <p className="cb-original-context">
-              用户提供文字，原始发表日期未注明。「目前」对应原文语境，不能自动作为本页整理日的市场判断。
+export default function CycleBottomPage() {
+  const { state, refresh } = useCycleData();
+  const [referenceId, setReferenceId] = useState<CycleComparison['id'] | null>(
+    null,
+  );
+  const [mode, setMode] = useState<CycleChartMode>('fit');
+  const [window, setWindow] = useState<CycleWindow>('all');
+  const [monthlyWindow, setMonthlyWindow] = useState<CycleWindow>('all');
+  const [showReference, setShowReference] = useState(false);
+  const [logarithmic, setLogarithmic] = useState(false);
+  const [monthlyLogarithmic, setMonthlyLogarithmic] = useState(true);
+  const [year, setYear] = useState(2024);
+  const [focusDate, setFocusDate] = useState<string | null>(null);
+  const [eventKind, setEventKind] = useState<'fit' | 'raw'>('fit');
+  const [eventPhase, setEventPhase] = useState<'holdout' | 'all'>('holdout');
+  useEffect(() => {
+    const title = document.title;
+    document.title = '大周期底部观察 · 量序';
+    return () => {
+      document.title = title;
+    };
+  }, []);
+  const bundle = state.kind === 'ready' ? state.bundle : null;
+  const snapshot = bundle?.snapshot;
+  const comparison =
+    snapshot?.comparisons.find((item) => item.id === referenceId) ??
+    snapshot?.comparisons[0];
+  const currentCase =
+    comparison?.cases.find((item) => item.year === year) ??
+    comparison?.cases[0];
+  const selectedEvents = comparison
+    ? (eventKind === 'fit'
+        ? comparison.events
+        : comparison.rawTouchEvents
+      ).filter((item) => eventPhase === 'all' || item.phase === 'holdout')
+    : [];
+  const refreshing =
+    state.kind === 'loading' || (state.kind === 'ready' && state.refreshing);
+  const currentMonth = snapshot?.monthly.points.at(-1);
+  const latestSourceDate = snapshot?.sources.reduce(
+    (latest, source) => (source.lastDate > latest ? source.lastDate : latest),
+    '',
+  );
+  const status = bundle?.status;
+  return (
+    <div className="cl-site">
+      <SiteHeader active="cycle-bottom" />
+      <main className="cl-main">
+        <header className="cl-page-header">
+          <div>
+            <p className="cl-eyebrow">沪深股指 / 长周期数据</p>
+            <h1>大周期底部观察</h1>
+            <p className="cl-page-subtitle">
+              用真实股债序列拟合历史低位，持续核对当前相对位置与月线结构。
             </p>
-          </details>
-        </section>
+          </div>
+          <div className="cl-update-controls">
+            <div className="cl-update-label">
+              <i
+                className={status?.state === 'ready' ? 'cl-status-ready' : ''}
+              />
+              <span>
+                {state.kind === 'loading'
+                  ? '正在读取数据'
+                  : state.kind === 'error'
+                    ? '数据读取失败'
+                    : status?.state === 'ready'
+                      ? '自动观察已更新'
+                      : status?.state === 'partial'
+                        ? '部分来源待更新'
+                        : status?.state === 'updating'
+                          ? '后台正在更新'
+                          : '后台更新未完成'}
+              </span>
+            </div>
+            <span className="cl-last-check">
+              后台核对 {time(status?.checkedAt ?? null)} · 北京时间
+            </span>
+            <button
+              className="cl-refresh"
+              onClick={() => {
+                void refresh();
+              }}
+              disabled={refreshing}
+            >
+              <RefreshCw
+                size={14}
+                className={refreshing ? 'cl-spinning' : ''}
+                aria-hidden="true"
+              />
+              {refreshing ? '读取中…' : '刷新数据'}
+            </button>
+          </div>
+        </header>
 
-        <section
-          className="cb-section cb-monthly-section"
-          id="monthly"
-          aria-labelledby="cb-monthly-title"
-        >
-          <div className="cb-section-heading">
-            <div>
-              <p className="cb-eyebrow">02 / MONTHLY STRUCTURE</p>
-              <h2 id="cb-monthly-title">把相对位置，放回长期结构中</h2>
-            </div>
-            <span className="cb-tag">上证指数 · 月线视角</span>
+        {state.kind === 'loading' && (
+          <section className="cl-initial-state" aria-live="polite">
+            <RefreshCw size={21} className="cl-spinning" aria-hidden="true" />
+            <h2>正在读取真实历史序列与最新观察</h2>
+            <p>核对版本、来源日期和拟合结果后显示。</p>
+          </section>
+        )}
+        {state.kind === 'error' && (
+          <section className="cl-initial-state cl-initial-error" role="alert">
+            <h2>真实数据暂未载入</h2>
+            <p>{state.message}</p>
+            <button
+              className="cl-text-button"
+              onClick={() => {
+                void refresh();
+              }}
+            >
+              重新读取
+            </button>
+          </section>
+        )}
+        {state.kind === 'ready' && state.refreshError && (
+          <div className="cl-alert" role="alert">
+            <strong>本次刷新失败，保留上次有效数据。</strong>
+            <span>
+              {state.refreshError} 上次成功读取：{time(state.readAt)}。
+            </span>
           </div>
-          <div className="cb-monthly-grid">
-            <ReferenceFigure
-              image={monthlyImage}
-              className="cb-monthly-image"
-              onExpand={setImage}
-            />
-            <div className="cb-monthly-copy">
-              <p className="cb-monthly-deck">
-                第一张图看股债回报差，
-                <br />
-                这张图看价格所处的长期位置。
-              </p>
-              <div className="cb-observation">
-                <span>01</span>
-                <div>
-                  <h3>橙色通道：观察长期位置</h3>
-                  <p>
-                    原图画有一组向上的平行线。价格靠近通道下沿时，可作为进一步观察的线索；趋势线取点与延长方法需要固定后才能复现。
-                  </p>
-                </div>
-              </div>
-              <div className="cb-observation">
-                <span>02</span>
-                <div>
-                  <h3>蓝色曲线：核对国债参照</h3>
-                  <p>
-                    界面标注「国债指数」。具体指数代码、基期与叠加比例未提供，不能直接把它与上证点位的交会解释为收益率相等。
-                  </p>
-                </div>
-              </div>
-              <div className="cb-observation">
-                <span>03</span>
-                <div>
-                  <h3>月线变化：等待结构确认</h3>
-                  <p>
-                    可继续观察是否停止创低、是否形成更高低点、是否重新站回预先定义的结构。确认标准应在复核前固定，避免随走势改线。
-                  </p>
-                </div>
-              </div>
-              <p className="cb-image-context">
-                这张图使用上证价格指数，与第一张图的沪深300全收益指数口径不同。截图中的
-                3658.03、231.59
-                及数字标记均保留为原图信息；右端月份标签不等于确切交易日。
-              </p>
+        )}
+        {status &&
+          (status.state === 'failed' || status.state === 'partial') && (
+            <div className="cl-alert" role="status">
+              <strong>
+                {status.state === 'failed'
+                  ? '后台本次更新未完成'
+                  : '部分数据来源尚未更新'}
+              </strong>
+              <span>
+                {status.message} 最后成功：{time(status.lastSuccessAt)}
+                。当前图表保留已发布版本。
+              </span>
             </div>
-          </div>
-        </section>
+          )}
 
-        <section
-          className="cb-section"
-          id="framework"
-          aria-labelledby="cb-framework-title"
-        >
-          <div className="cb-section-heading">
-            <div>
-              <p className="cb-eyebrow">03 / OBSERVATION FRAMEWORK</p>
-              <h2 id="cb-framework-title">从「靠近」到「底部」，分三步看</h2>
-            </div>
-          </div>
-          <div className="cb-steps">
-            <article>
-              <span className="cb-step-number">01</span>
-              <h3>位置：进入观察区域</h3>
-              <p>
-                同一基期下，股票与债券类累计回报的差距是否收窄？更换基期与纯债参照后，关系是否仍然存在？
-              </p>
-              <span className="cb-step-footer">靠近参照 → 提高关注</span>
-            </article>
-            <article>
-              <span className="cb-step-number">02</span>
-              <h3>结构：检查止跌过程</h3>
-              <p>
-                月线是否继续创低？预先选定的长期结构是否被守住？股债位置与价格结构应分别核对。
-              </p>
-              <span className="cb-step-footer">出现变化 → 等待确认</span>
-            </article>
-            <article>
-              <span className="cb-step-number">03</span>
-              <h3>验证：保留失败样本</h3>
-              <p>
-                统计每次靠近后的回撤与后续表现，同时检查未触线的底部。统一阈值、窗口，再做样本外检验。
-              </p>
-              <span className="cb-step-footer">完整样本 → 评估可靠性</span>
-            </article>
-          </div>
-          <div className="cb-method">
-            <div>
-              <p className="cb-eyebrow">先统一口径</p>
-              <h3>
-                比较累计回报，
-                <br />
-                才能谈相对位置。
-              </h3>
-              <p>
-                全收益指数考虑现金分红再投资。二级债基允许持有股票，其回报也受到权益市场影响。
-                <a href="#cb-source-csi">[1]</a>{' '}
-                <a href="#cb-source-bond">[3]</a>
-              </p>
-            </div>
-            <div className="cb-formula">
-              <span>同一基期归一化 · 相对差距</span>
-              <p>
-                G(t) ={' '}
-                <span className="cb-fraction">
-                  <span>S(t) / S(t₀)</span>
-                  <span>B(t) / B(t₀)</span>
-                </span>{' '}
-                − 1
-              </p>
-              <small>
-                S：股票全收益指数　B：债券类回报序列
-                <br />
-                t₀：共同起点　t：同一观察日
-              </small>
+        {snapshot && comparison && (
+          <>
+            <section className="cl-metrics" aria-label="当前周期数据">
               <div>
-                <b>G = 0</b>{' '}
-                表示从共同起点出发，累计回报相同。它本身不能证明估值见底，也不等于股票盈利收益率或债券到期收益率相等。
+                <span>共同数据截至</span>
+                <strong>{comparison.asOf}</strong>
+                <small>最新来源 {latestSourceDate}</small>
               </div>
-            </div>
-          </div>
-          <div className="cb-limit">
-            <h3>什么会让这个假设失效？</h3>
-            <p>
-              更换基期后交点明显改变；触线后仍持续创新低；存在大量触线却未止跌的样本；关键底部未触线；替换纯债参照后关系消失。出现这些情况时，应降低对该方法的信任，重新评估适用范围。
-            </p>
-          </div>
-        </section>
+              <div>
+                <span>距历史拟合参照</span>
+                <strong className="cl-distance">
+                  {pct(comparison.latest.gapPct)}
+                </strong>
+                <small>
+                  {comparison.latest.gapPct < 0 ? '低于' : '高于'}拟合线 ·
+                  不等于底部确认
+                </small>
+              </div>
+              <div>
+                <span>近20共同日差距变化</span>
+                <strong>{pct(comparison.latest.gapChange20Pp, ' pp')}</strong>
+                <small>
+                  {comparison.latest.gapChange20Pp === null
+                    ? '观察日不足'
+                    : comparison.latest.gapChange20Pp < 0
+                      ? '相对位置下移'
+                      : comparison.latest.gapChange20Pp > 0
+                        ? '相对位置上移'
+                        : '相对位置持平'}
+                </small>
+              </div>
+              <div>
+                <span>上证距月线拟合下沿</span>
+                <strong>{pct(snapshot.monthly.latestGapPct)}</strong>
+                <small>月线截至 {snapshot.monthly.asOf}</small>
+              </div>
+            </section>
 
-        <section
-          className="cb-section cb-sources"
-          id="sources"
-          aria-labelledby="cb-sources-title"
-        >
-          <div className="cb-section-heading">
-            <div>
-              <p className="cb-eyebrow">04 / READING NOTES</p>
-              <h2 id="cb-sources-title">口径与来源</h2>
-            </div>
-            <span className="cb-asof">核对日期 2026.11.08</span>
-          </div>
-          <div className="cb-source-list">
-            <div>
-              <span>原始材料</span>
-              <p>
-                本页文字与两张图片由用户提供。图像完整保留，原文章链接、发表日期、原始时间序列及图表参数未提供。五个年份与「国债也有同样规律」均为待检验的原文观点。
-              </p>
-            </div>
-            <div id="cb-source-csi">
-              <span>[1] 全收益口径</span>
-              <p>
-                <a
-                  href="https://oss-ch.csindex.com.cn/static/html/csindex/public/uploads/indices/detail/files/zh_CN/000300_Index_Methodology_cn.pdf"
-                  target="_blank"
-                  rel="noreferrer"
+            <section
+              className="cl-panel cl-comparison-panel"
+              aria-labelledby="cl-comparison-title"
+            >
+              <div className="cl-panel-heading">
+                <div>
+                  <p className="cl-eyebrow">01 / 股债相对位置</p>
+                  <h2 id="cl-comparison-title">沪深300全收益 × 债券参照</h2>
+                </div>
+                <span className="cl-source-badge">
+                  H00300 · {comparison.code}
+                </span>
+              </div>
+              <div
+                className="cl-reference-options"
+                role="group"
+                aria-label="债券参照选择"
+              >
+                {snapshot.comparisons.map((item) => (
+                  <button
+                    key={item.id}
+                    aria-pressed={comparison.id === item.id}
+                    onClick={() => {
+                      setReferenceId(item.id);
+                      setFocusDate(null);
+                    }}
+                  >
+                    {item.name}
+                    <small>{item.code}</small>
+                  </button>
+                ))}
+              </div>
+              <div className="cl-chart-toolbar">
+                <div
+                  className="cl-mode-buttons"
+                  role="group"
+                  aria-label="股债比较口径"
                 >
-                  中证指数《沪深300指数编制方案》§4.6{' '}
-                  <ArrowUpRight size={12} aria-hidden="true" />
-                </a>
-                ：读取到的文件署期为2023年9月，说明税前现金红利再投资的计算口径。本页引用这一口径，不据此声明已审计全部后续修订。
+                  <button
+                    aria-pressed={mode === 'fit'}
+                    onClick={() => setMode('fit')}
+                  >
+                    历史低位拟合
+                  </button>
+                  <button
+                    aria-pressed={mode === 'raw'}
+                    onClick={() => setMode('raw')}
+                  >
+                    同基期实际股债
+                  </button>
+                </div>
+                <div className="cl-toolbar-options">
+                  <WindowButtons
+                    value={window}
+                    onChange={setWindow}
+                    label="股债图显示区间"
+                  />
+                  <label>
+                    <input
+                      type="checkbox"
+                      checked={logarithmic}
+                      onChange={(event) => setLogarithmic(event.target.checked)}
+                      aria-label="股债对数刻度"
+                    />
+                    对数刻度
+                  </label>
+                  {mode === 'fit' && (
+                    <label>
+                      <input
+                        type="checkbox"
+                        checked={showReference}
+                        onChange={(event) =>
+                          setShowReference(event.target.checked)
+                        }
+                      />
+                      显示未缩放参照
+                    </label>
+                  )}
+                </div>
+              </div>
+              <CycleLineChart
+                comparison={comparison}
+                mode={mode}
+                window={window}
+                showReference={showReference}
+                logarithmic={logarithmic}
+                focusDate={focusDate}
+              />
+              <div className="cl-quote-strip">
+                <span>共同日实际点位</span>
+                <b>沪深300全收益 {number(comparison.latest.equityClose)}</b>
+                <span>
+                  {comparison.name} {number(comparison.latest.referenceClose)}
+                </span>
+                <span>拟合参照 {number(comparison.latest.fittedClose)}</span>
+              </div>
+              {comparison.fit.holdoutBelowTrainingDays > 0 && (
+                <div className="cl-fit-warning">
+                  <span className="cl-warning-marker">!</span>
+                  <div>
+                    <strong>训练外已经突破历史训练低位</strong>
+                    <p>
+                      2020年后有{' '}
+                      {comparison.fit.holdoutBelowTrainingDays.toLocaleString()}{' '}
+                      个共同观察日低于训练期的全部相对低位。训练期最低差距{' '}
+                      {pct(comparison.fit.trainingMinGapPct)}，训练外最低{' '}
+                      {pct(comparison.fit.holdoutMinGapPct)}
+                      。这条拟合参照曾被实际走势打破，不能把“在参照线以下”解释为已经见底。
+                    </p>
+                  </div>
+                </div>
+              )}
+              <details className="cl-fit-details">
+                <summary>
+                  拟合方法与参数 <ChevronDown size={14} aria-hidden="true" />
+                </summary>
+                <div>
+                  <p>
+                    固定训练期 {comparison.fit.trainStart} 至{' '}
+                    {comparison.fit.trainEnd}，使用{' '}
+                    {comparison.fit.samples.toLocaleString()} 个共同日，拟合{' '}
+                    {number(comparison.fit.quantile * 100)}%
+                    分位。2020年之后的数据用于训练外历史核对，不移动训练终点来迎合当前走势。
+                  </p>
+                  <p className="cl-formula">
+                    ln(沪深300全收益) = α + β × ln({comparison.name})
+                  </p>
+                  <dl>
+                    <div>
+                      <dt>α</dt>
+                      <dd>{comparison.fit.alpha.toFixed(6)}</dd>
+                    </div>
+                    <div>
+                      <dt>β</dt>
+                      <dd>{comparison.fit.beta.toFixed(6)}</dd>
+                    </div>
+                    <div>
+                      <dt>方法</dt>
+                      <dd>{comparison.fit.method}</dd>
+                    </div>
+                  </dl>
+                  <p>
+                    本页使用今天可取得的历史数据重建。2020年后仅作训练外历史核对，未证明模型曾于2020年投入运行或拥有当时可得的数据认证。原文已列出2022、2024年，不能把这些已知年份声称为真正独立的前瞻验证，也不据此证明策略有效。
+                  </p>
+                  <p>
+                    图中实际序列按共同基期 {comparison.baseDate} = 100
+                    归一化。拟合模式中的债券参照经过上述模型映射；“同基期实际股债”保留未经拟合映射的原始比较。历史残差带用于展示训练期离散程度，不是置信区间。累计回报相同也不等于股票盈利收益率、债券到期收益率相同。
+                  </p>
+                </div>
+              </details>
+            </section>
+
+            <section
+              className="cl-observations"
+              aria-labelledby="cl-observation-title"
+            >
+              <div className="cl-section-title">
+                <h2 id="cl-observation-title">本次数据观察</h2>
+                <span>
+                  由当前发布版本自动计算 · {snapshot.generatedAt.slice(0, 10)}
+                </span>
+              </div>
+              <div className="cl-observation-list">
+                {snapshot.observations.map((item, index) => (
+                  <article key={`${index}-${item.title}`}>
+                    <span className="cl-observation-number">
+                      {String(index + 1).padStart(2, '0')}
+                    </span>
+                    <div>
+                      <h3>{item.title}</h3>
+                      <p>{item.detail}</p>
+                    </div>
+                  </article>
+                ))}
+              </div>
+            </section>
+
+            <section
+              className="cl-panel"
+              id="history"
+              aria-labelledby="cl-history-title"
+            >
+              <div className="cl-panel-heading">
+                <div>
+                  <p className="cl-eyebrow">02 / 历史节点复核</p>
+                  <h2 id="cl-history-title">五个年份，回到真实数值</h2>
+                </div>
+                <span className="cl-panel-note">
+                  年度最低收盘由事后数据定位
+                </span>
+              </div>
+              <p className="cl-section-description">
+                逐年检查原文提到的位置，并显示当时差距和之后的实际走势。年度最低收盘是事后定位，只用于对照原文年份；当时不能预先识别，也不计入触线成功率。
               </p>
-            </div>
-            <div>
-              <span>[2] 指数代码</span>
-              <p>
-                <a
-                  href="https://oss-ch.csindex.com.cn/static/html/csindex/public/uploads/indices/detail/files/zh_CN/000300factsheet.pdf"
-                  target="_blank"
-                  rel="noreferrer"
+              <div
+                className="cl-year-options"
+                role="group"
+                aria-label="历史观察年份"
+              >
+                {comparison.cases.map((item) => (
+                  <button
+                    key={item.year}
+                    aria-pressed={currentCase?.year === item.year}
+                    onClick={() => {
+                      setYear(item.year);
+                      setWindow('all');
+                      setFocusDate(item.date);
+                    }}
+                  >
+                    <strong>{item.year}</strong>
+                    <span>{item.date}</span>
+                    <small>
+                      {item.phase === 'holdout'
+                        ? '训练外历史核对'
+                        : '训练期回看'}
+                    </small>
+                  </button>
+                ))}
+              </div>
+              {currentCase && (
+                <div className="cl-case-detail">
+                  <div className="cl-case-overview">
+                    <div>
+                      <span>{currentCase.year} 年最低收盘</span>
+                      <strong>{currentCase.date}</strong>
+                      <small>
+                        {currentCase.phase === 'holdout'
+                          ? '未参与固定训练期拟合'
+                          : '位于拟合训练期内'}
+                      </small>
+                    </div>
+                    <div>
+                      <span>沪深300全收益</span>
+                      <strong>{number(currentCase.equityClose)}</strong>
+                      <small>
+                        {comparison.name} {number(currentCase.referenceClose)}
+                      </small>
+                    </div>
+                    <div>
+                      <span>距拟合参照</span>
+                      <strong>{pct(currentCase.gapPct)}</strong>
+                      <small>拟合点位 {number(currentCase.fittedClose)}</small>
+                    </div>
+                    <div>
+                      <span>未拟合的同基期差距</span>
+                      <strong>{pct(currentCase.rawGapPct)}</strong>
+                      <small>使用共同基期 {comparison.baseDate}</small>
+                    </div>
+                  </div>
+                  <div className="cl-table-scroll">
+                    <table className="cl-table cl-case-outcomes">
+                      <thead>
+                        <tr>
+                          <th>后续观察窗口</th>
+                          <th>期末收益</th>
+                          <th>期间最深下探</th>
+                          <th>窗口状态</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {currentCase.outcomes.map((item) => (
+                          <tr key={item.sessions}>
+                            <td>{item.sessions} 个交易日</td>
+                            <td className={tone(item.returnPct)}>
+                              {item.complete ? pct(item.returnPct) : '—'}
+                            </td>
+                            <td>
+                              {item.complete ? pct(item.downsidePct) : '—'}
+                            </td>
+                            <td>{item.complete ? '窗口完整' : '尚未成熟'}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
+              <p className="cl-muted-note">
+                期末收益与最深下探均相对于该观察日起点计算。最深下探是后续最低收盘相对起点的变化，包含起点，因此为零或负值；它不同于期间峰值到谷底的最大回撤。尚未成熟的窗口保留空值。
+              </p>
+            </section>
+
+            <section className="cl-panel" aria-labelledby="cl-events-title">
+              <div className="cl-panel-heading">
+                <div>
+                  <p className="cl-eyebrow">03 / 全部进入事件</p>
+                  <h2 id="cl-events-title">接近之后，还有多深的下探？</h2>
+                </div>
+                <span className="cl-count">
+                  {selectedEvents.length} 个所选事件
+                </span>
+              </div>
+              <div className="cl-event-controls">
+                <div
+                  className="cl-mode-buttons"
+                  role="group"
+                  aria-label="历史事件口径"
                 >
-                  中证指数沪深300指数单张 · 2026.10.30{' '}
-                  <ArrowUpRight size={12} aria-hidden="true" />
-                </a>
-                ：衍生指数表列明全收益指数代码
-                H00300。该资料不验证图中股债触线规律。
-              </p>
-            </div>
-            <div id="cb-source-bond">
-              <span>[3] 二级债基</span>
-              <p>
-                <a
-                  href="https://edu.chinaamc.com/c/2026-01-21/769764.shtml"
-                  target="_blank"
-                  rel="noreferrer"
+                  <button
+                    aria-pressed={eventKind === 'fit'}
+                    onClick={() => setEventKind('fit')}
+                  >
+                    进入拟合观察区
+                  </button>
+                  <button
+                    aria-pressed={eventKind === 'raw'}
+                    onClick={() => setEventKind('raw')}
+                  >
+                    实际股债靠近
+                  </button>
+                </div>
+                <div
+                  className="cl-mode-buttons cl-phase-buttons"
+                  role="group"
+                  aria-label="历史事件期间"
                 >
-                  华夏基金投教《债基种类多，如何选到适合那款？》· 2026.01.21{' '}
-                  <ArrowUpRight size={12} aria-hidden="true" />
-                </a>
-                ：用于核对二级债基可持有股票的类别特征；未用于验证 Wind 885007
-                的具体编制、历史样本或回测结果。
+                  <button
+                    aria-pressed={eventPhase === 'holdout'}
+                    onClick={() => setEventPhase('holdout')}
+                  >
+                    2020年后核对
+                  </button>
+                  <button
+                    aria-pressed={eventPhase === 'all'}
+                    onClick={() => setEventPhase('all')}
+                  >
+                    全部历史回看
+                  </button>
+                </div>
+              </div>
+              <p className="cl-section-description">
+                {eventKind === 'fit'
+                  ? `收盘差距由上方进入 ≤ ${comparison.thresholdPct}% 区域时记录。`
+                  : `收盘时实际股债的同基期差距进入 ±${comparison.thresholdPct}% 区域时记录，两个方向均可进入。`}
+                相邻记录至少间隔 {comparison.cooldownSessions}{' '}
+                个共同观察日。只检查收盘数据，不推测日内是否触线；完整列出已记录事件，保留继续下跌的结果。
               </p>
-            </div>
-          </div>
-          <p className="cb-next-check">
-            <b>下一步最小验证</b>　取得 H00300、885007
-            及明确代码的国债回报序列，固定共同起点与触线阈值，先核对全部触线日期及之后的最大回撤。新数据、指数编制调整或基期变化均需要重新核对。
-          </p>
-        </section>
-        <footer className="cb-footer">
-          <span>
-            量序 <i>/</i> 长周期观察档案
-          </span>
+              <EventTable events={selectedEvents} />
+              <p className="cl-muted-note">
+                样本内事件使用事后固定模型回看，不能作为当时可实现的信号回测。2020年后数据未参与这次参数拟合，但仍是历史检验，不能替代未来验证。表中不将尚未成熟或缺失窗口计为成功。
+              </p>
+            </section>
+
+            <section
+              className="cl-panel"
+              id="monthly"
+              aria-labelledby="cl-monthly-title"
+            >
+              <div className="cl-panel-heading">
+                <div>
+                  <p className="cl-eyebrow">04 / 真实月线结构</p>
+                  <h2 id="cl-monthly-title">上证月K与长期拟合通道</h2>
+                </div>
+                <span className="cl-source-badge">
+                  000001 · 截至 {snapshot.monthly.asOf}
+                </span>
+              </div>
+              <div className="cl-chart-toolbar">
+                <p className="cl-monthly-current">
+                  最新月收盘{' '}
+                  <b>{currentMonth ? number(currentMonth.close) : '—'}</b>
+                  {currentMonth?.incomplete && (
+                    <span className="cl-incomplete-badge">本月进行中</span>
+                  )}
+                </p>
+                <div className="cl-toolbar-options">
+                  <WindowButtons
+                    value={monthlyWindow}
+                    onChange={setMonthlyWindow}
+                    label="月线图显示区间"
+                  />
+                  <label>
+                    <input
+                      type="checkbox"
+                      checked={monthlyLogarithmic}
+                      onChange={(event) =>
+                        setMonthlyLogarithmic(event.target.checked)
+                      }
+                      aria-label="月线对数刻度"
+                    />
+                    对数刻度
+                  </label>
+                </div>
+              </div>
+              <CycleMonthlyChart
+                points={snapshot.monthly.points}
+                window={monthlyWindow}
+                logarithmic={monthlyLogarithmic}
+              />
+              <details className="cl-fit-details">
+                <summary>
+                  月线通道口径 <ChevronDown size={14} aria-hidden="true" />
+                </summary>
+                <div>
+                  <p>
+                    固定训练期 {snapshot.monthly.fit.trainStart} 至{' '}
+                    {snapshot.monthly.fit.trainEnd}，共{' '}
+                    {snapshot.monthly.fit.samples}{' '}
+                    个月度观察。使用对数价格对时间的线性趋势，训练残差的10%、50%、90%分位形成下沿、中位线、上沿。年度对数斜率参数{' '}
+                    {snapshot.monthly.fit.annualLogSlope.toFixed(6)}，方法{' '}
+                    {snapshot.monthly.fit.method}。
+                  </p>
+                  <p>
+                    训练期之后保持参数不变，属于外推观察。当前月会随已公布日行情更新，未结束时标为进行中。这里的通道是可复现的数据模型，未宣称恢复原作者画线公式，也不能凭下沿确认价格不会继续下跌。
+                  </p>
+                </div>
+              </details>
+            </section>
+
+            <section
+              className="cl-sources"
+              id="sources"
+              aria-labelledby="cl-sources-title"
+            >
+              <div className="cl-section-title">
+                <h2 id="cl-sources-title">数据与更新状态</h2>
+                <span>本页可见时每60秒读取最新发布版本</span>
+              </div>
+              <div className="cl-data-schedule">
+                <div>
+                  <span>后台采集与观察</span>
+                  <p>{status?.schedule}</p>
+                </div>
+                <div>
+                  <span>最近后台核对</span>
+                  <p>{time(status?.checkedAt ?? null)}（北京时间）</p>
+                </div>
+                <div>
+                  <span>最后成功发布</span>
+                  <p>{time(status?.lastSuccessAt ?? null)}（北京时间）</p>
+                </div>
+              </div>
+              <div className="cl-table-scroll">
+                <table className="cl-table cl-source-table">
+                  <thead>
+                    <tr>
+                      <th>序列 / 来源</th>
+                      <th>实际覆盖</th>
+                      <th>有效点数</th>
+                      <th>剔除 / 缺失</th>
+                      <th>口径说明</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {snapshot.sources.map((source) => (
+                      <tr key={source.id}>
+                        <td>
+                          <strong>{source.name}</strong>
+                          <small>{source.code}</small>
+                          <a href={source.url} target="_blank" rel="noreferrer">
+                            {source.provider}
+                            <ArrowUpRight size={11} aria-hidden="true" />
+                          </a>
+                        </td>
+                        <td>
+                          {source.firstDate}
+                          <br />至 {source.lastDate}
+                        </td>
+                        <td>{source.rows.toLocaleString()}</td>
+                        <td>
+                          {source.excludedRows} / {source.missingSessions}
+                        </td>
+                        <td>{source.note}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              {snapshot.unavailable.length > 0 && (
+                <div className="cl-unavailable">
+                  {snapshot.unavailable.map((item) => (
+                    <div key={item.code}>
+                      <span className="cl-unavailable-dot" />
+                      <div>
+                        <strong>
+                          {item.name} <code>{item.code}</code>
+                        </strong>
+                        <p>{item.reason}</p>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+              <p className="cl-muted-note">
+                每条序列按实际公布日期显示，使用共同日期计算股债差距，不把不同日期的最新值拼成同日观察。刷新失败保留上一版，不补零、不把缺失当成没有风险。数据版本{' '}
+                <code>{snapshot.version}</code> · 生成时间{' '}
+                {time(snapshot.generatedAt)}（北京时间）。
+              </p>
+            </section>
+          </>
+        )}
+        <OriginalReference />
+        <footer className="cl-footer">
+          <span>量序 / 长周期数据观察</span>
           <p>
-            用于长期市场研究。历史图示与观察假设不构成交易信号；本页未建立胜率、目标点位或买卖建议。
+            数据、拟合和历史检验分别呈现。拟合差距用于描述相对位置，不是预测还会下跌多少，也不形成底部确认或交易指令。
           </p>
-          <a
-            href="#top"
-            onClick={(event) => {
-              event.preventDefault();
-              window.scrollTo({ top: 0, behavior: 'smooth' });
-            }}
-          >
-            回到顶部 ↑
-          </a>
         </footer>
       </main>
-      {image && <ImageViewer image={image} onClose={() => setImage(null)} />}
     </div>
   );
 }

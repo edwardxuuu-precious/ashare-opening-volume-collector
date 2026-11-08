@@ -76,6 +76,11 @@ backend/golden_projection/daily.py
 backend/golden_projection/index_sources.py
 backend/triangles/__init__.py
 backend/triangles/daily.py
+backend/cycle_bottom/__init__.py
+backend/cycle_bottom/sources.py
+backend/cycle_bottom/model.py
+backend/cycle_bottom/daily.py
+backend/cycle_bottom/requirements.txt
 tooling/build-triangle-daily.mjs
 src/lib/triangles.ts
 src/lib/triangle-data.ts
@@ -87,7 +92,7 @@ tooling/chip_workflow_budget.py
 tooling/chip_followup_guard.py
 '''.split())
 PUBLIC_WORKFLOWS = {'chips.yml', 'collector.yml', 'golden-projection.yml', 'golden.yml',
-                    'source-probe.yml', 'trend-volume.yml', 'triangles.yml'}
+                    'source-probe.yml', 'trend-volume.yml', 'triangles.yml', 'cycle-bottom.yml'}
 
 class ActionsPackagingTests(unittest.TestCase):
     def test_collector_starts_after_close_with_redundant_idempotent_runs(self):

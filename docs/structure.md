@@ -51,7 +51,7 @@ Stock/
 
 ## 工作流与发布入口
 
-`.github/workflows/` 中的7份 YAML 是正式工作流的唯一来源，维护时直接修改并测试这些文件。GitHub Actions 检出整个仓库；不经过额外工作流副本或运行包导出步骤。
+`.github/workflows/` 中的8份 YAML 是正式工作流的唯一来源，维护时直接修改并测试这些文件。GitHub Actions 检出整个仓库；不经过额外工作流副本或运行包导出步骤。
 
 `deploy/actions/package.py` 用明确文件清单生成独立运行包。包内保留 `backend`、必要的 `tooling` 和 TypeScript 计算依赖、配置文件、依赖声明及正式工作流。导出要求目标为空，检查敏感内容和符号链接；`--probe-only` 仅导出无 AWS 权限的来源探针。旧 `tooling/export_chip_runtime.py` 在统一 Git 仓库中只检查并提示，无需先导出再提交。
 
