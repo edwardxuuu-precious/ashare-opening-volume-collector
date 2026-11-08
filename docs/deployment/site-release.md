@@ -42,7 +42,7 @@ macOS/Linux 使用以下命令。Windows 将 `.venv/bin/python` 换为 `.venv\Sc
 .venv/bin/python tooling/release_site.py --dry-run --output outputs/releases/stock-site.zip
 ```
 
-每次选择新的 `.zip` 路径，工具拒绝覆盖已有文件。工具输出包的 SHA-256 和文件信息。核对包对应预期构建版本，记录实际哈希。包内必需页面由 `tooling/site_routes.mjs` 从 `src/lib/site-routes.ts` 读取，当前包含10个页面；缺少页面、存在敏感文件路径或危险 ZIP 路径时拒绝继续。检查按文件路径判断，不证明任意文件内容均无敏感信息；审阅时仍须核对实际构建输入。读取路由要求本机 Node 满足版本要求。
+每次选择新的 `.zip` 路径，工具拒绝覆盖已有文件。工具输出包的 SHA-256 和文件信息。核对包对应预期构建版本，记录实际哈希。包内必需页面由 `tooling/site_routes.mjs` 从 `src/lib/site-routes.ts` 读取，当前包含11个页面；缺少页面、存在敏感文件路径或危险 ZIP 路径时拒绝继续。检查按文件路径判断，不证明任意文件内容均无敏感信息；审阅时仍须核对实际构建输入。读取路由要求本机 Node 满足版本要求。
 
 如需再次检查已有包，使用其实际哈希替换 `SHA256_FROM_REVIEW`：
 

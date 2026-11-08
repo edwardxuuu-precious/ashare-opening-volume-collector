@@ -24,6 +24,7 @@ const pages = {
   '/golden/daily': () => import('../app/golden/daily/page'),
   '/golden/video-space': () => import('../app/golden/video-space/page'),
   '/triangles': () => import('../app/triangles/page'),
+  '/cycle-bottom': () => import('../app/cycle-bottom/page'),
 } satisfies Record<SitePath, () => Promise<{ default: ComponentType }>>;
 type PagePath = SitePath;
 type Navigation = {

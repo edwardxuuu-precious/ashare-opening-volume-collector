@@ -9,6 +9,7 @@ export const sitePaths = [
   '/golden/daily',
   '/golden/video-space',
   '/triangles',
+  '/cycle-bottom',
 ] as const;
 export type SitePath = (typeof sitePaths)[number];
 
