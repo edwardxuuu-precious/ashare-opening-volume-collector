@@ -80,9 +80,12 @@ def parse_shanghai(raw, *, end):
     match = re.search(r'(?:var\s+)?KLC_KL_sh000001\s*=\s*"([^"]+)"', text)
     if not match:
         raise ValueError('SHANGHAI_SOURCE_IDENTITY')
-    with py_mini_racer.MiniRacer() as decoder:
+    decoder = py_mini_racer.MiniRacer()
+    try:
         decoder.eval(hk_js_decode)
         rows = decoder.call('d', match.group(1))
+    finally:
+        del decoder
     if not isinstance(rows, list) or len(rows) > 15000:
         raise ValueError('SHANGHAI_RESPONSE_FORMAT')
     result, seen = [], set()

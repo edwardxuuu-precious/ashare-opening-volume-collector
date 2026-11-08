@@ -3,10 +3,11 @@ from datetime import date, datetime, timedelta, timezone
 import json
 import math
 import unittest
+from unittest.mock import patch
 
 from backend.cycle_bottom.daily import publish, publication_status
 from backend.cycle_bottom.model import build_comparison, build_snapshot, entry_events, forward_outcomes
-from backend.cycle_bottom.sources import eligible_end, parse_csi
+from backend.cycle_bottom.sources import eligible_end, parse_csi, parse_shanghai
 
 
 def invented_prices():
@@ -77,6 +78,23 @@ class CycleMath(unittest.TestCase):
 
 
 class CycleSourceContract(unittest.TestCase):
+    def test_shanghai_decoder_supports_legacy_linux_mini_racer_without_context_manager(self):
+        start = date(1990, 12, 19)
+        rows = [{'date': (start + timedelta(days=i)).isoformat(),
+                 'open': 100, 'high': 105, 'low': 95, 'close': 101} for i in range(7001)]
+
+        class LegacyDecoder:
+            def eval(self, code):
+                pass
+
+            def call(self, name, payload):
+                return rows
+
+        with patch('py_mini_racer.MiniRacer', return_value=LegacyDecoder()):
+            actual = parse_shanghai(b'var KLC_KL_sh000001="INVENTED";', end='2026-11-06')
+        self.assertEqual(len(actual), len(rows))
+        self.assertEqual(actual[-1]['close'], 101)
+
     def test_missing_stock_sessions_cannot_silently_shorten_forward_windows(self):
         with self.assertRaisesRegex(ValueError, 'EQUITY_HISTORY_GAP'):
             build_snapshot({}, [{'id': 'equity', 'missingSessions': 1}], expected_as_of='2026-11-06')
