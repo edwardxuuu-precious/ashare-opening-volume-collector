@@ -42,7 +42,7 @@
 npm ci
 ```
 
-macOS/Linux 使用 `python3 -m venv .venv`，再执行 `.venv/bin/python -m pip install -r requirements.txt PyYAML`。Windows 使用 `python -m venv .venv`，再执行 `.venv\Scripts\python.exe -m pip install -r requirements.txt PyYAML`。创建前确认所选 Python 满足版本要求；`PyYAML` 用于离线工作流测试，不加入生产采集依赖。
+macOS/Linux 使用 `python3 -m venv .venv`，再执行 `.venv/bin/python -m pip install -r backend/cycle_bottom/requirements.txt PyYAML`。Windows 使用 `python -m venv .venv`，再执行 `.venv\Scripts\python.exe -m pip install -r backend/cycle_bottom/requirements.txt PyYAML`。完整开发环境包含周期拟合的SciPy，原采集器部署仍只安装根requirements。创建前确认所选 Python 满足版本要求；`PyYAML` 用于离线工作流测试，不加入生产采集依赖。
 
 ```sh
 npm run dev

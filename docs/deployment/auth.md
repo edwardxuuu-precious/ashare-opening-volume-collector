@@ -84,3 +84,10 @@ HTTP API 的访问日志组为 `/aws/apigateway/stock-auth-api-access`，保存 
 ## 筹码校准页面
 
 新增页面 `/chips` 与认证GET `/data/chips/manifest.json`、`/data/chips/<16位版本>/<六位代码或screening>.json`，使用同一Cognito、私有桶、撤销检查和no-store响应，不增加写接口或权限。公开静态包不含这些JSON。当前仅三只股票四日校准样本，系数2、稳定阈值null、全市场每日任务未启用。使用与发布说明见 [筹码模块](../features/chips.md)。
+
+
+## 大周期数据观察
+
+`/cycle-bottom` 使用同一Cognito会话。新增GET仅开放 `/data/cycle-bottom/manifest.json`、`status.json` 和 `<16位小写hex>/analysis.json`；原始件、模板、任意文件及写接口均不开放。gzip读取在压缩前后均限8MiB，坏数据返回503，缺少对象返回404。沿用现有data/*只读IAM权限，无新增账号或权限。
+
+本次完整inline源码先转ASCII backslashreplace并验证AST等价，再以同一正文部署ZIP与CloudFormation Function.Code，避免现有模板中文读回问号问题。因此部署字节与仓库UTF-8文本可不同，必须核对AST、bootstrap和实际正文，不可仅凭编码不同认定漂移。栈同步克隆当前模板只换Function.Code，使用私有S3 TemplateURL，不拿本地全量模板覆盖云端配置。部署回执保存在本轮周期数据输出/预检目录。

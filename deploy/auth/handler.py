@@ -272,6 +272,24 @@ def handle_request(event, context, issued_cookies):
             return response(401, {'error': '请先登录'})
         if method == 'GET' and path == '/auth/me':
             return response(200, {'username': user})
+        if method == 'GET' and re.fullmatch(r'/data/cycle-bottom/(?:(?:manifest|status)\.json|[a-f0-9]{16}/analysis\.json)', path):
+            try:
+                obj = s3.get_object(Bucket=BUCKET, Key=path.lstrip('/'))
+                raw = obj['Body'].read(8 * 1024 * 1024 + 1)
+                if len(raw) > 8 * 1024 * 1024:
+                    raise ValueError('Cycle stored payload exceeds its bound')
+                if raw[:2] == b'\x1f\x8b':
+                    with gzip.GzipFile(fileobj=io.BytesIO(raw)) as stream:
+                        raw = stream.read(8 * 1024 * 1024 + 1)
+                if len(raw) > 8 * 1024 * 1024:
+                    raise ValueError('Cycle decoded payload exceeds its bound')
+                return data_response(json.loads(raw), headers.get('accept-encoding', ''))
+            except ClientError as exc:
+                if exc.response['Error']['Code'] == 'NoSuchKey':
+                    return response(404, {'error': '周期观察数据尚未发布'})
+                raise
+            except (ValueError, UnicodeError, OSError, EOFError):
+                return response(503, {'error': '周期观察数据暂不可用，请稍后重试'})
         if method == 'GET' and re.fullmatch(r'/data/triangles/daily/(?:(?:manifest|status)\.json|[a-f0-9]{16}/(?:screening|bundle-\d{3})\.json)', path):
             try:
                 obj = s3.get_object(Bucket=BUCKET, Key=path.lstrip('/'))
