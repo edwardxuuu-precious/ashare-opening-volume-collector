@@ -959,7 +959,7 @@ function RuleEvidence({ layers }: { layers: LayerResult }) {
     >
       <h3>规则选尺 · 保留原大格</h3>
       <p>
-        以已确认平台作背景，A/B共同波段作包络参考；背景不变时维持主尺，只允许共同波段向外扩展。包络是价格参照，不表示时间父子关系。默认仍为固定候选，三股工程回放尚未推广。
+        以已确认平台作背景，A/B共同波段作包络参考；背景不变时维持主尺，只允许共同波段向外扩展。包络是价格参照，不表示时间父子关系。本页默认使用三股试验规则，可切回固定候选或手动分层，其他股票尚未推广。
       </p>
       {state.kind === 'pending' ? (
         <p>{state.reason}</p>
@@ -1064,7 +1064,7 @@ export default function VideoSpacePage() {
     [fixedK, setFixedK] = useState('1'),
     [expanded, setExpanded] = useState(false),
     [rulerMode, setRulerMode] = useState<'fixed' | 'auto' | 'layers' | 'rule'>(
-      'fixed',
+      'rule',
     ),
     [parentId, setParentId] = useState('CURRENT_ROOT'),
     [scale, setScale] = useState<'PARENT' | 'HALF'>('PARENT');
@@ -1223,7 +1223,7 @@ export default function VideoSpacePage() {
       <div className="vs-layout">
         <aside className="vs-sidebar">
           <h2>三股试点</h2>
-          <p>人工波段原尺，不随新行情换点。</p>
+          <p>主尺与细尺按已确认结构选择，保留原大格对照。</p>
           <nav aria-label="选择股票">
             {videoStocks.map((s) => (
               <button
@@ -1236,8 +1236,10 @@ export default function VideoSpacePage() {
               </button>
             ))}
           </nav>
-          <p>共11个候选，保留端点敏感性。</p>
-          <p>当前候选来源为原视频观察，尚非全市场自动选点规则。</p>
+          <p>保留11个固定视频候选，可切换核对端点差异。</p>
+          <p>
+            本页默认使用三股试验规则，取点和切换理由可查，尚未推广到其他股票。
+          </p>
         </aside>
         <main className="vs-main">
           <div className="vs-heading">
