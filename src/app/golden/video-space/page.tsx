@@ -535,6 +535,7 @@ function Comparison({
   const selected = layer
     ? observeVideoLayers(stock, date, selection, layer)
     : null;
+  const isRule = layer !== null && 'kind' in layer;
   const identity = (value: Extract<VideoObservation, { kind: 'ready' }>) =>
     value.source.kind === 'FIXED'
       ? value.source.scenario.id
@@ -553,6 +554,9 @@ function Comparison({
     const entries: { label: string; value: VideoObservation | null }[] = [
       { label: '固定', value: fixed },
       { label: '自动（V1）', value: automatic },
+      ...(isRule
+        ? [{ label: '规则观察尺', value: selected?.observation ?? null }]
+        : []),
     ];
     const seen = new Set(
       entries.flatMap(({ value }) =>
@@ -561,10 +565,7 @@ function Comparison({
     );
     for (const [label, value] of [
       ['所选父尺', selected?.parent],
-      [
-        layer && 'kind' in layer ? '规则观察尺' : '继承半格',
-        selected?.observation,
-      ],
+      ['继承半格', isRule ? undefined : selected?.observation],
     ] as const) {
       if (value?.kind === 'ready' && !seen.has(identity(value))) {
         entries.push({
@@ -678,10 +679,7 @@ function Comparison({
   const seen = new Set([identity(f), identity(a)]);
   for (const [label, value] of [
     ['所选父尺', selected?.parent],
-    [
-      layer && 'kind' in layer ? '规则观察尺' : '继承半格',
-      selected?.observation,
-    ],
+    ['继承半格', isRule ? undefined : selected?.observation],
   ] as const) {
     if (value?.kind === 'ready' && !seen.has(identity(value))) {
       extra.push({
@@ -774,6 +772,20 @@ function Comparison({
             {extra.map(({ label, value }) => (
               <Fragment key={identity(value)}>{line(label, value)}</Fragment>
             ))}
+            {isRule &&
+              (selected?.observation.kind === 'ready' ? (
+                line('规则观察尺', selected.observation)
+              ) : (
+                <tr>
+                  <th>规则观察尺</th>
+                  <td colSpan={5}>
+                    待核：
+                    {selected?.observation.kind === 'pending'
+                      ? selected.observation.reason
+                      : '缺少已核验历史'}
+                  </td>
+                </tr>
+              ))}
           </tbody>
         </table>
       </div>
@@ -840,6 +852,7 @@ function Comparison({
               {extra.map(({ label, value }) => (
                 <th key={identity(value)}>{label}参考 / 开收</th>
               ))}
+              {isRule && <th>规则观察尺参考 / 开收</th>}
             </tr>
           </thead>
           <tbody>
@@ -880,6 +893,16 @@ function Comparison({
                       )}
                     </td>
                   ))}
+                  {isRule && (
+                    <td>
+                      {cell(
+                        layerDay?.observation ?? {
+                          kind: 'pending',
+                          reason: '待核',
+                        },
+                      )}
+                    </td>
+                  )}
                 </tr>
               );
             })}

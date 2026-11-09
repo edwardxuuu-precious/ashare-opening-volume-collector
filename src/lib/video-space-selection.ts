@@ -9,16 +9,16 @@ import {
 } from './video-space-auto.ts';
 
 export const SELECTION_RULE = 'selection-envelope-v1';
-type PricePoint = {
+type PricePoint<Field extends 'high' | 'low'> = {
   readonly date: string;
-  readonly field: 'high' | 'low';
+  readonly field: Field;
   readonly price: string;
 };
 export type SelectionRuler = {
   readonly id: string;
   readonly kind: 'AUTO' | 'LOWER' | 'WAVE';
-  readonly H: PricePoint;
-  readonly L: PricePoint;
+  readonly H: PricePoint<'high'>;
+  readonly L: PricePoint<'low'>;
   readonly confirmationDate: string;
   readonly activationDate: string;
 };
@@ -107,8 +107,8 @@ function fromPlatform(v: AutoVersion | LowerPlatform): SelectionRuler | null {
   return {
     id: v.id,
     kind: lower ? 'LOWER' : 'AUTO',
-    H: { ...H, price: String(H.price) },
-    L: { ...L, price: String(L.price) },
+    H: { date: H.date, field: 'high', price: String(H.price) },
+    L: { date: L.date, field: 'low', price: String(L.price) },
     confirmationDate: v.confirmationDate,
     activationDate: v.activationDate,
   };
