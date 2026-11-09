@@ -316,6 +316,11 @@ function OriginalReference() {
           <p className="cl-muted-note">
             这是用户提供的原始观点，原始发表日期未注明。「目前」保留为原文语境。下方截图用于对照思路，当前数值、拟合与观察来自本页实际数据。
           </p>
+          <p className="cl-muted-note">
+            原图 Wind 885007.WI
+            的历史仅作本地复核，未作为本页自动更新来源。当前公开参照与原图指数不同，不能将其读数作为原
+            Wind 指数的实时行情。
+          </p>
           <div className="cl-original-images">
             {originalImages.map((item) => (
               <figure key={item.src}>
@@ -372,6 +377,7 @@ export default function CycleBottomPage() {
   const snapshot = bundle?.snapshot;
   const comparison =
     snapshot?.comparisons.find((item) => item.id === referenceId) ??
+    snapshot?.comparisons.find((item) => item.id === 'nonpure') ??
     snapshot?.comparisons[0];
   const currentCase =
     comparison?.cases.find((item) => item.year === year) ??
@@ -413,7 +419,9 @@ export default function CycleBottomPage() {
                   : state.kind === 'error'
                     ? '数据读取失败'
                     : status?.state === 'ready'
-                      ? '自动观察已更新'
+                      ? comparison?.id === 'wind'
+                        ? 'Wind 指数观察已更新'
+                        : '公开参照观察已更新'
                       : status?.state === 'partial'
                         ? '部分来源待更新'
                         : status?.state === 'updating'
@@ -555,6 +563,33 @@ export default function CycleBottomPage() {
                   </button>
                 ))}
               </div>
+              {comparison.id === 'nonpure' && (
+                <div className="cl-reference-note" role="note">
+                  <strong>
+                    公开参照 · 中证非纯债债券型基金指数 930897
+                  </strong>
+                  <p>
+                    它与原图的 Wind 二级债基指数 885007.WI
+                    不同，触线日期和差距不保证一致；当前展示的是公开参照，不是原
+                    Wind 实时行情。
+                  </p>
+                  <details className="cl-fit-details">
+                    <summary>
+                      公开参照的选样与历史口径{' '}
+                      <ChevronDown size={14} aria-hidden="true" />
+                    </summary>
+                    <div>
+                      <p>
+                        该指数选样覆盖可投资股票或可转债的债券型基金，范围与原
+                        Wind 二级债基指数不同。指数于2016-08-31发布，之前的历史为回溯数据。
+                      </p>
+                      <p>
+                        本页持续更新这条公开序列，用于检查股债相对位置与原文假说。它的拟合、历史触线和后续表现只对应930897这一参照口径。
+                      </p>
+                    </div>
+                  </details>
+                </div>
+              )}
               <div className="cl-chart-toolbar">
                 <div
                   className="cl-mode-buttons"

@@ -403,6 +403,27 @@
   font-weight: 500;
   color: #667e9b;
 }
+.cl-reference-note {
+  margin: 13px 0;
+  padding: 13px 15px;
+  border: 1px solid #dde7f2;
+  border-radius: 5px;
+  background: #f5f8fc;
+  color: #647a96;
+  font-size: 12px;
+  line-height: 1.9;
+}
+.cl-reference-note > strong {
+  display: block;
+  color: #41648b;
+  font-weight: 500;
+}
+.cl-reference-note > p {
+  margin: 5px 0 0;
+}
+.cl-reference-note > .cl-fit-details {
+  margin-top: 6px;
+}
 .cl-fit-warning {
   display: flex;
   align-items: start;

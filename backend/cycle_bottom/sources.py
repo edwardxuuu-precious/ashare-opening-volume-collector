@@ -145,7 +145,7 @@ def fetch_sources(*, include_nonpure=False, moment=None, fetcher=get):
             'id': key, 'code': code, 'name': name, 'provider': '中证指数公开历史行情',
             'firstDate': rows[0]['date'], 'lastDate': rows[-1]['date'], 'rows': len(rows),
             'excludedRows': excluded, 'missingSessions': missing, 'url': url,
-            'note': ('仅可投资股票/可转债债券基金的公开参照，非Wind二级债基；基日前孤点排除；2016-08-31发布前属回溯数据。' if key == 'nonpure' else '按真实交易日交集计算，不填充缺失值；全收益含分红再投资，国债指数含利息及再投资。'),
+            'note': ('公开非纯债基金参照：选取合同允许投资股票与可转债的债券型基金，按中证编制规则加权。非原图Wind885007.WI，差距及触线日期不能直接互换；2016-08-31发布前属回溯数据，基日前锚点排除。' if key == 'nonpure' else '按真实交易日交集计算，不填充缺失值；全收益含分红再投资，国债指数含利息及再投资。'),
             'sha256': hashlib.sha256(raw).hexdigest(),
         })
     return data, metadata, raw_files, latest

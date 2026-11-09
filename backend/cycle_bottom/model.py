@@ -166,9 +166,12 @@ def build_snapshot(data, sources, *, expected_as_of, generated_at=None, today=No
     today = today or generated_at[:10]
     names = {source['id']: source for source in sources}
     comparisons = [build_comparison(data['equity'], data[key], identifier=key, name=names[key]['name'], code=names[key]['code'])
-                   for key in ('government', 'nonpure') if key in data]
+                   for key in ('nonpure', 'government') if key in data]
     monthly = build_monthly(data['shanghai'], today=today)
     observations = []
+    if 'nonpure' in data:
+        observations.append({'title': '公开参照与原图的区别',
+                             'detail': '当前使用930897中证非纯债债券型基金指数独立观察，它不是原图Wind885007.WI。不同样本、权重与基期会改变差距和触线日期；本页不把这条曲线续接或估算为Wind官方行情。'})
     for comparison in comparisons:
         value, fit = comparison['latest'], comparison['fit']
         observations.append({'title': comparison['name'] + '相对位置',
@@ -185,7 +188,7 @@ def build_snapshot(data, sources, *, expected_as_of, generated_at=None, today=No
     observations.append({'title': '上证月线结构',
                          'detail': f"实际行情截至{monthly['asOf']}，最新收盘{monthly['points'][-1]['close']:.2f}，距固定历史通道下沿{monthly['latestGapPct']:+.2f}%；当前月尚未收完时，月K随已收盘交易日变化。"})
     unavailable = [{'code': '885007.WI', 'name': '万得混合债券型二级基金指数',
-                    'reason': '待Wind授权接口或合法导出；已查到的分发平台明确禁止机器人抓取，未用于生产自动采集或本页数据。'}]
+                    'reason': '原图指数尚未接入持续数据源，当前未自动更新。此前同名指数历史已做本地离线复核；930897公开参照与其不同，不用于补齐或延长原Wind曲线。'}]
     core = {'schema': 'stock.cycle-bottom.v1', 'modelVersion': MODEL_VERSION, 'expectedAsOf': expected_as_of,
             'sources': sources, 'comparisons': comparisons, 'monthly': monthly,
             'observations': observations, 'unavailable': unavailable}
