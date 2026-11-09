@@ -12,7 +12,7 @@ from .model import build_snapshot, encoded
 from .sources import CN, fetch_sources
 
 PREFIX = 'data/cycle-bottom/'
-SCHEDULE = '每日08:40、16:40、22:40（北京时间）更新；页面每60秒检查已发布数据。'
+SCHEDULE = '每日22:40（北京时间）更新一次；页面每60秒检查已发布数据。'
 LIMIT = 8 * 1024 * 1024
 
 

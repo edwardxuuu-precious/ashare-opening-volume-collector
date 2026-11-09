@@ -32,7 +32,7 @@
 
 ## 自动更新与失败处理
 
-`.github/workflows/cycle-bottom.yml` 计划每日北京时间08:40、16:40、22:40核对，包括周末补发。仅main、公有仓库、未设置 `DISABLE_CYCLE_BOTTOM_UPDATE=true` 时自动执行，保留免费runner门；单轮10分钟、采集计算预算240秒、每源单次25秒网络界限，不自动重试限流/拒绝访问，不调用付费API。
+`.github/workflows/cycle-bottom.yml` 计划每日北京时间22:40核对一次，包括周末补发。仅main、公有仓库、未设置 `DISABLE_CYCLE_BOTTOM_UPDATE=true` 时自动执行，保留免费runner门；单轮10分钟、采集计算预算240秒、每源单次25秒网络界限，不自动重试限流/拒绝访问，不调用付费API。
 
 `python -m backend.cycle_bottom.daily` 每轮取真序列重算固定模型与观察；16:30前不把当日记录当最终收盘。来源滞后按实际共同日计算并标partial；失败保留上一成功manifest，单独记录失败。相同数据只更新核对时间，不把重新检查说成行情更新。
 
