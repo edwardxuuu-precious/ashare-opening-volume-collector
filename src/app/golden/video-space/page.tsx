@@ -22,7 +22,13 @@ import {
   type VerifiedVideoStock,
   type VideoCode,
   type VideoObservation,
+  type LayerSelection,
+  type LayerResult,
 } from '@/lib/video-space';
+import type {
+  RulerSelectionState,
+  SelectionEvent,
+} from '@/lib/video-space-selection';
 import type {
   WaveCandidate,
   WavePivot,
@@ -249,7 +255,7 @@ function Observation({
   overlays: readonly {
     id: string;
     label: string;
-    style: 'comparison' | 'parent' | 'root' | 'fixed';
+    style: 'comparison' | 'parent' | 'root' | 'fixed' | 'retained';
     observation: Extract<VideoObservation, { kind: 'ready' }>;
   }[];
 }) {
@@ -514,7 +520,7 @@ function Comparison({
   scenarioId,
   layer,
 }: {
-  layer: { parentId: string; scale: 'PARENT' | 'HALF' } | null;
+  layer: LayerSelection | null;
   stock: VerifiedVideoStock;
   date: string;
   selection: ReferenceSelection;
@@ -529,6 +535,7 @@ function Comparison({
   const selected = layer
     ? observeVideoLayers(stock, date, selection, layer)
     : null;
+  const isRule = layer !== null && 'kind' in layer;
   const identity = (value: Extract<VideoObservation, { kind: 'ready' }>) =>
     value.source.kind === 'FIXED'
       ? value.source.scenario.id
@@ -540,13 +547,16 @@ function Comparison({
             ? value.source.wave.id
             : `half:${value.source.endpoints.parentId}`;
   const historyLayer =
-    layer && selected?.parent.kind === 'ready'
+    layer && !('kind' in layer) && selected?.parent.kind === 'ready'
       ? { ...layer, parentId: identity(selected.parent) }
       : layer;
   if (fixed?.kind !== 'ready' || automatic?.kind !== 'ready') {
     const entries: { label: string; value: VideoObservation | null }[] = [
       { label: '固定', value: fixed },
       { label: '自动（V1）', value: automatic },
+      ...(isRule
+        ? [{ label: '规则观察尺', value: selected?.observation ?? null }]
+        : []),
     ];
     const seen = new Set(
       entries.flatMap(({ value }) =>
@@ -555,7 +565,7 @@ function Comparison({
     );
     for (const [label, value] of [
       ['所选父尺', selected?.parent],
-      ['继承半格', selected?.observation],
+      ['继承半格', isRule ? undefined : selected?.observation],
     ] as const) {
       if (value?.kind === 'ready' && !seen.has(identity(value))) {
         entries.push({
@@ -669,7 +679,7 @@ function Comparison({
   const seen = new Set([identity(f), identity(a)]);
   for (const [label, value] of [
     ['所选父尺', selected?.parent],
-    ['继承半格', selected?.observation],
+    ['继承半格', isRule ? undefined : selected?.observation],
   ] as const) {
     if (value?.kind === 'ready' && !seen.has(identity(value))) {
       extra.push({
@@ -762,6 +772,20 @@ function Comparison({
             {extra.map(({ label, value }) => (
               <Fragment key={identity(value)}>{line(label, value)}</Fragment>
             ))}
+            {isRule &&
+              (selected?.observation.kind === 'ready' ? (
+                line('规则观察尺', selected.observation)
+              ) : (
+                <tr>
+                  <th>规则观察尺</th>
+                  <td colSpan={5}>
+                    待核：
+                    {selected?.observation.kind === 'pending'
+                      ? selected.observation.reason
+                      : '缺少已核验历史'}
+                  </td>
+                </tr>
+              ))}
           </tbody>
         </table>
       </div>
@@ -828,6 +852,7 @@ function Comparison({
               {extra.map(({ label, value }) => (
                 <th key={identity(value)}>{label}参考 / 开收</th>
               ))}
+              {isRule && <th>规则观察尺参考 / 开收</th>}
             </tr>
           </thead>
           <tbody>
@@ -868,6 +893,16 @@ function Comparison({
                       )}
                     </td>
                   ))}
+                  {isRule && (
+                    <td>
+                      {cell(
+                        layerDay?.observation ?? {
+                          kind: 'pending',
+                          reason: '待核',
+                        },
+                      )}
+                    </td>
+                  )}
                 </tr>
               );
             })}
@@ -877,6 +912,141 @@ function Comparison({
       <p>
         当前快照历史模拟，不代表历史实时运行。原作者自动公式未知；旧平台可能长期保留，推广尚未开放。
       </p>
+    </section>
+  );
+}
+function selectionEventText(event: SelectionEvent): string {
+  switch (event.kind) {
+    case 'MAIN':
+      return event.reason === 'OUTWARD_EXPANSION'
+        ? '共同波段向外包络原主尺，扩大参考；旧格保留。'
+        : event.reason === 'COMMON_ENVELOPE'
+          ? '以最近共同波段包络已确认背景，作为独立参考。'
+          : '没有共同包络波段，使用真实背景平台。';
+    case 'BACKGROUND':
+      return '背景平台改变，主尺身份相同，继续持有。';
+    case 'SCALE':
+      return event.to === 'HALF'
+        ? `${event.triggerDate} 完成收盘低于 L，自动看继承半格。`
+        : `${event.triggerDate} 已连续两日收回 L，自动回父尺。`;
+    case 'RETIRED':
+      return `${event.knownAtClose} 根平台完成退役，整链停止新选择，旧格保留。`;
+  }
+}
+function RuleEvidence({ layers }: { layers: LayerResult }) {
+  const state: RulerSelectionState | null = layers.selection;
+  if (!state)
+    return (
+      <section className="vs-ruler" aria-label="规则选尺依据">
+        <h3>规则选尺待核</h3>
+        <p>缺少已核验自动历史，固定大格仍独立可用。</p>
+      </section>
+    );
+  const label = (id: string) => {
+    const item = state.kept.find((v) => v.ruler.id === id);
+    return item
+      ? `H ${item.ruler.H.date} ${money(item.ruler.H.price)} / L ${item.ruler.L.date} ${money(item.ruler.L.price)}`
+      : '已确认背景';
+  };
+  return (
+    <section
+      className="vs-ruler vs-rule-selection"
+      aria-label="规则选尺依据"
+      data-main-id={state.kind === 'ready' ? state.current.ruler.id : ''}
+      data-scale={state.kind === 'ready' ? state.current.scale : ''}
+      data-selected-on={state.kind === 'ready' ? state.current.selectedOn : ''}
+      data-scale-since={state.kind === 'ready' ? state.current.scaleSince : ''}
+    >
+      <h3>规则选尺 · 保留原大格</h3>
+      <p>
+        以已确认平台作背景，A/B共同波段作包络参考；背景不变时维持主尺，只允许共同波段向外扩展。包络是价格参照，不表示时间父子关系。本页默认使用三股试验规则，可切回固定候选或手动分层，其他股票尚未推广。
+      </p>
+      {state.kind === 'pending' ? (
+        <p>{state.reason}</p>
+      ) : (
+        <>
+          <dl>
+            <div>
+              <dt>当前主尺</dt>
+              <dd>{label(state.current.ruler.id)}</dd>
+            </div>
+            <div>
+              <dt>实际自动选入</dt>
+              <dd>{state.current.selectedOn}</dd>
+            </div>
+            <div>
+              <dt>当前观察尺度</dt>
+              <dd>
+                {state.current.scale === 'HALF' ? '继承半格' : '父尺'} · 自{' '}
+                {state.current.scaleSince}
+              </dd>
+            </div>
+          </dl>
+          <p>
+            主尺确认 {state.current.ruler.confirmationDate}，可用{' '}
+            {state.current.ruler.activationDate}。背景 H{' '}
+            {money(state.current.background.H)} / L{' '}
+            {money(state.current.background.L)}。
+          </p>
+          <p>
+            细尺首次可用：{state.current.fine.firstHalfDate ?? '尚未发生'}
+            ；最近尺度依据完成日：{state.current.fine.triggerDate ?? '尚无'}
+            。选入新主尺时只重放该尺自身已知历史，实际选入时间不回填。当前连续收回
+            L：{state.current.fine.recoveryCount} 日。
+          </p>
+          <p>
+            自动细尺：完成收盘低于 L 后次实际日进入；连续两完成收盘不低于 L
+            后次实际日回父尺。精确二分与两日恢复是工程规则；已启用半格仍可在分层观察手动查看。
+          </p>
+          {state.disagreements.length > 0 && (
+            <details>
+              <summary>
+                保留的不同谷底候选（{state.disagreements.length}组）
+              </summary>
+              {state.disagreements.map((group) => (
+                <p key={group.highDate}>
+                  H {group.highDate}：
+                  {group.candidates
+                    .map(
+                      (v) =>
+                        `L ${v.L.date} ${money(v.L.price)}（${v.reasons.map((r) => r.method).join('、')}）`,
+                    )
+                    .join('；')}
+                  。本组不进入共同自动池，保留主尺及备选。
+                </p>
+              ))}
+            </details>
+          )}
+        </>
+      )}
+      <details>
+        <summary>主尺与尺度逐日变化记录（{state.events.length}项）</summary>
+        <p>
+          只列实际变化日；已形成主尺的持有期内，没有变化记录的交易日维持原身份及尺度。根退役后自动主尺待核，旧端点和原大格留存。
+        </p>
+        <div className="vs-table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>实际生效日</th>
+                <th>选择或切换</th>
+                <th>主尺</th>
+              </tr>
+            </thead>
+            <tbody>
+              {state.events.map((event, i) => (
+                <tr key={`${event.date}:${event.kind}:${i}`}>
+                  <th>{event.date}</th>
+                  <td>{selectionEventText(event)}</td>
+                  <td>
+                    {label(event.kind === 'MAIN' ? event.toId : event.mainId)}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </details>
     </section>
   );
 }
@@ -893,7 +1063,9 @@ export default function VideoSpacePage() {
     ),
     [fixedK, setFixedK] = useState('1'),
     [expanded, setExpanded] = useState(false),
-    [rulerMode, setRulerMode] = useState<'fixed' | 'auto' | 'layers'>('fixed'),
+    [rulerMode, setRulerMode] = useState<'fixed' | 'auto' | 'layers' | 'rule'>(
+      'rule',
+    ),
     [parentId, setParentId] = useState('CURRENT_ROOT'),
     [scale, setScale] = useState<'PARENT' | 'HALF'>('PARENT');
   useEffect(() => {
@@ -933,9 +1105,18 @@ export default function VideoSpacePage() {
   const autoObservation = stock
     ? observeAutomaticVideoDay(stock, date, selection)
     : null;
+  const layerChoice: LayerSelection =
+    rulerMode === 'rule' ? { kind: 'RULE' } : { parentId, scale };
   const layers = stock
-    ? observeVideoLayers(stock, date, selection, { parentId, scale })
+    ? observeVideoLayers(stock, date, selection, layerChoice)
     : null;
+  const layered = rulerMode === 'layers' || rulerMode === 'rule';
+  const viewStock =
+    stock && rulerMode === 'rule' && stock.autoHistory?.kind === 'ready'
+      ? { ...stock, history: stock.autoHistory.history }
+      : stock;
+  const replayDates = viewStock?.history ?? [];
+  const replayIndex = replayDates.findIndex((b) => b.date === date);
   const observation =
     rulerMode === 'fixed'
       ? fixedObservation
@@ -946,10 +1127,10 @@ export default function VideoSpacePage() {
   const overlays: {
     id: string;
     label: string;
-    style: 'comparison' | 'parent' | 'root' | 'fixed';
+    style: 'comparison' | 'parent' | 'root' | 'fixed' | 'retained';
     observation: Extract<VideoObservation, { kind: 'ready' }>;
   }[] = [];
-  if (rulerMode === 'layers') {
+  if (layered) {
     if (layers?.parent.kind === 'ready' && layers.parent !== observation)
       overlays.push({
         id: 'parent',
@@ -990,6 +1171,16 @@ export default function VideoSpacePage() {
         label: '固定视频对照尺',
         observation: fixedObservation,
       });
+    if (rulerMode === 'rule')
+      for (const item of layers?.retained ?? []) {
+        if (item.observation.kind === 'ready')
+          overlays.push({
+            id: `retained:${item.id}`,
+            label: item.label,
+            style: 'retained',
+            observation: item.observation,
+          });
+      }
   } else if (other?.kind === 'ready')
     overlays.push({
       id: 'comparison',
@@ -1032,7 +1223,7 @@ export default function VideoSpacePage() {
       <div className="vs-layout">
         <aside className="vs-sidebar">
           <h2>三股试点</h2>
-          <p>人工波段原尺，不随新行情换点。</p>
+          <p>主尺与细尺按已确认结构选择，保留原大格对照。</p>
           <nav aria-label="选择股票">
             {videoStocks.map((s) => (
               <button
@@ -1045,8 +1236,10 @@ export default function VideoSpacePage() {
               </button>
             ))}
           </nav>
-          <p>共11个候选，保留端点敏感性。</p>
-          <p>当前候选来源为原视频观察，尚非全市场自动选点规则。</p>
+          <p>保留11个固定视频候选，可切换核对端点差异。</p>
+          <p>
+            本页默认使用三股试验规则，取点和切换理由可查，尚未推广到其他股票。
+          </p>
         </aside>
         <main className="vs-main">
           <div className="vs-heading">
@@ -1055,11 +1248,13 @@ export default function VideoSpacePage() {
                 {name} <small>{code}</small>
               </h2>
               <p>
-                {rulerMode === 'layers'
-                  ? '分层观察（试验）'
-                  : rulerMode === 'auto'
-                    ? '自动平台空间（试验）'
-                    : '固定视频空间'}{' '}
+                {rulerMode === 'rule'
+                  ? '规则选尺（回放试验）'
+                  : rulerMode === 'layers'
+                    ? '分层观察（试验）'
+                    : rulerMode === 'auto'
+                      ? '自动平台空间（试验）'
+                      : '固定视频空间'}{' '}
                 · 不复权 · LOG
               </p>
             </div>
@@ -1081,17 +1276,20 @@ export default function VideoSpacePage() {
                 value={rulerMode}
                 onChange={(e) =>
                   setRulerMode(
-                    e.target.value === 'layers'
-                      ? 'layers'
-                      : e.target.value === 'auto'
-                        ? 'auto'
-                        : 'fixed',
+                    e.target.value === 'rule'
+                      ? 'rule'
+                      : e.target.value === 'layers'
+                        ? 'layers'
+                        : e.target.value === 'auto'
+                          ? 'auto'
+                          : 'fixed',
                   )
                 }
               >
                 <option value="fixed">固定候选</option>
                 <option value="auto">自动平台（试验）</option>
                 <option value="layers">分层观察（试验）</option>
+                <option value="rule">规则选尺（回放试验）</option>
               </select>
             </label>
             {rulerMode === 'layers' && (
@@ -1162,7 +1360,7 @@ export default function VideoSpacePage() {
                 disabled={!stock}
               >
                 {!stock && <option value="">待行情</option>}
-                {stock?.history
+                {viewStock?.history
                   .slice()
                   .reverse()
                   .map((b) => (
@@ -1204,6 +1402,26 @@ export default function VideoSpacePage() {
               </label>
             )}
           </div>
+          {rulerMode === 'rule' && (
+            <div className="vs-replay-controls" aria-label="逐日回放控制">
+              <button
+                disabled={replayIndex <= 0}
+                onClick={() => setDate(replayDates[replayIndex - 1].date)}
+              >
+                上一个实际交易日
+              </button>
+              <span>{date || '待行情'} · 仅用此前完成数据选尺</span>
+              <button
+                disabled={
+                  replayIndex < 0 || replayIndex >= replayDates.length - 1
+                }
+                onClick={() => setDate(replayDates[replayIndex + 1].date)}
+              >
+                下一个实际交易日
+              </button>
+            </div>
+          )}
+          {rulerMode === 'rule' && layers && <RuleEvidence layers={layers} />}
           {state?.kind === 'loading' && (
             <output>
               {stock
@@ -1219,7 +1437,7 @@ export default function VideoSpacePage() {
                 : ' 本股暂停判读，可切换其他股票。'}
             </p>
           )}
-          {rulerMode === 'layers' && layers && (
+          {layered && layers && (
             <section className="vs-ruler">
               <h3>分层观察</h3>
               {layers.waveCatalog?.kind === 'ready' && (
@@ -1266,28 +1484,57 @@ export default function VideoSpacePage() {
           {observation?.kind === 'pending' && (
             <output className="vs-error">{observation.reason}</output>
           )}
+          {viewStock &&
+            rulerMode === 'rule' &&
+            observation?.kind === 'pending' &&
+            (() => {
+              const archived = layers?.retained.find(
+                (v) => v.observation.kind === 'ready',
+              );
+              const original =
+                archived?.observation.kind === 'ready'
+                  ? archived.observation
+                  : fixedObservation;
+              if (original?.kind !== 'ready') return null;
+              return (
+                <section aria-label="归档大格对照">
+                  <h3>
+                    {archived ? '归档大格对照' : '固定视频原大格对照'} ·
+                    当前自动主尺待核
+                  </h3>
+                  <VideoSpaceChart
+                    stock={viewStock}
+                    observation={original}
+                    expanded={expanded}
+                    overlays={overlays.filter((v) =>
+                      archived
+                        ? v.id !== `retained:${archived.id}`
+                        : v.id !== 'fixed',
+                    )}
+                  />
+                </section>
+              );
+            })()}
           {stock && observation?.kind === 'ready' && (
             <Observation
-              stock={stock}
+              stock={viewStock ?? stock}
               observation={observation}
               expanded={expanded}
               onExpand={() => setExpanded((v) => !v)}
               overlays={overlays}
-              parent={rulerMode === 'layers' ? (layers?.parent ?? null) : null}
-              rootContext={
-                rulerMode === 'layers' ? (layers?.rootContext ?? null) : null
-              }
+              parent={layered ? (layers?.parent ?? null) : null}
+              rootContext={layered ? (layers?.rootContext ?? null) : null}
             />
           )}
           {stock && (
             <Comparison
-              stock={stock}
+              stock={viewStock ?? stock}
               date={date}
               selection={selection}
               fixed={fixedObservation}
               automatic={autoObservation}
               scenarioId={scenarioId}
-              layer={rulerMode === 'layers' ? { parentId, scale } : null}
+              layer={layered ? layerChoice : null}
             />
           )}
           <details className="vs-rules">

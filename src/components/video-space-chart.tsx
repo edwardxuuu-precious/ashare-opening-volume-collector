@@ -27,7 +27,7 @@ export function VideoSpaceChart({
   overlays: readonly {
     id: string;
     label: string;
-    style: 'comparison' | 'parent' | 'root' | 'fixed';
+    style: 'comparison' | 'parent' | 'root' | 'fixed' | 'retained';
     observation: Extract<VideoObservation, { kind: 'ready' }>;
   }[];
 }) {
@@ -198,21 +198,25 @@ export function VideoSpaceChart({
               y1={scale.y(g.price)}
               y2={scale.y(g.price)}
               stroke={
-                overlay.style === 'root'
-                  ? '#a4611a'
-                  : overlay.style === 'fixed'
-                    ? 'var(--vs-fixed-overlay)'
-                    : '#a352a8'
+                overlay.style === 'retained'
+                  ? 'var(--vs-retained-overlay)'
+                  : overlay.style === 'root'
+                    ? '#a4611a'
+                    : overlay.style === 'fixed'
+                      ? 'var(--vs-fixed-overlay)'
+                      : '#a352a8'
               }
               strokeWidth={g.k === overlay.observation.reference.k ? 2 : 1}
               strokeDasharray={
-                overlay.style === 'root'
-                  ? '10 3 2 3'
-                  : overlay.style === 'fixed'
-                    ? '12 5'
-                    : overlay.style === 'parent'
-                      ? '2 4'
-                      : '7 3'
+                overlay.style === 'retained'
+                  ? '4 3 1 3'
+                  : overlay.style === 'root'
+                    ? '10 3 2 3'
+                    : overlay.style === 'fixed'
+                      ? '12 5'
+                      : overlay.style === 'parent'
+                        ? '2 4'
+                        : '7 3'
               }
             />
           ));

@@ -1,5 +1,6 @@
 .video-space {
   --vs-fixed-overlay: #3b7a78;
+  --vs-retained-overlay: #68737d;
   min-height: 100dvh;
   background: var(--ui-background);
   color: var(--ui-text);
@@ -473,4 +474,19 @@
     var(--vs-fixed-overlay) 0 12px,
     transparent 12px 17px
   );
+}
+
+.vs-overlay-retained {
+  border-top-color: var(--vs-retained-overlay);
+  border-top-style: dashed;
+}
+.vs-replay-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  align-items: center;
+  margin: 12px 0;
+}
+.vs-rule-selection dd {
+  font-size: 14px;
 }
