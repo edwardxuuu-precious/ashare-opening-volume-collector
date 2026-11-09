@@ -1,3 +1,4 @@
+import { observeRulerSelection } from './video-space-selection.ts';
 import { authRead } from './auth-fetch.ts';
 import {
   observeAutoPlatform,
@@ -847,11 +848,16 @@ function observeResolved(
   };
 }
 
-export type LayerSelection = {
-  readonly parentId: string;
-  readonly scale: 'PARENT' | 'HALF';
-};
+export type LayerSelection =
+  | { readonly kind: 'RULE' }
+  | { readonly parentId: string; readonly scale: 'PARENT' | 'HALF' };
 export type LayerResult = {
+  readonly selection: ReturnType<typeof observeRulerSelection>['state'] | null;
+  readonly retained: readonly {
+    id: string;
+    label: string;
+    observation: VideoObservation;
+  }[];
   readonly family: ReturnType<typeof observeAutoFamily> | null;
   readonly waveCatalog: ReturnType<typeof observeStructuralWaves> | null;
   readonly options: readonly { id: string; label: string }[];
@@ -870,20 +876,29 @@ export function observeVideoLayers(
 ): LayerResult {
   const unavailable: VideoObservation = {
     kind: 'pending',
-    reason: stock.history.some((bar) => bar.date === date)
+    reason: (stock.autoHistory?.kind === 'ready'
+      ? stock.autoHistory.history
+      : stock.history
+    ).some((bar) => bar.date === date)
       ? '所选父尺尚未启用。'
       : '所选交易日没有已保存行情，待核。',
   };
   const history =
     stock.autoHistory?.kind === 'ready' ? stock.autoHistory.history : null;
-  const family = history ? observeAutoFamily(history, date) : null;
+  const automatic =
+    history && 'kind' in layer ? observeRulerSelection(history, date) : null;
+  const selected = automatic?.state ?? null;
+  const family =
+    automatic?.family ?? (history ? observeAutoFamily(history, date) : null);
   const current = family?.root.kind === 'ready' ? family.root.version : null;
   const versions = family?.root.versions ?? [];
   const nodes =
     family?.lowerPlatforms.filter(
       (v) => v.activationDate && v.activationDate <= date,
     ) ?? [];
-  const waveResult = history ? observeStructuralWaves(history, date) : null;
+  const waveResult =
+    automatic?.waveCatalog ??
+    (history ? observeStructuralWaves(history, date) : null);
   const waves = waveResult?.kind === 'ready' ? waveResult.candidates : [];
   const options = [
     ...(current ? [{ id: current.id, label: '当前 V1 原尺' }] : []),
@@ -908,59 +923,79 @@ export function observeVideoLayers(
       .filter((v) => v.code === stock.code)
       .map((v) => ({ id: v.id, label: `固定 · ${v.label}` })),
   ];
-  const id = layer.parentId === 'CURRENT_ROOT' ? current?.id : layer.parentId;
+  const parentId =
+    'kind' in layer
+      ? selected?.kind === 'ready'
+        ? selected.current.ruler.id
+        : ''
+      : layer.parentId;
+  const scale =
+    'kind' in layer
+      ? selected?.kind === 'ready'
+        ? selected.current.scale
+        : 'PARENT'
+      : layer.scale;
+  const id = parentId === 'CURRENT_ROOT' ? current?.id : parentId;
   const version = versions.find(
     (v) => v.id === id && v.activationDate && v.activationDate <= date,
   );
   const node = nodes.find((v) => v.id === id);
-  const wave = waves.find((v) => v.id === id);
-  let parent: VideoObservation = unavailable;
-  if (history && version && version.activationDate) {
-    parent = observeResolved(
-      history,
-      automaticSource(version, versions),
-      version.activationDate,
-      date,
-      selection,
+  const resolveParent = (id: string | undefined): VideoObservation => {
+    const version = versions.find(
+      (v) => v.id === id && v.activationDate && v.activationDate <= date,
     );
-  } else if (history && node && node.activationDate) {
-    parent = observeResolved(
-      history,
-      {
-        kind: 'LOWER',
-        platform: node,
-        endpoints: {
-          kind: 'REAL',
-          high: { ...node.realH, price: String(node.realH.price) },
-          low: { ...node.realL, price: String(node.realL.price) },
+    const node = nodes.find((v) => v.id === id);
+    const wave = waves.find((v) => v.id === id);
+    let parent: VideoObservation = unavailable;
+    if (history && version && version.activationDate) {
+      parent = observeResolved(
+        history,
+        automaticSource(version, versions),
+        version.activationDate,
+        date,
+        selection,
+      );
+    } else if (history && node && node.activationDate) {
+      parent = observeResolved(
+        history,
+        {
+          kind: 'LOWER',
+          platform: node,
+          endpoints: {
+            kind: 'REAL',
+            high: { ...node.realH, price: String(node.realH.price) },
+            low: { ...node.realL, price: String(node.realL.price) },
+          },
         },
-      },
-      node.activationDate,
-      date,
-      selection,
-    );
-  } else if (history && wave) {
-    parent = observeResolved(
-      history,
-      {
-        kind: 'WAVE',
-        wave,
-        endpoints: {
-          kind: 'REAL',
-          high: { date: wave.H.date, field: 'high', price: wave.H.price },
-          low: { date: wave.L.date, field: 'low', price: wave.L.price },
+        node.activationDate,
+        date,
+        selection,
+      );
+    } else if (history && wave) {
+      parent = observeResolved(
+        history,
+        {
+          kind: 'WAVE',
+          wave,
+          endpoints: {
+            kind: 'REAL',
+            high: { date: wave.H.date, field: 'high', price: wave.H.price },
+            low: { date: wave.L.date, field: 'low', price: wave.L.price },
+          },
         },
-      },
-      wave.activationDate,
-      date,
-      selection,
-    );
-  } else if (
-    id &&
-    videoScenarios.some((v) => v.id === id && v.code === stock.code)
-  ) {
-    parent = observeVideoDay(stock, id, date, selection);
-  }
+        wave.activationDate,
+        date,
+        selection,
+      );
+    } else if (
+      id &&
+      videoScenarios.some((v) => v.id === id && v.code === stock.code)
+    ) {
+      parent = observeVideoDay(stock, id, date, selection);
+    }
+    return parent;
+  };
+  const parent = resolveParent(id);
   const rootVersion = node
     ? versions.find((v) => v.id === node.rootId)
     : (version ?? current);
@@ -991,7 +1026,7 @@ export function observeVideoLayers(
       breaking >= 0 ? sourceHistory[breaking + 1]?.date : undefined;
     if (activationDate && activationDate <= date) {
       half = { kind: 'available', activationDate };
-      if (layer.scale === 'HALF') {
+      if (scale === 'HALF') {
         const high = boundaryAt(parent.ruler, 0),
           low = boundaryAt(parent.ruler, 0.5);
         observation = observeResolved(
@@ -1006,10 +1041,40 @@ export function observeVideoLayers(
           selection,
         );
       }
-    } else if (layer.scale === 'HALF')
+    } else if (scale === 'HALF')
       observation = { kind: 'pending', reason: half.reason };
   }
+  const retained: {
+    id: string;
+    label: string;
+    observation: VideoObservation;
+  }[] = [];
+  if (selected) {
+    const rootId =
+      selected.kind === 'ready'
+        ? selected.current.background.rootId
+        : selected.kept.at(-1)?.backgroundRootId;
+    const original = selected.kept.find((v) => v.backgroundRootId === rootId);
+    const prior = selected.kept.findLast((v) => v.ruler.id !== id);
+    for (const [item, label] of [
+      [original, '本轮原自动大格'],
+      [prior, '上一主尺 · 保留对照'],
+    ] as const) {
+      if (
+        item &&
+        item.ruler.id !== id &&
+        !retained.some((v) => v.id === item.ruler.id)
+      )
+        retained.push({
+          id: item.ruler.id,
+          label,
+          observation: resolveParent(item.ruler.id),
+        });
+    }
+  }
   return {
+    selection: selected,
+    retained,
     family,
     waveCatalog: waveResult,
     options,
