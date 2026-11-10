@@ -28,7 +28,7 @@ SOURCES += ['backend/triangles/__init__.py', 'backend/triangles/daily.py',
             'tooling/build-triangle-daily.mjs', 'src/lib/triangles.ts', 'src/lib/triangle-data.ts',
             'src/lib/auth-fetch.ts', 'src/lib/read-request.ts', 'package.json',
             'tooling/run_chip_bounded.py', 'tooling/chip_workflow_budget.py', 'tooling/chip_followup_guard.py']
-SOURCES += ['backend/cycle_bottom/' + name for name in ('__init__.py', 'sources.py', 'model.py', 'daily.py', 'requirements.txt')]
+SOURCES += ['backend/cycle_bottom/' + name for name in ('__init__.py', 'sources.py', 'model.py', 'daily.py', 'report.py', 'requirements.txt')]
 WORKFLOWS = ('chips.yml', 'collector.yml', 'golden-projection.yml', 'golden.yml',
              'source-probe.yml', 'trend-volume.yml', 'triangles.yml', 'cycle-bottom.yml')
 SECRET_PATTERNS = [r'AKIA[0-9A-Z]{16}', r'ASIA[0-9A-Z]{16}',

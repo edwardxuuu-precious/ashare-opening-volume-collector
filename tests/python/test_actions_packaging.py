@@ -80,6 +80,7 @@ backend/cycle_bottom/__init__.py
 backend/cycle_bottom/sources.py
 backend/cycle_bottom/model.py
 backend/cycle_bottom/daily.py
+backend/cycle_bottom/report.py
 backend/cycle_bottom/requirements.txt
 tooling/build-triangle-daily.mjs
 src/lib/triangles.ts

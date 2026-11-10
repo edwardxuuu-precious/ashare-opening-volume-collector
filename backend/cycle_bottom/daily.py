@@ -12,7 +12,7 @@ from .model import build_snapshot, encoded
 from .sources import CN, fetch_sources
 
 PREFIX = 'data/cycle-bottom/'
-SCHEDULE = '每日22:40（北京时间）更新一次；页面每60秒检查已发布数据。'
+SCHEDULE = '每日22:40（北京时间）计划核对一次；GitHub定时投递可能延迟，来源日期以实际发布为准。页面每60秒检查已发布数据。'
 LIMIT = 8 * 1024 * 1024
 
 
@@ -71,13 +71,13 @@ class S3Storage:
 
 
 def publication_status(snapshot, *, checked_at, last_success_at=None):
-    lagging = [source['name'] for source in snapshot['sources'] if source['lastDate'] < snapshot['expectedAsOf']]
+    lagging = [f"{source['name']}（截至{source['lastDate']}）" for source in snapshot['sources'] if source['lastDate'] < snapshot['expectedAsOf']]
     calendar_pending = any(source.get('calendarVerified') is False for source in snapshot['sources'])
     partial = bool(lagging) or calendar_pending
     return {'state': 'partial' if partial else 'ready', 'checkedAt': checked_at,
             'lastSuccessAt': last_success_at or snapshot['generatedAt'], 'schedule': SCHEDULE,
             'message': ('当前年度交易日历待核对，仅按来源实有日期更新，不能确认最新完整交易日。' if calendar_pending else
-                        '以下来源尚未更新到最新交易日：' + '、'.join(lagging) + '；只按真实共同日期计算。' if lagging
+                        '以下来源尚未更新到目标交易日' + snapshot['expectedAsOf'] + '：' + '、'.join(lagging) + '；只按真实共同日期计算。' if lagging
                         else '可用公开序列已核对到最新观察交易日。Wind二级债基授权分支单独保留待接入状态。')}
 
 
@@ -149,7 +149,13 @@ def main(argv=None):
         if args.out:
             write_local(args.out, snapshot)
         result = publish(storage, snapshot, raw_files) if storage else {'state': 'local', 'version': snapshot['version'], 'asOf': expected}
-        result.update(sourceDates={source['code']: source['lastDate'] for source in sources},
+        # Publication success is not a statement that every source is current.
+        freshness = publication_status(snapshot, checked_at=now())
+        result.update(dataState=freshness['state'], message=freshness['message'],
+                      laggingSources=[{'code': source['code'], 'lastDate': source['lastDate']}
+                                      for source in sources if source['lastDate'] < expected],
+                      checkedAt=freshness['checkedAt'],
+                      sourceDates={source['code']: source['lastDate'] for source in sources},
                       elapsedSeconds=round(time.monotonic() - started, 3), windAutomated=False)
         if args.receipt:
             args.receipt.parent.mkdir(parents=True, exist_ok=True)
