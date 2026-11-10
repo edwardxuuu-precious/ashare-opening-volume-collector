@@ -45,3 +45,5 @@ jobs:
           args=()
           if [ "${CYCLE_INCLUDE_NONPURE:-}" = 'true' ]; then args+=(--include-nonpure); fi
           python -m backend.cycle_bottom.daily --bucket "$STOCK_BUCKET" --max-seconds 240 --receipt "$RUNNER_TEMP/cycle-receipt.json" "${args[@]}"
+      - name: Report publication and source freshness separately
+        run: python -m backend.cycle_bottom.report --receipt "$RUNNER_TEMP/cycle-receipt.json" --summary "$GITHUB_STEP_SUMMARY"

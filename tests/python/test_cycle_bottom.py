@@ -165,3 +165,63 @@ class CyclePublication(unittest.TestCase):
         self.assertEqual(publish(store, snapshot, {'source': b'INVENTED'})['state'], 'unchanged')
         self.assertEqual(store.writes, ['status.json'])
         self.assertEqual(json.loads(store.objects['status.json'])['lastSuccessAt'], published_at)
+
+
+class CycleFreshnessReporting(unittest.TestCase):
+    def test_partial_status_names_actual_and_target_dates(self):
+        snapshot = {'generatedAt': '2026-11-10T00:00:00Z', 'expectedAsOf': '2026-11-09',
+                    'sources': [{'name': 'Nonpure', 'code': '930897', 'lastDate': '2026-11-06'}]}
+        result = publication_status(snapshot, checked_at='2026-11-10T01:00:00Z')
+        self.assertEqual(result['state'], 'partial')
+        self.assertIn('2026-11-06', result['message'])
+        self.assertIn('2026-11-09', result['message'])
+
+    def test_cli_receipt_separates_successful_publication_from_completeness(self):
+        import tempfile
+        from pathlib import Path
+        from backend.cycle_bottom.daily import main
+        for last_date, expected_state in [('2026-11-06', 'partial'), ('2026-11-09', 'ready')]:
+            with self.subTest(last_date=last_date), tempfile.TemporaryDirectory() as directory:
+                sources = [{'name': 'Nonpure', 'code': '930897', 'lastDate': last_date}]
+                snapshot = {'version': 'a' * 16, 'generatedAt': '2026-11-10T00:00:00Z',
+                            'expectedAsOf': '2026-11-09', 'sources': sources}
+                receipt = Path(directory) / 'receipt.json'
+                with patch('backend.cycle_bottom.daily.fetch_sources', return_value=({}, sources, {}, '2026-11-09')), \
+                     patch('backend.cycle_bottom.daily.build_snapshot', return_value=snapshot), \
+                     patch('builtins.print'):
+                    main(['--out', directory, '--receipt', str(receipt)])
+                result = json.loads(receipt.read_text())
+                self.assertEqual(result['state'], 'local')
+                self.assertEqual(result['dataState'], expected_state)
+                self.assertEqual(result['sourceDates'], {'930897': last_date})
+                self.assertEqual(bool(result['laggingSources']), expected_state == 'partial')
+
+    def test_summary_warns_on_partial_without_claiming_publish_failed(self):
+        import tempfile
+        from pathlib import Path
+        from backend.cycle_bottom.report import main, render
+        receipt = {'state': 'published', 'dataState': 'partial', 'asOf': '2026-11-09',
+                   'checkedAt': '2026-11-10T00:00:00Z', 'message': 'pending',
+                   'sourceDates': {'930897': '2026-11-06'}}
+        self.assertIn('Publication: **published**', render(receipt))
+        self.assertIn('| 930897 | 2026-11-06 |', render(receipt))
+        with tempfile.TemporaryDirectory() as directory:
+            path, summary = Path(directory) / 'receipt.json', Path(directory) / 'summary.md'
+            for state in ['partial', 'ready']:
+                receipt['dataState'] = state
+                path.write_text(json.dumps(receipt))
+                with patch('builtins.print') as output:
+                    main(['--receipt', str(path), '--summary', str(summary)])
+                self.assertEqual(output.called, state == 'partial')
+            self.assertIn('Data completeness: **ready**', summary.read_text())
+
+    def test_workflow_preserves_once_daily_schedule_and_reports_freshness(self):
+        from pathlib import Path
+        import yaml
+        root = Path(__file__).resolve().parents[2]
+        workflow = yaml.safe_load((root / '.github/workflows/cycle-bottom.yml').read_text())
+        trigger = workflow.get('on', workflow.get(True))
+        self.assertEqual(trigger['schedule'], [{'cron': '40 14 * * *'}])
+        commands = '\n'.join(step.get('run', '') for step in workflow['jobs']['cycle']['steps'])
+        self.assertIn('backend.cycle_bottom.report', commands)
+        self.assertIn('GITHUB_STEP_SUMMARY', commands)
