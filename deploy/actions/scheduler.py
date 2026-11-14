@@ -14,7 +14,7 @@ from pathlib import Path
 CRYPTOGRAPHY_VERSION = "50.0.1"
 
 
-def template(bucket, code_key, private_key_parameter, app_id, installation_id, repository_id, enabled=False):
+def template(bucket, code_key, private_key_parameter, app_id, installation_id, repository_id, enabled=False, cycle_enabled=False):
     if not re.fullmatch(r"[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]", bucket):
         raise ValueError("Invalid bucket")
     if not re.fullmatch(r"collector/dispatcher-code/[A-Za-z0-9._/-]+\.zip", code_key) or ".." in code_key:
@@ -77,6 +77,15 @@ def template(bucket, code_key, private_key_parameter, app_id, installation_id, r
                        "RoleArn": {"Fn::GetAtt": ["ScheduleRole", "Arn"]},
                        "Input": json.dumps({"phase": phase}, separators=(",", ":")),
                        "RetryPolicy": {"MaximumEventAgeInSeconds": 300, "MaximumRetryAttempts": 0}}}}
+    # Isolated opt-in: updating existing schedules must not enable cycle dispatch.
+    resources["CycleSchedule"] = {"Type": "AWS::Scheduler::Schedule", "Properties": {
+        "GroupName": {"Ref": "ScheduleGroup"}, "ScheduleExpression": "cron(40 22 * * ? *)",
+        "ScheduleExpressionTimezone": "Asia/Shanghai", "FlexibleTimeWindow": {"Mode": "OFF"},
+        "State": "ENABLED" if cycle_enabled else "DISABLED",
+        "Target": {"Arn": {"Fn::GetAtt": ["Dispatcher", "Arn"]},
+                   "RoleArn": {"Fn::GetAtt": ["ScheduleRole", "Arn"]},
+                   "Input": json.dumps({"phase": "cycle", "scheduled_time": "<aws.scheduler.scheduled-time>"}, separators=(",", ":")),
+                   "RetryPolicy": {"MaximumEventAgeInSeconds": 300, "MaximumRetryAttempts": 0}}}}
     return {"AWSTemplateFormatVersion": "2010-09-09", "Description": "Stock exact-repository dispatch only; no collector compute",
             "Resources": resources, "Outputs": {
                 "DispatcherArn": {"Value": {"Fn::GetAtt": ["Dispatcher", "Arn"]}},
@@ -114,9 +123,10 @@ if __name__ == "__main__":
     parser.add_argument("--installation-id")
     parser.add_argument("--repository-id")
     parser.add_argument("--enabled", action="store_true")
+    parser.add_argument("--cycle-enabled", action="store_true")
     args = parser.parse_args()
     if args.build_zip:
         print(json.dumps(build_zip(args.build_zip), indent=2))
     else:
         print(json.dumps(template(args.bucket, args.code_key, args.private_key_parameter,
-                                  args.app_id, args.installation_id, args.repository_id, args.enabled), indent=2))
+                                  args.app_id, args.installation_id, args.repository_id, args.enabled, args.cycle_enabled), indent=2))

@@ -17,6 +17,7 @@ from zoneinfo import ZoneInfo
 REPOSITORY = "edwardxuuu-precious/ashare-opening-volume-collector"
 WORKFLOW = "collector.yml"
 CHIP_WORKFLOW = "chips.yml"
+CYCLE_WORKFLOW = "cycle-bottom.yml"
 SHANGHAI = ZoneInfo("Asia/Shanghai")
 STATE_KEY = "collector/dispatcher-state.json"
 BACKOFF_MINUTES = (5, 15, 30)
@@ -299,7 +300,7 @@ class GitHub:
         return json.loads(raw) if raw else {}
 
     def active(self, workflow=WORKFLOW):
-        if workflow not in (WORKFLOW, CHIP_WORKFLOW):
+        if workflow not in (WORKFLOW, CHIP_WORKFLOW, CYCLE_WORKFLOW):
             raise ValueError("Unknown dispatch workflow")
         for status in ACTIVE_STATUSES:
             result = self.request("GET", "/repos/" + REPOSITORY + "/actions/workflows/" + workflow
@@ -318,6 +319,10 @@ class GitHub:
     def dispatch_chips(self, work):
         return self.request("POST", "/repos/" + REPOSITORY + "/actions/workflows/" + CHIP_WORKFLOW
                             + "/dispatches", {"ref": "main", "inputs": work})
+
+    def dispatch_cycle(self):
+        return self.request("POST", "/repos/" + REPOSITORY + "/actions/workflows/" + CYCLE_WORKFLOW
+                            + "/dispatches", {"ref": "main", "inputs": {"automatic_origin": "aws-scheduler"}})
 
 
 def installation_token(ssm, env, now):
@@ -446,9 +451,51 @@ def dispatch_chips_once(event, s3, bucket, github_factory, now):
             "runId": record.get("runId"), "dispatchedAt": iso(now)}
 
 
+def dispatch_cycle_once(event, s3, bucket, github_factory, now):
+    """One daily POST, never watchdog retries or a stale event's next-day replay."""
+    if event.get("phase") != "cycle":
+        return {"dispatched": False, "reason": "not_cycle_wakeup_phase"}
+    if now.tzinfo is None or now.utcoffset() is None:
+        raise ValueError("Aware dispatcher clock required")
+    scheduled = instant(event.get("scheduled_time"))
+    local = now.astimezone(SHANGHAI)
+    if (scheduled is None or not 0 <= (now - scheduled).total_seconds() < 300 or
+            scheduled.astimezone(SHANGHAI).date() != local.date() or
+            scheduled.astimezone(SHANGHAI).strftime("%H:%M") != "22:40" or
+            not "22:40" <= local.strftime("%H:%M") < "22:45"):
+        return {"dispatched": False, "reason": "outside_cycle_window"}
+    day = local.date().isoformat()
+    ledger, etag = read_ledger(s3, bucket)
+    key = "cycle:" + day
+    attempts = ledger.setdefault("attempts", {})
+    if key in attempts:
+        return {"dispatched": False, "reason": "cycle_day_already_claimed", "date": day}
+    github = github_factory()
+    if github.active(CYCLE_WORKFLOW):
+        return {"dispatched": False, "reason": "cycle_run_active"}
+    record = {"lastDispatchAt": iso(now), "state": "claimed", "scheduledAt": iso(scheduled)}
+    attempts[key] = record
+    trim_ledger(ledger, now)
+    etag = save_state(s3, bucket, ledger, etag)
+    try:
+        result = github.dispatch_cycle()
+    except Exception:
+        record["state"] = "outcome_unknown"
+        save_state(s3, bucket, ledger, etag)
+        raise RuntimeError("Cycle workflow dispatch outcome unknown; day remains consumed") from None
+    record["state"] = "submitted"
+    if result.get("workflow_run_id"):
+        record["runId"] = int(result["workflow_run_id"])
+    save_state(s3, bucket, ledger, etag)
+    return {"dispatched": True, "workflow": CYCLE_WORKFLOW, "date": day,
+            "runId": record.get("runId"), "dispatchedAt": iso(now)}
+
+
 def dispatch_all(event, s3, bucket, github_factory, now):
     results = {}
-    for name, dispatch in (("chips", dispatch_chips_once), ("collector", dispatch_once)):
+    dispatchers = (("cycle", dispatch_cycle_once),) if event.get("phase") == "cycle" else (
+        ("chips", dispatch_chips_once), ("collector", dispatch_once))
+    for name, dispatch in dispatchers:
         try:
             results[name] = dispatch(event, s3, bucket, github_factory, now)
         except Exception as exc:
