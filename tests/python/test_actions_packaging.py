@@ -56,6 +56,7 @@ backend/chips/concentration_v2.py
 backend/chips/concentration_v2_runner.py
 backend/chips/concentration_two.py
 backend/chips/concentration_two_runner.py
+backend/chips/concentration_publication.py
 backend/golden/__init__.py
 backend/golden/anchors.py
 backend/golden/automatic.py

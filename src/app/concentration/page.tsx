@@ -16,6 +16,7 @@ import { InspectorTabs } from '@/components/inspector-tabs';
 import { useStockListNavigation } from '@/components/use-stock-list-navigation';
 import { stockListMatches } from '@/lib/stock-list';
 import { authRead } from '@/lib/auth-fetch';
+import { concentrationPublicationReader } from '@/lib/concentration-publication';
 import { startPublicationFollow } from '@/lib/publication-follow';
 import {
   concentrationGroupRegistry,
@@ -27,8 +28,6 @@ import {
   concentrationReason,
   concentrationStateText,
   concentrationStreakText,
-  parseConcentrationScan,
-  parseConcentrationSource,
   type ConcentrationGroup,
   type ConcentrationRow,
   type ConcentrationScan,
@@ -221,29 +220,13 @@ export default function ConcentrationPage() {
           : { kind: 'error', message: error.message },
       );
     }
-    const sourceRead = (signal: AbortSignal) => read(
-      '/data/chips/daily/manifest.json', signal, parseConcentrationSource,
-    );
+    const reader = concentrationPublicationReader((path, signal) => read(path, signal, (value) => value));
     const follow = startPublicationFollow({
-      readStatus: sourceRead,
-      readManifest: sourceRead,
-      readPayload: async (source, signal) => {
-        const raw = await read(
-          `/data/chips/daily/${source.active_slot}/concentration-two-v1.json`,
-          signal,
-          (value) => value,
-        );
-        const current = await read(
-          '/data/chips/daily/manifest.json',
-          signal,
-          parseConcentrationSource,
-        );
-        if (JSON.stringify(current) !== JSON.stringify(source))
-          throw Error('筹码批次正在切换，等待完整结果。');
-        return parseConcentrationScan(raw, source);
-      },
+      readStatus: reader.readManifest,
+      readManifest: reader.readManifest,
+      readPayload: reader.readPayload,
       onStatus: () => undefined,
-      onPublication: (source, scan) => setLoad({ kind: 'ready', publication: { source, scan } }),
+      onPublication: (publication, scan) => setLoad({ kind: 'ready', publication: { source: publication.source, scan } }),
       onStatusError: reportError,
       onPublicationError: (error) => {
         if (error) reportError(error);
@@ -398,6 +381,9 @@ export default function ConcentrationPage() {
             {load.kind === 'refresh-error' && (
               <RetryMessage message={load.message} onRetry={refresh} />
             )}
+            <p className="conc-coverage" role="note">
+              显示最近已完成结果，更新完成后自动切换。
+            </p>
             {source?.universe_coverage !==
               'OFFICIAL_CURRENT_LIST_RECONCILED' && (
               <p className="conc-coverage" role="note">
