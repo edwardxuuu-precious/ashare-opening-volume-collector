@@ -29,6 +29,14 @@ class ConcentrationTwoAuth(unittest.TestCase):
         self.assertEqual(self.s3.calls, [{'Bucket': 'INVENTED_BUCKET', 'Key': 'data/chips/daily/0123456789abcdef/concentration-two-v1.json'}])
         self.assertIn('private', result['headers']['cache-control'])
 
+    def test_complete_publication_survives_main_scan_advancing(self):
+        result = self.request('/data/chips/daily/concentration-publication.json')
+        self.assertEqual(result['statusCode'], 200,
+                         'A fresh page must be able to read the last complete concentration publication')
+        self.assertEqual(self.s3.calls, [{'Bucket': 'INVENTED_BUCKET',
+            'Key': 'data/chips/daily/concentration-publication.json'}])
+        self.assertIn('private', result['headers']['cache-control'])
+
     def test_addition_has_no_unversioned_proxy_or_write_route(self):
         for path in ['/data/chips/concentration-two-v1.json', '/data/chips/daily/concentration-two-v1.json',
                      '/data/chips/daily/0123456789abcdef/../concentration-two-v1.json',
