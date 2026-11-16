@@ -109,7 +109,7 @@ print(json.dumps({'imported': len(json.loads(sys.argv[1])), 'identity_closures':
             ('chips guard', 'path', 'tooling/chip_followup_guard.py'),
             ('chips budget', 'path', 'tooling/chip_workflow_budget.py'),
             ('chips bounded runner', 'path', 'tooling/run_chip_bounded.py'),
-            ('chips concentration', 'module', 'backend.chips.concentration_two_runner'),
+            ('chips concentration', 'module', 'backend.chips.concentration_publication'),
             ('golden', 'module', 'backend.golden.update'),
             ('golden-projection', 'module', 'backend.golden_projection.daily'),
             ('trend-volume', 'module', 'backend.trend_volume.daily'),

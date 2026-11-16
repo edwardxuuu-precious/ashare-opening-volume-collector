@@ -19,7 +19,7 @@ SOURCES = [
         'probe', 'runner', 'screen', 'source', 'baostock_history', 'ths_history', 'listing',
         'display', 'limit_reference', 'golden', 'history', 'stability', 'suspension_evidence',
         'concentration', 'concentration_runner', 'concentration_v2', 'concentration_v2_runner',
-        'concentration_two', 'concentration_two_runner')]
+        'concentration_two', 'concentration_two_runner', 'concentration_publication')]
 SOURCES += ['backend/chips/price_geometry.py']
 SOURCES += ['backend/golden/' + name + '.py' for name in ('__init__','anchors','automatic','watchlist','daily','annotations','sources','update')]
 SOURCES += ['backend/trend_volume/' + name + '.py' for name in ('__init__', 'types', 'frozen_v3', 'model', 'daily')]

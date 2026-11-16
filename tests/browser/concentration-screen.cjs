@@ -103,7 +103,13 @@ async function setup(browser, options = {}) {
     }
     state.reads.push(url.pathname);
     if (!state.auth) return json({ error: 'expired' }, 401);
-    if (url.pathname === '/data/chips/daily/manifest.json') return json(state.failManifest ? {} : state.data.source, state.failManifest ? 404 : 200);
+    if (url.pathname === '/data/chips/daily/concentration-publication.json') return json(state.failManifest ? {} : {
+      schema: 'stock.chips.concentration.publication.v1', source: state.data.source,
+      dataset_id: state.data.source.dataset_id, as_of: state.data.source.as_of,
+      generated_at: state.data.source.generated_at,
+      payload_key: `data/chips/daily/${state.data.source.active_slot}/concentration-two-v1.json`,
+      input_fingerprint: state.data.scan.input_fingerprint, payload_sha256: 'a'.repeat(64),
+    }, state.failManifest ? 404 : 200);
     if (/^\/data\/chips\/daily\/[a-f0-9]{16}\/concentration-two-v1\.json$/.test(url.pathname)) {
       const snapshot = state.data.scan;
       if (state.held) await new Promise(resolve => { state.release = resolve; });

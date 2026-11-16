@@ -84,7 +84,7 @@ class Workflow(unittest.TestCase):
         self.assertEqual(self.job['timeout-minutes'], '310')
         self.assertEqual([x['cron'] for x in self.workflow['on']['schedule']], ['40 7 * * *', '20 13 * * *', '20 18 * * *'])
         command = self.steps['concentration']['run']
-        self.assertIn('backend.chips.concentration_two_runner', command)
+        self.assertIn('backend.chips.concentration_publication', command)
         self.assertNotIn('concentration_v2_runner', command)
         self.assertIn('1190s', command)
         self.assertIn('--max-minutes 20', command)

@@ -21,6 +21,7 @@ class ConcentrationTwoAuth(unittest.TestCase):
     def test_summary_read_requires_authentication_before_storage(self):
         self.api.current_user = lambda _: None
         self.assertEqual(self.request('/data/chips/daily/0123456789abcdef/concentration-two-v1.json')['statusCode'], 401)
+        self.assertEqual(self.request('/data/chips/daily/concentration-publication.json')['statusCode'], 401)
         self.assertEqual(self.s3.calls, [])
 
     def test_exact_versioned_summary_reads_private_data_only(self):
@@ -44,6 +45,7 @@ class ConcentrationTwoAuth(unittest.TestCase):
                      '/collector/chips/concentration/0123456789abcdef.json']:
             self.assertEqual(self.request(path)['statusCode'], 404)
         self.assertEqual(self.request('/data/chips/daily/0123456789abcdef/concentration-two-v1.json', 'POST')['statusCode'], 404)
+        self.assertEqual(self.request('/data/chips/daily/concentration-publication.json', 'POST')['statusCode'], 404)
         self.assertEqual(self.s3.calls, [])
 
     def test_missing_summary_is_not_zero_matches(self):

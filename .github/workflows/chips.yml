@@ -123,7 +123,7 @@ jobs:
           set -euo pipefail
           draft="$RUNNER_TEMP/concentration-two-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.json"
           set +e
-          timeout --signal=TERM --kill-after=10s 1190s python -m backend.chips.concentration_two_runner --bucket "$STOCK_BUCKET" --max-minutes 20 --workers 2 --out "$draft" --publish
+          timeout --signal=TERM --kill-after=10s 1190s python -m backend.chips.concentration_publication --bucket "$STOCK_BUCKET" --max-minutes 20 --workers 2 --out "$draft" --publish
           result=$?
           set -e
           if [ "$result" = 124 ] || [ "$result" = 137 ] || [ "$result" = 130 ] || [ "$result" = 143 ]; then
@@ -133,6 +133,7 @@ jobs:
           report={'outcome':'NEEDS_ATTENTION','reason':'CONCENTRATION_PROCESS_TIMEOUT',
               'publication_state':'unknown','publication_verified':False,
               'final_key':None,'input_fingerprint':None,
+              'complete_publication_key':'data/chips/daily/concentration-publication.json',
               'recovery':'Read the same dataset-bound final_key before resuming; never blindly repeat the final PUT.'}
           path=Path(sys.argv[1])
           try:
