@@ -1,6 +1,12 @@
 name: Daily long-cycle index observations
 on:
   workflow_dispatch:
+    inputs:
+      automatic_origin:
+        description: Internal scheduler origin; leave blank for a manual run
+        type: choice
+        options: ["", "aws-scheduler"]
+        default: ""
   schedule:
     - cron: '40 14 * * *'
 permissions:
@@ -13,7 +19,9 @@ jobs:
     if: >-
       github.ref == 'refs/heads/main' &&
       github.event.repository.private == false &&
-      (github.event_name == 'workflow_dispatch' || vars.DISABLE_CYCLE_BOTTOM_UPDATE != 'true')
+      ((github.event_name == 'schedule' && vars.CYCLE_SCHEDULER != 'aws' && vars.DISABLE_CYCLE_BOTTOM_UPDATE != 'true') ||
+       (github.event_name == 'workflow_dispatch' && inputs.automatic_origin == '' ) ||
+       (github.event_name == 'workflow_dispatch' && inputs.automatic_origin == 'aws-scheduler' && vars.CYCLE_SCHEDULER == 'aws' && vars.DISABLE_CYCLE_BOTTOM_UPDATE != 'true'))
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:

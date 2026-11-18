@@ -2,7 +2,7 @@
 
 本目录的 Dispatcher 只读取私有健康状态和 writer lease，并只向
 `edwardxuuu-precious/ashare-opening-volume-collector` 的 `main` 分支派发
-`collector.yml` 和 `chips.yml`。它不下载、不修改市场数据，也不创建或接管计算写锁。
+`collector.yml`、`chips.yml` 和独立开关的 `cycle-bottom.yml`。它不下载、不修改市场数据，也不创建或接管计算写锁。
 
 ## 调度合约
 
@@ -53,3 +53,35 @@ GitHub 必须为失败，Summary 应显示未完成数量、原因和下一次�
 
 AWS Scheduler 只保证在所选分钟内触发 Lambda；GitHub runner 的排队延迟需要以实际 run
 时间记录和验收，不能假设固定启动时延。
+
+## 长周期每日任务迁移（独立开关，默认未切换）
+
+新增 `CycleSchedule`：每天北京时间22:40，仅派发 `cycle-bottom.yml`，
+不进入 collector/chips watchdog，不补跑、不自动重试。事件携带 Scheduler 原始时间，
+只接受同一天22:40起五分钟内的事件；私有账本 `cycle:YYYY-MM-DD` 在 POST 前条件认领，
+并发冲突不发送，未知响应或进程中断也不会释放当日额度。周末仍每天一次，沿用原任务频率。
+GitHub runner 仍可能排队，数据源日期仍以真实返回为准。
+
+`--enabled` 只控制原四个 schedule；新增 `--cycle-enabled` 独立控制 CycleSchedule，默认关闭。
+现有角色、SSM 参数、S3 账本权限不扩大；复用 Lambda 增加一个每日 Scheduler 事件。
+`automatic_origin=aws-scheduler` 标记自动调用；`DISABLE_CYCLE_BOTTOM_UPDATE=true` 同时暂停两种自动入口，
+不影响未标记的手工调用。仓库变量 `CYCLE_SCHEDULER=aws` 是互斥选择开关：
+设置前仅 GitHub cron 可运行，设置后仅 AWS 自动调用可运行，迟到的旧 cron 会跳过。
+
+安全切换步骤（需要可用 AWS 会话和部署授权）：
+
+1. 核对 AWS 身份、us-east-1、现有 stack/函数/四个 schedule 的实时状态和配置。
+   上传经测试的哈希命名 ZIP，更新原 stack，保留原四个 schedule 的现有状态，
+   新 CycleSchedule 必须保持 DISABLED。不要用默认模板意外关闭现有生产 schedules。
+2. 合并含互斥开关的 workflow；只读回查远端 main、Lambda CodeSha256、
+   CycleSchedule 时区/22:40表达式/输入/零重试及 IAM diff。不得通过生产调用来做只读测试。
+3. 在当天22:40之前的安全窗口切换；若当天已有周期任务执行、旧 cron 已排队或正在运行，
+   等次日切换，避免同一天重复。先核对无活跃周期任务，再将 CYCLE_SCHEDULER 设为 aws，
+   然后启用 CycleSchedule；回查两端配置。若启用失败，恢复原变量，保持 AWS 禁用。
+4. 验证下一次22:40的 Lambda 日志、每日账本、唯一 workflow_dispatch run、commit、
+   真实运行起止时间、发布回读与 sourceDates。partial 是数据滞后，不是发布失败。
+   完整验收前不要宣称迁移完成。GitHub cron 保留为受互斥开关禁用的回滚入口。
+
+回滚仅针对此任务：先禁用 CycleSchedule 并回查，确认没有已派发/排队/运行中的周期任务，
+再恢复 CYCLE_SCHEDULER 为非 aws；已消耗日期不手动补跑，不清理每日账本。
+不要关闭原四个 schedule，也不要改变其他任务频率。
