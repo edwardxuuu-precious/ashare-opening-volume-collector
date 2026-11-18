@@ -1,9 +1,20 @@
 import { readResponse, type ReadRequestOptions } from './read-request.ts';
 
+let generation = 0;
+
+export function invalidateAuthRequests() {
+  generation++;
+}
+
 /** Single-attempt transport; the caller's readResponse owns retries. */
 export async function authFetch(input: RequestInfo | URL, init?: RequestInit) {
+  const requestGeneration = generation;
   const response = await fetch(input, { ...init, credentials: 'include' });
-  if (response.status === 401 && typeof window !== 'undefined') {
+  if (
+    response.status === 401 &&
+    requestGeneration === generation &&
+    typeof window !== 'undefined'
+  ) {
     window.dispatchEvent(new Event('stock-session-expired'));
   }
   return response;

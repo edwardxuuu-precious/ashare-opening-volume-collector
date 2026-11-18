@@ -48,7 +48,13 @@ function load(path: PagePath) {
   return request;
 }
 
-export function SiteRouter({ children }: { children: ReactNode }) {
+export function SiteRouter({
+  children,
+  renderPage,
+}: {
+  children: ReactNode;
+  renderPage: (page: ReactNode) => ReactNode;
+}) {
   const [view, setView] = useState<View>({ kind: 'initial' });
   const [pending, setPending] = useState(false),
     [failed, setFailed] = useState('');
@@ -133,31 +139,35 @@ export function SiteRouter({ children }: { children: ReactNode }) {
         prepare,
       }}
     >
-      {pending && (
-        <output
-          className="site-navigation-progress"
-          aria-label="正在切换页面"
-        />
-      )}
-      {failed && (
-        <div className="site-navigation-error" role="alert">
-          页面未能打开。
-          <button
-            onClick={() => {
-              void navigate(failed);
-            }}
-          >
-            重试
-          </button>
-          <button aria-label="关闭提示" onClick={() => setFailed('')}>
-            ×
-          </button>
-        </div>
-      )}
-      {view.kind === 'initial' ? (
-        children
-      ) : (
-        <view.Page key={`${view.href}:${view.sequence}`} />
+      {renderPage(
+        <>
+          {pending && (
+            <output
+              className="site-navigation-progress"
+              aria-label="正在切换页面"
+            />
+          )}
+          {failed && (
+            <div className="site-navigation-error" role="alert">
+              页面未能打开。
+              <button
+                onClick={() => {
+                  void navigate(failed);
+                }}
+              >
+                重试
+              </button>
+              <button aria-label="关闭提示" onClick={() => setFailed('')}>
+                ×
+              </button>
+            </div>
+          )}
+          {view.kind === 'initial' ? (
+            children
+          ) : (
+            <view.Page key={`${view.href}:${view.sequence}`} />
+          )}
+        </>,
       )}
     </NavigationContext.Provider>
   );
